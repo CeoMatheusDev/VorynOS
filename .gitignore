@@ -1,0 +1,18 @@
+# Build
+zig-out/
+.zig-cache/
+zig-cache/
+*.o
+*.obj
+*.pdb
+
+# Editor / desktop environment
+.directory
+*.swp
+*~
+.idea/
+.vscode/
+
+# Test artefacts
+*.img
+serial.log
