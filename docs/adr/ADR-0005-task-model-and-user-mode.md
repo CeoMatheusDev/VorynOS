@@ -100,14 +100,52 @@ Já existe e foi verificado:
 - o segmento de tarefa com o ponteiro de pilha da tarefa de usuário.
 
 **Falta:** a entrega da exceção que vem do usuário. O portão da chamada de
-sistema é acionado pelo programa de usuário, e a exceção que o programa
-provoca não chega ao tratador do núcleo: o processador levanta uma falha de
-página, e o tratador não é executado. A causa está em investigação, e a
-tarefa de usuário **não é agendada** até que a causa seja encontrada, porque
-uma tarefa que falha interrompe a máquina.
+sistema é acionado pelo programa de usuário, e a entrega levanta uma falha
+de proteção geral, com o código de erro zero, e o tratador não é executado.
 
-A alternativa seria mascarar a falha de página no usuário, o que destruiria
-justamente o isolamento que o modo de usuário deve oferecer.
+O diagnóstico jáorie delimitado:
+
+1. A tarefa de usuário **executa** no terceiro nível de privilégio: o
+   processador registra `cpl=3`, com o seletor de código `0x1b` e o de dados
+   `0x23` ✓.
+2. O programa **chega** à instrução `int $0x80` ✓ (o registro de número da
+   chamada tem o valor esperado ✓).
+3. A porta da chamada de sistema está instalada com o tipo `0xee` ✓
+   (presente, terceiro nível de privilégio, porta de interrupção ✓) e com o
+   seletor do código do núcleo ✓.
+4. A falha de proteção geral é levantada **pela própria instrução `int`**
+   (o endereço gravado é o da instrução ✓) e tem o código de erro zero ✓,
+   o que é a assinatura de uma **verificação de privilégio que falha**.
+5. A entrega da falha, por sua vez, falha: o processador levanta uma falha
+   dupla, porque o segmento de tarefa aponta para uma pilha que não pode ser
+   usada.
+
+A verificação de privilégio que falha, com uma porta de terceiro nível e um
+processador no terceiro nível, indica que o **segmento de dados do usuário**
+(`0x23`) ou a **pilha do usuário** não atendem ao que o processador exige na
+transição. As duas hipóteses que restam são o descritor do segmento de dados
+do usuário, cujo tipo e nível de privilégio ainda não foram conferidos no
+código, e o uso da pilha de usuário como pilha do tratador.
+
+A tarefa de usuário **não é agendada** até a causa ser encontrada, porque
+uma tarefa que falha interrompe a máquina. A alternativa seria mascarar a
+falha de página no usuário, o que destruiria justamente o isolamento que o
+modo de usuário deve oferecer.
+
+### 3.1 Correções que a investigação produziu
+
+- **A tabela de vetores de exceção do modo de 64 bits é diferente da de 32
+  bits.** A falta de página é o vetor 14, e não o 13, e a exceção de
+  segmento de pilha é o 13, e não o 11. A tabela do núcleo usava a numeração
+  do modo protegido, e o diagnóstico da falta de página dizia "erro de ponto
+  flutuante" ✗.
+- **A cópia do programa do usuário tem de acontecer depois da troca das
+  tabelas de página.** Antes da troca, a escrita usaria as tabelas do
+  firmware, e o programa cairia em outra página física, que a tarefa
+  executaria como se fosse o programa ✗.
+- **A instrução que para o processador é privilegiada.** O programa de
+  usuário esperava com `hlt`, que levanta uma falha de proteção geral no
+  terceiro nível de privilégio ✗. A espera usa a instrução `pause` ✓.
 
 ## 4. Custos e riscos
 

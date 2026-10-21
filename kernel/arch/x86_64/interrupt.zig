@@ -96,9 +96,13 @@ var table_pointer: IdtPointer align(8) = .{ .limit = 0, .base = 0 };
 const kernel_code_selector: u16 = 0x08;
 
 /// Exceptions that push an error code.
+///
+/// The table is the one of the long mode: the exception of stack segment is
+/// the vector 13 and the lack of page is the vector 14, the opposite of the
+/// table of the protected mode.
 pub fn hasErrorCode(vector: u64) bool {
     return switch (vector) {
-        8, 10, 11, 12, 13, 14, 17, 21, 29, 30 => true,
+        8, 11, 12, 13, 14, 17, 21, 29, 30 => true,
         else => false,
     };
 }
@@ -115,17 +119,17 @@ pub fn vectorName(vector: u64) []const u8 {
         6 => "invalid opcode",
         7 => "device not available",
         8 => "double fault",
-        9 => "coprocessor segment overrun",
-        10 => "invalid TSS",
+        9 => "reserved",
+        10 => "reserved",
         11 => "segment not present",
         12 => "general protection fault",
-        13 => "page fault",
-        14 => "x87 floating point",
-        15 => "alignment check",
-        16 => "floating point exception",
-        17 => "control protection",
-        18 => "machine check",
-        19 => "SIMD floating point",
+        13 => "stack fault",
+        14 => "page fault",
+        15 => "reserved",
+        16 => "x87 floating point",
+        17 => "alignment check",
+        18 => "invalid TSS",
+        19 => "segment not present",
         20 => "virtualization",
         21 => "control protection",
         22 => "maskable interrupt",

@@ -101,10 +101,13 @@ capacidades.
 | Canal do VNX | PROPOSTO | — |
 | Capacidades do VNC | PROPOSTO | — |
 
-O modo de usuário está bloqueado por um defeito específico: uma exceção
-provocada pelo programa de usuário não chega ao tratador do núcleo, e a
-tarefa de usuário fica desabilitada até a causa ser encontrada. O diagnóstico
-está em ADR-0005.
+O modo de usuário está bloqueado por um defeito específico e bem delimitado:
+a instrução `int $0x80`, executada pelo programa de usuário, levanta uma
+falha de proteção geral com código de erro zero, e a entrega da falha também
+falha. A tarefa de usuário executa, chega à instrução e falha nela; a porta
+está instalada com o terceiro nível de privilégio. A tarefa fica desabilitada
+até a causa ser encontrada, porque uma tarefa que falha interrompe a
+máquina. O diagnóstico está em ADR-0005.
 
 Critérios de aceite do restante do marco:
 

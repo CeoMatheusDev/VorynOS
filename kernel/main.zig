@@ -37,7 +37,7 @@ const physical = @import("memory/physical.zig");
 const scheduler = @import("task/scheduler.zig");
 
 /// Version of the kernel, reported on the console.
-const kernel_version = "0.1.0-dev.1";
+const kernel_version = "0.1.0-dev.2";
 
 /// The handler of a panic of the kernel.
 ///
@@ -172,9 +172,12 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
 
     installMemoryManager();
     buildPageTables(boot);
-    installUserTask();
     activatePageTables();
     installHeap();
+    // The task of the user mode is prepared after the tables are active:
+    // the program is copied through them, and the tables of the firmware
+    // would place the copy in another physical page.
+    installUserTask();
     installScheduler();
     installTimer();
 
