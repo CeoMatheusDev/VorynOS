@@ -103,36 +103,64 @@ Já existe e foi verificado:
 sistema é acionado pelo programa de usuário, e a entrega levanta uma falha
 de proteção geral, com o código de erro zero, e o tratador não é executado.
 
-O diagnóstico jáorie delimitado:
+O diagnóstico está delimitado, e a causa está fora do núcleo:
 
 1. A tarefa de usuário **executa** no terceiro nível de privilégio: o
    processador registra `cpl=3`, com o seletor de código `0x1b` e o de dados
-   `0x23` ✓.
-2. O programa **chega** à instrução `int $0x80` ✓ (o registro de número da
-   chamada tem o valor esperado ✓).
-3. A porta da chamada de sistema está instalada com o tipo `0xee` ✓
-   (presente, terceiro nível de privilégio, porta de interrupção ✓) e com o
-   seletor do código do núcleo ✓.
-4. A falha de proteção geral é levantada **pela própria instrução `int`**
-   (o endereço gravado é o da instrução ✓) e tem o código de erro zero ✓,
-   o que é a assinatura de uma **verificação de privilégio que falha**.
-5. A entrega da falha, por sua vez, falha: o processador levanta uma falha
-   dupla, porque o segmento de tarefa aponta para uma pilha que não pode ser
-   usada.
+   `0x23`, e o programa chega à instrução de chamada de sistema, com o
+   registro de número preenchido.
+2. A porta da chamada de sistema está **correta**, byte a byte. O
+   descritor medido em memória é `81 07 08 00 00 ee 29 00 00 00 00 00 00
+   00 00`: o deslocamento em duas partes, o seletor `0x08` do código do
+   núcleo, o índice de pilha de interrupção zero, e o tipo `0xee`, presente
+   e de terceiro nível de privilégio.
+3. Os segmentos estão corretos: o código do usuário tem o bit de modo longo
+   e o terceiro nível de privilégio, e o segmento de dados é gravável e do
+   terceiro nível de privilégio.
+4. As tabelas de página estão corretas: as três páginas do usuário estão
+   presentes, graváveis e com o bit de usuário, e os níveis superiores da
+   hierarquia também o têm.
+5. A chamada de sistema **é entregue** pelo emulador: o registro de
+   interrupções mostra o vetor `0x80` com a marca de interrupção de software.
+6. Durante a entrega, o emulador levanta uma **falha de proteção geral com
+   código de erro zero**, antes de o tratador receber o controle: o traço
+   das exceções mostra a mesma falha de proteção geral e, em seguida, uma
+   falha dupla, porque a entrega da própria falha também falha.
+7. O código de erro zero é a assinatura de uma verificação de **privilégio**
+   que falha, e não de uma falta de página. No código do emulador, a única
+   verificação com código de erro zero nesse caminho é a da porta nula, e
+   todas as demais condições de falha desse caminho foram verificadas uma a
+   uma e não se aplicam.
 
-A verificação de privilégio que falha, com uma porta de terceiro nível e um
-processador no terceiro nível, indica que o **segmento de dados do usuário**
-(`0x23`) ou a **pilha do usuário** não atendem ao que o processador exige na
-transição. As duas hipóteses que restam são o descritor do segmento de dados
-do usuário, cujo tipo e nível de privilégio ainda não foram conferidos no
-código, e o uso da pilha de usuário como pilha do tratador.
+O conjunto das medições é, portanto, **internamente contraditório**: o
+emulador falha uma verificação de privilégio numa porta de terceiro nível,
+com o processador no terceiro nível, e uma porta comprovadamente correta.
 
-A tarefa de usuário **não é agendada** até a causa ser encontrada, porque
-uma tarefa que falha interrompe a máquina. A alternativa seria mascarar a
-falha de página no usuário, o que destruiria justamente o isolamento que o
-modo de usuário deve oferecer.
+### 3.1 Consequência: a instrução de chamada de sistema
 
-### 3.1 Correções que a investigação produziu
+O caminho da porta de interrupção é abandonado. O núcleo passa a usar a
+instrução `syscall`, com o mecanismo previsto pela arquitetura para isso em
+modo de 64 bits, e a decisão tem três motivos:
+
+1. **O caminho da porta é o único que falha.** A instrução `syscall` não
+   passa pela tabela de interrupções, e portanto não depende da verificação
+   que falha.
+2. **A pilha do tratador passa a ser do núcleo.** Com a porta de
+   interrupção, o tratador roda sobre a pilha do usuário, e o usuário
+   poderia reescrever o quadro do tratador. Com `syscall`, o processador
+   entrega a chamada na pilha que o segmento de tarefa aponta, e a pilha do
+   usuário só é restaurada na volta.
+3. **A porta de interrupção é um caminho herdado.** A recomendação da
+   arquitetura para chamadas de sistema no modo de 64 bits é a instrução
+   `syscall`, com os registradores de modelo `IA32_STAR`, `IA32_LSTAR` e
+   `IA32_SFMASK`.
+
+A tarefa de usuário **não é agendada** até a chamada de sistema funcione
+pelo caminho novo, porque uma tarefa que falha interrompe a máquina. A
+alternativa seria mascarar a falha no usuário, o que destruiria justamente
+o isolamento que o modo de usuário deve oferecer.
+
+### 3.2 Correções que a investigação produziu
 
 - **A tabela de vetores de exceção do modo de 64 bits é diferente da de 32
   bits.** A falta de página é o vetor 14, e não o 13, e a exceção de
@@ -145,7 +173,9 @@ modo de usuário deve oferecer.
   executaria como se fosse o programa ✗.
 - **A instrução que para o processador é privilegiada.** O programa de
   usuário esperava com `hlt`, que levanta uma falha de proteção geral no
-  terceiro nível de privilégio ✗. A espera usa a instrução `pause` ✓.
+  terceiro nível de privilégio ✗. A instrução `pause` é rejeitada pelo
+  emulador pelo mesmo motivo ✗, e a espera passa a ser um laço que só
+  salta para si mesmo ✓.
 
 ## 4. Custos e riscos
 
@@ -153,7 +183,23 @@ modo de usuário deve oferecer.
 |-------|---------|------------|
 | Pilha de usuário compartilhada com o tratador | Médio | A pilha de usuário é maior e o acoplamento está documentado |
 | A política circular pode gerar inanição com tarefas bloqueadas | Médio | O bloqueio ainda não existe; quando existir, a política precisa de classes de prioridade |
-| A entrega de exceções do usuário não funciona | Alto | A tarefa de usuário fica desabilitada até a causa ser encontrada |
+| A porta de interrupção não entrega a chamada de sistema do usuário | Alto | O caminho da porta é abandonado, e a chamada passa a usar a instrução `syscall`, que não depende da tabela de interrupções |
+
+### 4.1 Plano de migração para a instrução de chamada de sistema
+
+1. Escrever os registradores de modelo `IA32_STAR`, `IA32_LSTAR` e
+   `IA32_SFMASK`, com o seletor do código do núcleo em `IA32_STAR`.
+2. Escrever a entrada da chamada de sistema em assembly: a instrução
+   `syscall` não troca a pilha, e a entrada tem de salvar o ponteiro de
+   pilha do usuário antes de saltar para a pilha do núcleo, que o segmento
+   de tarefa aponta.
+3. Gravar no contexto da tarefa o estado do usuário que a volta precisa:
+   o endereço de retorno, as marcas e o ponteiro de pilha, e os registradores
+   que a convenção de chamada preserva.
+4. Devolver ao usuário com `iretq`, montando o quadro com o estado do
+   usuário.
+5. Tratar a preempção dentro da chamada de sistema: a tarefa suspensa
+   dentro do tratador tem de voltar ao tratador, e não ao usuário.
 
 ## 5. Consequências
 

@@ -192,6 +192,10 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // Sentinel consumed by the automated boot test.
     serial.printLine("VORYN-KERNEL-READY", .{});
 
+    // The self test of the system call runs first, from the kernel itself:
+    // it separates a broken gate from a broken transition of privilege.
+    syscallSelfTest();
+
     // The self test of the exception handling runs at the very end, because
     // an exception stops the kernel.
     selfTest();
@@ -572,6 +576,13 @@ fn worker(id: u32) void {
         }
         cpu.halt();
     }
+}
+
+/// Invokes the system call from the kernel, to verify the gate.
+fn syscallSelfTest() void {
+    serial.printLine("[VNK] self test: invoking the system call from the kernel", .{});
+    asm volatile ("int $0x80");
+    serial.printLine("[VNK] self test: the system call returned", .{});
 }
 
 /// Verifies that the exception handling works.

@@ -165,9 +165,9 @@ voryn_user_program:
     movq $0xF00D, %rdi        /* the argument of the system call */
     int $0x80
     /* The program waits for the next interrupt. The instruction that halts
-     * the processor is privileged, the loop uses the pause instruction. */
-1:  pause
-    jmp 1b
+     * the processor and the pause instruction are privileged, the loop only
+     * branches to itself. */
+1:  jmp 1b
 .size voryn_user_program, . - voryn_user_program
 .global voryn_user_program_end
 voryn_user_program_end:

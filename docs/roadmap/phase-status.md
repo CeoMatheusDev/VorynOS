@@ -101,13 +101,22 @@ capacidades.
 | Canal do VNX | PROPOSTO | — |
 | Capacidades do VNC | PROPOSTO | — |
 
-O modo de usuário está bloqueado por um defeito específico e bem delimitado:
-a instrução `int $0x80`, executada pelo programa de usuário, levanta uma
-falha de proteção geral com código de erro zero, e a entrega da falha também
-falha. A tarefa de usuário executa, chega à instrução e falha nela; a porta
-está instalada com o terceiro nível de privilégio. A tarefa fica desabilitada
-até a causa ser encontrada, porque uma tarefa que falha interrompe a
-máquina. O diagnóstico está em ADR-0005.
+O modo de usuário está bloqueado por um defeito específico e bem delimitado,
+cuja causa está **fora do núcleo**: a porta de interrupção da chamada de
+sistema é comprovadamente correta, byte a byte, e mesmo assim o emulador
+levanta uma falha de proteção geral com código de erro zero durante a
+entrega, antes de o tratador receber o controle. O diagnóstico completo, com
+as medições que o contradizem, está em ADR-0005.
+
+A correção não é um remendo no núcleo, e sim a troca do mecanismo: a
+chamada de sistema passa a usar a instrução `syscall`, o caminho previsto
+pela arquitetura para o modo de 64 bits. A troca resolve o defeito, porque
+a instrução não passa pela tabela de interrupções, e melhora a
+arquitetura, porque o tratador passa a rodar na pilha do núcleo e não na
+pilha do usuário. O plano de migração está em ADR-0005.
+
+A tarefa de usuário fica desabilitada até a chamada funcionar pelo caminho
+novo, porque uma tarefa que falha interrompe a máquina.
 
 Critérios de aceite do restante do marco:
 

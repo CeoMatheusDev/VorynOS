@@ -16,3 +16,6 @@ zig-cache/
 # Test artefacts
 *.img
 serial.log
+
+# Arquivos de trabalho do emulador, usados no diagnóstico.
+.qemu-run/

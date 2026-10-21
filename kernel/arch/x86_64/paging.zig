@@ -215,6 +215,41 @@ pub fn rootAddress() u64 {
     return addressOf(&level4);
 }
 
+/// Describes the mapping of a virtual address.
+///
+/// The function walks the hierarchy of the tables and reports the entry of
+/// every level, so that a wrong mapping can be found without a debugger.
+pub fn describe(virtual: u64) void {
+    const level4_index = (virtual >> 39) & 511;
+    const level3_index = (virtual >> 30) & 511;
+    const level2_index = (virtual >> 21) & 511;
+    const level1_index = (virtual >> 12) & 511;
+
+    const entry4 = level4.entries[level4_index];
+    voryn.serial.printLine("[DBG] map 0x{x}: l4[{d}] = 0x{x}", .{ virtual, level4_index, entry4 });
+    if (entry4 & Flags.present == 0) return;
+
+    const entry3 = tableOf(entry4).entries[level3_index];
+    voryn.serial.printLine("[DBG]        l3[{d}] = 0x{x}", .{ level3_index, entry3 });
+    if (entry3 & Flags.present == 0) return;
+
+    const entry2 = tableOf(entry3).entries[level2_index];
+    voryn.serial.printLine("[DBG]        l2[{d}] = 0x{x}", .{ level2_index, entry2 });
+    if (entry2 & Flags.present == 0) return;
+    if (entry2 & Flags.large != 0) {
+        voryn.serial.printLine("[DBG]        large page", .{});
+        return;
+    }
+
+    const entry1 = tableOf(entry2).entries[level1_index];
+    voryn.serial.printLine("[DBG]        l1[{d}] = 0x{x} (physical 0x{x}, user {})", .{
+        level1_index,
+        entry1,
+        entry1 & ~@as(u64, 0xFFF),
+        (entry1 & Flags.user) != 0,
+    });
+}
+
 /// The number of entries of the root table that are in use.
 pub fn mappedEntries() u32 {
     var count: u32 = 0;
