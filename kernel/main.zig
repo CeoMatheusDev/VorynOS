@@ -34,6 +34,7 @@ const timer = @import("arch/x86_64/timer.zig");
 
 const heap = @import("memory/heap.zig");
 const physical = @import("memory/physical.zig");
+const scheduler = @import("task/scheduler.zig");
 
 /// Version of the kernel, reported on the console.
 const kernel_version = "0.1.0-dev.1";
@@ -46,6 +47,18 @@ const heap_size = 256 * 1024;
 
 /// Frequency of the timer, in interrupts per second.
 const timer_frequency = 100;
+
+/// Size of the stack of a task of the kernel.
+const task_stack_size = 16 * 1024;
+
+/// Number of tasks of the kernel: the main task and two workers.
+const task_count = 3;
+
+/// The stacks of the tasks of the kernel.
+///
+/// The stacks live in the image of the kernel because the region has to
+/// stay mapped after the replacement of the page tables.
+var task_stacks: [task_count][task_stack_size]u8 align(16) = undefined;
 
 /// Address of the kernel entry point, provided by the assembly trampoline.
 extern const voryn_kernel_entry_address: u64;
@@ -113,7 +126,15 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     installMemoryManager();
     installPageTables(boot);
     installHeap();
+    installScheduler();
     installTimer();
+
+    // The main task waits until the workers have been scheduled a few
+    // times, which proves that the scheduler works.
+    while (scheduler.scheduler.statisticsOf().switches < 20) {
+        cpu.halt();
+    }
+    reportScheduler();
 
     // Sentinel consumed by the automated boot test.
     serial.printLine("VORYN-KERNEL-READY", .{});
@@ -355,6 +376,62 @@ fn installTimer() void {
     }
 
     serial.printLine("[VNK] timer: {d} Hz, {d} ticks", .{ timer.ticksPerSecond(), timer.ticks() });
+}
+
+/// Creates the tasks of the kernel.
+fn installScheduler() void {
+    scheduler.scheduler.init();
+
+    _ = scheduler.scheduler.spawn(&workerOne, &task_stacks[1]);
+    _ = scheduler.scheduler.spawn(&workerTwo, &task_stacks[2]);
+
+    serial.printLine("[VNK] tasks: {d} created", .{scheduler.scheduler.count});
+}
+
+/// Reports the state of the scheduler and the cost of the switches.
+fn reportScheduler() void {
+    const statistics = scheduler.scheduler.statisticsOf();
+
+    const average = if (statistics.switches != 0)
+        statistics.switch_cycles / statistics.switches
+    else
+        0;
+
+    serial.printLine("[VNK] tasks: {d} ready, {d} ticks, {d} switches", .{
+        statistics.ready,
+        statistics.ticks,
+        statistics.switches,
+    });
+    serial.printLine("[VNK] tasks: switch cost {d} cycles average, {d} minimum, {d} last", .{
+        average,
+        statistics.minimum_switch_cycles,
+        statistics.last_switch_cycles,
+    });
+}
+
+/// A worker of the kernel, it runs until the machine stops.
+fn workerOne() void {
+    worker(1);
+}
+
+/// A worker of the kernel, it runs until the machine stops.
+fn workerTwo() void {
+    worker(2);
+}
+
+/// The body of a worker.
+///
+/// The task reports its progress from time to time, so that the serial
+/// console shows that the tasks alternate.
+fn worker(id: u32) void {
+    var turns: u64 = 0;
+    while (true) {
+        turns += 1;
+        if (turns % 10 == 0) {
+            serial.printLine("[VNK] task {d}: {d} turns", .{ id, turns });
+        }
+        cpu.halt();
+    }
 }
 
 /// Verifies that the exception handling works.

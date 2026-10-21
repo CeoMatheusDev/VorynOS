@@ -82,19 +82,28 @@ Limitações conhecidas do marco:
   nada muda de privilégio.
 - O tratador de exceções é fatal: a execução para no primeiro erro.
 
-### F3 — Execução — PROPOSTO
+### F3 — Execução — EM DESENVOLVIMENTO
 
 Objetivos: threads, scheduler, processos, user mode, syscalls, IPC,
 capacidades.
 
-Primeiro incremento do F3, critérios de aceite propostos:
+| Objetivo | Estado | Evidência |
+|----------|--------|-----------|
+| Escalonador preemptivo | CONCLUÍDO | alternância verificada pelo temporizador |
+| Tarefas do kernel | CONCLUÍDO | duas tarefas de trabalho, 20 trocas medidas |
+| Custo de troca de contexto | CONCLUÍDO | medido com o contador de tempo |
+| Modo de usuário | EM DESENVOLVIMENTO | — |
+| Chamadas de sistema | EM DESENVOLVIMENTO | — |
+| Processos | PROPOSTO | — |
+| Canal do VNX | PROPOSTO | — |
+| Capacidades do VNC | PROPOSTO | — |
 
-1. O núcleo alterna entre duas tarefas com o temporizador, medindo a
-   latência de troca de contexto.
-2. Uma tarefa em modo de usuário executa, o que prova a tabela de segmentos,
+Critérios de aceite do restante do marco:
+
+1. Uma tarefa em modo de usuário executa, o que prova a tabela de segmentos,
    a pilha de usuário e a comutação de privilégio.
-3. A primeira chamada de sistema copia um bloco de memória entre processos.
-4. O canal de mensagens do VNX entrega uma mensagem entre dois processos e
+2. A primeira chamada de sistema copia um bloco de memória entre processos.
+3. O canal de mensagens do VNX entrega uma mensagem entre dois processos e
    mede a latência.
 
 ### F4 a F10 — PROPOSTO

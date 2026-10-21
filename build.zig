@@ -67,6 +67,7 @@ pub fn build(b: *std.Build) void {
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/entry.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/segment.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/interrupt.s"));
+    kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/task.s"));
     kernel_module.addImport("voryn_shared", shared);
     const kernel_executable = b.addExecutable(.{
         .name = "voryn-kernel",

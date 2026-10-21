@@ -123,6 +123,14 @@ voryn_interrupt_\number:
     movq $\number, %rdi
     movq %rsp, %rsi
     call voryn_interrupt_handler
+    /* The handler returns zero to resume the interrupted code, and a value
+     * different from zero to switch to another task. The switch reads the
+     * frame that is still on the stack, so it is entered with a jump and not
+     * with a call: a call would move the frame. */
+    testq %rax, %rax
+    jz 1f
+    jmp voryn_task_switch
+1:
     POP_REGISTERS
     addq $16, %rsp
     iretq

@@ -303,16 +303,27 @@ export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv
 ///
 /// The handler acknowledges the interrupt to the controllers and returns to
 /// the interrupted code.
-export fn voryn_interrupt_handler(vector: u64, frame: *const Registers) callconv(.c) void {
+export fn voryn_interrupt_handler(vector: u64, frame: *const Registers) callconv(.c) u64 {
     _ = frame;
 
     if (vector >= first_hardware_vector and vector < first_hardware_vector + hardware_interrupt_count) {
         const timer = @import("timer.zig");
         if (vector == first_hardware_vector) {
             timer.onTick();
+
+            // The scheduler decides whether another task has to run. The
+            // value that is returned tells the entry point of the interrupt
+            // to switch.
+            const scheduler = @import("../../task/scheduler.zig");
+            const must_switch = scheduler.scheduler.tick();
+            timer.acknowledge(@intCast(vector));
+            return if (must_switch) 1 else 0;
         }
+
         timer.acknowledge(@intCast(vector));
     }
+
+    return 0;
 }
 
 /// Reads a word of the frame.
