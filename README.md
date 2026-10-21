@@ -132,7 +132,9 @@ O núcleo possui uma infraestrutura inicial funcional para gerenciamento do proc
 - Tarefas do kernel em pilhas próprias.
 - Estrutura de tarefa preparada para o terceiro nível de privilégio.
 - Mapeamento de páginas de usuário nas tabelas de página próprias.
-- Porta de chamada de sistema com terceiro nível de privilégio.
+- Chamada de sistema pela instrução `syscall`, com o tratador em Zig.
+- Pilha do núcleo por tarefa, e o tratador da chamada nunca roda sobre a
+  pilha do usuário.
 - Medição do custo da troca de contexto pelo contador de tempo.
 
 **Gerenciamento de memória**
@@ -194,11 +196,11 @@ As seguintes limitações são conhecidas e documentadas:
 | Memória física | Bitmap com cobertura de até 4 GiB |
 | Heap | Região fixa de 256 KiB |
 | Memória virtual | Mapeamentos iniciais do kernel e framebuffer |
-| TSS | Estrutura carregada, mas uso das pilhas IST ainda incompleto |
+| TSS | Estrutura do modo de 64 bits, com o layout verificado em tempo de compilação |
 | Exceções | Tratamento fatal, sem recuperação |
 | Execução | Escalonador publicado, sem processos publicados |
-| Proteção | Sem execução em modo de usuário |
-| Syscalls | Porta e tratador implementados, a entrega a partir do usuário ainda falha |
+| Proteção | Modo de usuário verificado, sem processos publicados |
+| Syscalls | Instrução `syscall` e tratador implementados, a volta ao usuário é verificada |
 | IPC | Não implementado |
 | Capacidades | Não implementadas |
 | Armazenamento | Sem sistema de arquivos operacional no kernel |
@@ -206,9 +208,7 @@ As seguintes limitações são conhecidas e documentadas:
 | Interface gráfica | Não implementada |
 | Hardware físico | Sem validação documentada |
 
-A existência de segmentos de privilégio de usuário na GDT, e a porta de chamada de sistema com terceiro nível de privilégio, não significam que o sistema já suporte processos em modo de usuário: uma exceção originada em uma tarefa de usuário ainda não chega ao tratador do núcleo, e por isso a tarefa de usuário não é agendada.
-
-O escalonador preemptivo existe e mede o custo da troca de contexto, mas ainda não há processos, nem tarefas de usuário em funcionamento.
+A tarefa de usuário executa no terceiro nível de privilégio, escreve na sua própria página de dados, chama o núcleo pela instrução `syscall` e recebe a resposta de volta no mesmo registrador. O que ainda não existe são os processos, as threads e o canal de mensagens.
 
 Esses recursos pertencem aos próximos incrementos de desenvolvimento.
 

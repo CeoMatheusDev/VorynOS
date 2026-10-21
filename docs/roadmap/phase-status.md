@@ -76,10 +76,11 @@ Limitações conhecidas do marco:
 - O heap é uma região fixa de 256 KiB dentro da imagem do núcleo, porque a
   região precisa estar mapeada depois da troca das tabelas de página.
 - O bitmap do gerenciador de memória física cobre 4 GiB do espaço físico.
-- O segmento de tarefa é carregado, mas o índice de pilha de interrupção
-  ainda não é usado pelas portas.
-- Não há modo de usuário: os segmentos de usuário existem na tabela, mas
-  nada muda de privilégio.
+- O segmento de tarefa é carregado, e o índice de pilha de interrupção é
+  usado pela pilha da falha dupla.
+- O modo de usuário existe: os segmentos de usuário estão na tabela, as
+  páginas do usuário têm o bit de usuário, e a tarefa de usuário executa,
+  chama o núcleo e recebe a resposta.
 - O tratador de exceções é fatal: a execução para no primeiro erro.
 
 ### F3 — Execução — EM DESENVOLVIMENTO
@@ -95,33 +96,37 @@ capacidades.
 | Política sem fome | CONCLUÍDO | a visita continua depois da tarefa atual |
 | Preparação do coprocessor | CONCLUÍDO | o firmware o deixa desabilitado |
 | Tabelas de página com modo de usuário | CONCLUÍDO | o bit de usuário existe em todos os níveis |
-| Porta da chamada de sistema | CONCLUÍDO | terceiro nível de privilégio, tratador em Zig |
-| Modo de usuário | EM DESENVOLVIMENTO | a tarefa existe, a entrega da exceção não funciona |
+| Chamada de sistema | CONCLUÍDO | a instrução `syscall`, com o tratador em Zig |
+| Modo de usuário | CONCLUÍDO | a tarefa escreve na sua página e a resposta da chamada volta |
+| Segmento de tarefa do modo de 64 bits | CONCLUÍDO | o layout é verificado em tempo de compilação |
+| Pilha do núcleo por tarefa | CONCLUÍDO | o tratador nunca roda sobre a pilha do usuário |
 | Processos | PROPOSTO | — |
 | Canal do VNX | PROPOSTO | — |
 | Capacidades do VNC | PROPOSTO | — |
 
-O modo de usuário está bloqueado por um defeito específico e bem delimitado,
-cuja causa está **fora do núcleo**: a porta de interrupção da chamada de
-sistema é comprovadamente correta, byte a byte, e mesmo assim o emulador
-levanta uma falha de proteção geral com código de erro zero durante a
-entrega, antes de o tratador receber o controle. O diagnóstico completo, com
-as medições que o contradizem, está em ADR-0005.
+O modo de usuário está **implementado e verificado**. A tarefa de usuário
+executa no terceiro nível de privilégio, escreve na sua própria página de
+dados, chama o núcleo pela instrução `syscall` e recebe a resposta no mesmo
+registrador. O traço de interrupções do emulador **não registra nenhuma
+exceção** durante a execução inteira.
 
-A correção não é um remendo no núcleo, e sim a troca do mecanismo: a
-chamada de sistema passa a usar a instrução `syscall`, o caminho previsto
-pela arquitetura para o modo de 64 bits. A troca resolve o defeito, porque
-a instrução não passa pela tabela de interrupções, e melhora a
-arquitetura, porque o tratador passa a rodar na pilha do núcleo e não na
-pilha do usuário. O plano de migração está em ADR-0005.
+O defeito que bloqueava o marco era o **layout do segmento de tarefa**: o
+núcleo usava o layout do modo protegido, e no modo de 64 bits a pilha de
+ring 3 está no deslocamento 4, a tabela de pilhas de interrupção começa no
+36, e a estrutura tem 104 bytes. O processador lia o ponteiro de pilha no
+deslocamento errado, e a entrega de toda exceção vinda do usuário falhava
+com uma falta de pilha e uma falha dupla. O diagnóstico completo, com as
+medições e a conclusão que se mostrou errada, está em ADR-0005.
 
-A tarefa de usuário fica desabilitada até a chamada funcionar pelo caminho
-novo, porque uma tarefa que falha interrompe a máquina.
+A chamada de sistema usa a instrução `syscall`, o caminho previsto pela
+arquitetura para o modo de 64 bits, porque a porta de interrupção é um
+caminho herdado e porque o tratador passa a rodar na pilha do núcleo da
+tarefa, e não na pilha do usuário.
 
 Critérios de aceite do restante do marco:
 
 1. Uma tarefa em modo de usuário executa, o que prova a tabela de segmentos,
-   a pilha de usuário e a comutação de privilégio.
+   a pilha de usuário e a comutação de privilégio. **Cumprido.**
 2. A primeira chamada de sistema copia um bloco de memória entre processos.
 3. O canal de mensagens do VNX entrega uma mensagem entre dois processos e
    mede a latência.
@@ -142,7 +147,7 @@ Critérios de aceite do restante do marco:
 
 | Risco | Impacto | Tratamento |
 |-------|---------|------------|
-| Ausência de modo de usuário | Alto | Primeiro incremento do F3 |
+| Ausência de processos | Alto | Primeiro incremento do F3 depois do modo de usuário |
 | Heap fixo na imagem do núcleo | Médio | Heap dinâmico com o VNM no F3 |
 | Exceções fatais | Médio | Tratamento por tipo no F3, com teste de recuperação |
 | Ausência de medição de desempenho | Médio | Latência de troca de contexto e de syscall no F3 |
