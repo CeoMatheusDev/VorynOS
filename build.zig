@@ -68,6 +68,7 @@ pub fn build(b: *std.Build) void {
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/segment.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/interrupt.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/task.s"));
+    kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/syscall.s"));
     kernel_module.addImport("voryn_shared", shared);
     const kernel_executable = b.addExecutable(.{
         .name = "voryn-kernel",
@@ -137,6 +138,20 @@ pub fn build(b: *std.Build) void {
         .root_module = kernel_test_module,
     });
     unit_test_step.dependOn(&b.addRunArtifact(kernel_tests).step);
+
+    // The architecture modules that do not touch the hardware are tested on
+    // the host as well.
+    const arch_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/arch/x86_64/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    arch_test_module.addImport("voryn_shared", shared);
+    const arch_tests = b.addTest(.{
+        .name = "arch-tests",
+        .root_module = arch_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(arch_tests).step);
 
     const qemu_test_step = b.step("qemu-test", "Run the automated boot test in QEMU");
     const qemu_test = b.addSystemCommand(&.{"bash", "tests/integration/boot-qemu.sh"});

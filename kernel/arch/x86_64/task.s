@@ -150,8 +150,13 @@ voryn_capture_context:
  * A program that runs in the third level of privilege.
  *
  * The program writes a known value into the page of data that the kernel
- * prepared for it, calls the system call of the kernel and waits for the next
- * interrupt.
+ * prepared for it, calls the system call of the kernel, writes the result
+ * of the call in the same page and waits for the next interrupt.
+ *
+ * The two values prove two different things. The first one proves that the
+ * task runs in the third level of privilege with access to its own pages,
+ * and the second one proves that the call reached the handler of the
+ * kernel and that the answer came back.
  */
 .global voryn_user_program
 .type voryn_user_program, @function
@@ -161,9 +166,18 @@ voryn_user_program:
     movabsq $0x5A5A1234, %rax
     movabsq $0x401000, %rdi
     movq %rax, (%rdi)
+
+    /* The call: the number of the call is in the first register, and the
+     * first argument is in the second. */
     movq $1, %rax             /* the number of the system call */
     movq $0xF00D, %rdi        /* the argument of the system call */
-    int $0x80
+    syscall
+
+    /* The result of the call comes back in the first register, and it is
+     * written in the second word of the page of data. */
+    movabsq $0x401008, %rdi
+    movq %rax, (%rdi)
+
     /* The program waits for the next interrupt. The instruction that halts
      * the processor and the pause instruction are privileged, the loop only
      * branches to itself. */

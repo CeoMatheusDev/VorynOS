@@ -59,12 +59,6 @@ const IdtPointer = packed struct {
 /// Type of an interrupt gate: present, ring 0, interrupt gate.
 const gate_type: u8 = 0x8E;
 
-/// Type of an interrupt gate that the user mode may call: present, ring 3.
-const user_gate_type: u8 = 0xEE;
-
-/// The vector of the system calls.
-pub const syscall_vector: u8 = 0x80;
-
 /// The register frame that the stubs build.
 pub const Registers = extern struct {
     r15: u64 = 0,
@@ -162,21 +156,8 @@ pub fn install() void {
     // The vectors that are not handled point at a stub that reports them.
     const unexpected = stubFor(255);
     for (exception_count + hardware_interrupt_count..entry_count) |vector| {
-        if (vector == syscall_vector) continue;
         setGate(vector, unexpected);
     }
-
-    // The system call, the only gate that the user mode may call. It is
-    // installed after the reserved vectors, because its vector is part of
-    // them.
-    table[syscall_vector] = .{
-        .offset_low = @truncate(@intFromPtr(&voryn_syscall_entry)),
-        .selector = kernel_code_selector,
-        .ist = 0,
-        .type_attributes = user_gate_type,
-        .offset_middle = @truncate(@intFromPtr(&voryn_syscall_entry) >> 16),
-        .offset_high = @truncate(@intFromPtr(&voryn_syscall_entry) >> 32),
-    };
 
     table_pointer = .{
         .limit = @intCast(entry_count * @sizeOf(Gate) - 1),
@@ -350,27 +331,6 @@ export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv
     port.haltForever();
 }
 
-/// Handler of the system calls.
-///
-/// The handler runs in the kernel: the processor switched to the stack of the
-/// task state segment before it delivered the call.
-export fn voryn_syscall_handler(vector: u64, frame: *Registers) callconv(.c) void {
-    const processor = processorFrame(vector, frame);
-
-    const number = frame.rax;
-    const argument = frame.rdi;
-
-    serial.printLine("[VNK] syscall {d} argument 0x{x} cs=0x{x} ss=0x{x}", .{
-        number,
-        argument,
-        processor.cs,
-        processor.ss,
-    });
-
-    // The result of the call is returned in the first register.
-    frame.rax = 0x42;
-}
-
 /// Handler of the hardware interrupts.
 ///
 /// The handler acknowledges the interrupt to the controllers and returns to
@@ -446,7 +406,6 @@ extern var voryn_exception_29: u8;
 extern var voryn_exception_30: u8;
 extern var voryn_exception_31: u8;
 extern var voryn_exception_unexpected: u8;
-extern var voryn_syscall_entry: u8;
 extern var voryn_interrupt_32: u8;
 extern var voryn_interrupt_33: u8;
 extern var voryn_interrupt_34: u8;

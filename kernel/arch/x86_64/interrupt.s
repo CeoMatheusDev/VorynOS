@@ -137,31 +137,6 @@ voryn_interrupt_\number:
 .endm
 
 /*
- * Entry point of a system call.
- *
- * The gate of the system call is the only one that the user mode may call,
- * its privilege level is the third one. The processor switches to the stack
- * of the task state segment before it delivers the call, so the handler
- * always runs in the kernel.
- */
-.macro SYSCALL_ENTRY
-    .global voryn_syscall_entry
-    .type voryn_syscall_entry, @function
-voryn_syscall_entry:
-    pushq $0
-    pushq $0x80
-    PUSH_REGISTERS
-    movq $0x80, %rdi
-    movq %rsp, %rsi
-    call voryn_syscall_handler
-    POP_REGISTERS
-    addq $16, %rsp
-    iretq
-.endm
-
-SYSCALL_ENTRY
-
-/*
  * Entry point of the vectors that the kernel does not handle.
  */
 .macro EXCEPTION_ENTRY_UNEXPECTED

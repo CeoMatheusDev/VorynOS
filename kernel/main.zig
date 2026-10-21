@@ -30,6 +30,7 @@ const cpu = @import("arch/x86_64/cpu.zig");
 const interrupt = @import("arch/x86_64/interrupt.zig");
 const paging = @import("arch/x86_64/paging.zig");
 const segment = @import("arch/x86_64/segment.zig");
+const syscall = @import("arch/x86_64/syscall.zig");
 const timer = @import("arch/x86_64/timer.zig");
 
 const heap = @import("memory/heap.zig");
@@ -76,6 +77,12 @@ const task_count = 3;
 /// stay mapped after the replacement of the page tables.
 var task_stacks: [task_count][task_stack_size]u8 align(16) = undefined;
 
+/// The stack of the kernel of the task of the user mode.
+///
+/// The handlers of the calls and of the interrupts of the task run on it,
+/// and not on the stack of the user, which the user could rewrite.
+var user_task_stack: [task_stack_size]u8 align(16) = undefined;
+
 /// The virtual address of the program of the task that runs in user mode.
 const user_code_address: u64 = 0x40_0000;
 
@@ -86,15 +93,28 @@ const user_data_address: u64 = 0x40_1000;
 const user_stack_address: u64 = 0x40_2000;
 
 /// The value that the program of the user mode writes in its page of data.
+///
+/// The value proves that the task ran in the third level of privilege with
+/// access to its own pages.
 const user_program_value: u64 = 0x5A5A_1234;
+
+/// The address of the second word of the page of data of the user mode.
+///
+/// The program of the user mode writes there the result of the system call,
+/// and the value proves that the call reached the handler of the kernel and
+/// that the answer came back.
+const user_result_address: u64 = user_data_address + 8;
+
+/// The result that the kernel answers to the call of the probe.
+const user_result_value: u64 = syscall.ping_result;
 
 /// Whether the task of the user mode is scheduled.
 ///
-/// The task exists and its pages are mapped, but an exception that comes
-/// from it is not delivered to the handler of the kernel yet, and a task
-/// that faults would stop the machine. The switch is off until the cause is
-/// found, and it is verified by the automated boot test.
-const enable_user_task = false;
+/// The task exists and its pages are mapped, and the call of the user mode
+/// goes through the instruction `syscall`, which is the path that the
+/// architecture provides for the mode of 64 bits. The switch is verified by
+/// the automated boot test.
+const enable_user_task = true;
 
 /// The program of the task that runs in user mode, and its end.
 ///
@@ -178,6 +198,11 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // the program is copied through them, and the tables of the firmware
     // would place the copy in another physical page.
     installUserTask();
+    // The system call of the user mode does not go through the interrupt
+    // table: the instruction `syscall` reads the entry point and the
+    // segments from the registers of model.
+    installSystemCall();
+
     installScheduler();
     installTimer();
 
@@ -490,45 +515,83 @@ fn reportOutOfMemory() noreturn {
     port.haltForever();
 }
 
+/// Programs the registers of model of the system call.
+///
+/// The call of the user mode goes through the instruction `syscall`, and the
+/// instruction only works when the registers of model hold the right values.
+fn installSystemCall() void {
+    syscall.install();
+
+    if (!syscall.verify()) {
+        serial.printLine("[VNK] FATAL: the registers of the system call were not installed", .{});
+        port.haltForever();
+    }
+
+    serial.printLine("[VNK] syscall: instruction installed and verified, star=0x{x}", .{syscall.readStar()});
+}
+
 /// Creates the tasks of the kernel.
 fn installScheduler() void {
-    scheduler.scheduler.init();
+    scheduler.scheduler.init(@intFromPtr(&voryn_boot_stack_end));
 
     _ = scheduler.scheduler.spawn(&workerOne, &task_stacks[1]);
     _ = scheduler.scheduler.spawn(&workerTwo, &task_stacks[2]);
 
-    // The task of the user mode has a stack of its own. The processor uses
-    // it when the privilege level changes, in both directions.
-    // The task of the user mode is created, but it is not scheduled yet: the
-    // exception that it provokes is not delivered correctly and the cause is
-    // still under investigation. See docs/roadmap/phase-status.md.
+    // The task of the user mode has a stack of its own for the user and
+    // another for the kernel, where the handlers run.
     if (enable_user_task) {
         const user_task = scheduler.scheduler.spawnUser(
             user_code_address,
             user_stack_address,
             2 * handoff.page_size,
-        );
-        if (user_task == null) return reportOutOfMemory();
+            &user_task_stack,
+        ) orelse return reportOutOfMemory();
+        serial.printLine("[VNK] user: task {d} cs=0x{x} ss=0x{x} rip=0x{x} rsp=0x{x}", .{
+            user_task.id,
+            user_task.context.cs,
+            user_task.context.ss,
+            user_task.context.rip,
+            user_task.context.rsp,
+        });
     }
 
     serial.printLine("[VNK] tasks: {d} created", .{scheduler.scheduler.count});
 }
 
-/// Verifies that the task of the user mode wrote in the page of data.
+/// Waits for the task of the user mode and reports what it wrote.
 ///
-/// The value is written by the program of the user mode, and it proves that
-/// the task ran in the third level of privilege with access to its own pages.
+/// The two values of the page of data of the user mode prove two different
+/// things. The first one proves that the task ran in the third level of
+/// privilege with access to its own pages, and the second one proves that
+/// the call reached the handler of the kernel and that the answer came
+/// back to the user mode.
 fn reportUserTask() void {
-    const value: *volatile u64 = @ptrFromInt(user_data_address);
-    const written = value.*;
+    const marker: *volatile u64 = @ptrFromInt(user_data_address);
+    const result: *volatile u64 = @ptrFromInt(user_result_address);
 
-    if (written == user_program_value) {
-        serial.printLine("[VNK] user: the program of the user mode wrote 0x{x} in its page", .{written});
-    } else {
+    // The task of the user mode is scheduled by the timer, therefore the
+    // kernel waits for it instead of assuming that it already ran.
+    var attempts: u64 = 0;
+    while (result.* != user_result_value and attempts < 10_000_000) : (attempts += 1) {
+        cpu.halt();
+    }
+
+    if (marker.* != user_program_value) {
         serial.printLine("[VNK] user: the page of the user mode holds 0x{x}, expected 0x{x}", .{
-            written,
+            marker.*,
             user_program_value,
         });
+    } else {
+        serial.printLine("[VNK] user: the program of the user mode wrote 0x{x} in its page", .{marker.*});
+    }
+
+    if (result.* != user_result_value) {
+        serial.printLine("[VNK] user: the result of the call is 0x{x}, expected 0x{x}", .{
+            result.*,
+            user_result_value,
+        });
+    } else {
+        serial.printLine("[VNK] user: the result of the call came back, 0x{x}", .{result.*});
     }
 }
 
@@ -578,11 +641,34 @@ fn worker(id: u32) void {
     }
 }
 
-/// Invokes the system call from the kernel, to verify the gate.
+/// Invokes the handler of the system call from the kernel, to verify it.
+///
+/// The test separates a broken handler from a broken transition of
+/// privilege. The instruction `syscall` is the way from the user mode to
+/// the kernel, and the kernel does not use it for its own calls: the
+/// processor loads the segments of the kernel before the entry point runs,
+/// therefore the entry point cannot tell the privilege level of the caller
+/// and the way back is always the interrupt return.
 fn syscallSelfTest() void {
-    serial.printLine("[VNK] self test: invoking the system call from the kernel", .{});
-    asm volatile ("int $0x80");
-    serial.printLine("[VNK] self test: the system call returned", .{});
+    serial.printLine("[VNK] self test: invoking the handler of the system call", .{});
+
+    var frame = syscall.SyscallFrame{
+        .rax = syscall.Number.ping,
+        .rdi = 0xF00D,
+        .r11 = 0x202,
+    };
+
+    syscall.voryn_syscall_handler(&frame, syscall.Privilege.kernel);
+
+    if (frame.rax != syscall.ping_result) {
+        serial.printLine("[VNK] FATAL: the handler returned 0x{x}, expected 0x{x}", .{
+            frame.rax,
+            syscall.ping_result,
+        });
+        port.haltForever();
+    }
+
+    serial.printLine("[VNK] self test: the handler returned 0x{x}", .{frame.rax});
 }
 
 /// Verifies that the exception handling works.

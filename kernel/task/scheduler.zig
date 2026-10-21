@@ -23,16 +23,16 @@ const segment = @import("../arch/x86_64/segment.zig");
 pub const Context = context.Context;
 
 /// The selector of the code segment of the kernel.
-const kernel_code_selector: u64 = 0x08;
+const kernel_code_selector: u64 = segment.selectors.kernel_code;
 
 /// The selector of the data segment of the kernel.
-const kernel_data_selector: u64 = 0x10;
+const kernel_data_selector: u64 = segment.selectors.kernel_data;
 
 /// The selector of the code segment of the user mode.
-const user_code_selector: u64 = 0x1B;
+const user_code_selector: u64 = segment.selectors.user_code;
 
 /// The selector of the data segment of the user mode.
-const user_data_selector: u64 = 0x23;
+const user_data_selector: u64 = segment.selectors.user_data;
 
 /// The state of a task.
 pub const State = enum {
@@ -54,6 +54,12 @@ pub const Task = struct {
     context: Context = .{},
     /// The stack of the task.
     stack: []u8 = &.{},
+    /// The stack of the kernel of the task, where the handlers run.
+    ///
+    /// A task that runs in the user mode has two stacks: the one of the
+    /// user, which is the one the task uses, and the one of the kernel,
+    /// which receives the frames of the interrupts and of the calls.
+    kernel_rsp: u64 = 0,
     /// The state of the task.
     state: State = .ready,
     /// The number of times the task was scheduled.
@@ -99,7 +105,11 @@ pub const Scheduler = struct {
 
     /// Prepares the scheduler and captures the context of the task that is
     /// running, which becomes the first task.
-    pub fn init(self: *Scheduler) void {
+    ///
+    /// `kernel_stack_top` is the top of the stack that the boot left. The
+    /// handlers of the calls and of the interrupts of the first task run on
+    /// it, and the segment of task state points at it.
+    pub fn init(self: *Scheduler, kernel_stack_top: u64) void {
         self.tasks = @splat(null);
         self.count = 0;
         self.current = null;
@@ -111,8 +121,13 @@ pub const Scheduler = struct {
 
         const task = self.allocate() orelse return;
         voryn_capture_context(&task.context);
+        // The first task runs on the stack of the kernel that the boot left,
+        // and the handlers of the calls run on the same stack.
+        task.kernel_rsp = kernel_stack_top;
         task.state = .running;
         self.current = task;
+        segment.tss.rsp0 = task.kernel_rsp;
+        voryn_kernel_stack_pointer = task.kernel_rsp;
     }
 
     /// Creates a task that starts at `entry` with the given stack.
@@ -138,6 +153,7 @@ pub const Scheduler = struct {
             .ss = kernel_data_selector,
         };
         task.stack = stack;
+        task.kernel_rsp = aligned;
         task.state = .ready;
 
         return task;
@@ -153,6 +169,7 @@ pub const Scheduler = struct {
         entry: u64,
         user_stack_address: u64,
         user_stack_length: u64,
+        kernel_stack: []u8,
     ) ?*Task {
         if (user_stack_length < 1024) return null;
 
@@ -168,6 +185,10 @@ pub const Scheduler = struct {
             .ss = user_data_selector,
         };
         task.stack = @as([*]u8, @ptrFromInt(user_stack_address))[0..@intCast(user_stack_length)];
+        // The handlers of the task run on the stack of the kernel that the
+        // kernel gave it, and not on the stack of the user.
+        const kernel_top = (@intFromPtr(kernel_stack.ptr) + kernel_stack.len) & ~@as(u64, 0xF);
+        task.kernel_rsp = kernel_top;
         task.state = .ready;
 
         return task;
@@ -193,8 +214,9 @@ pub const Scheduler = struct {
         // whenever the privilege level changes, in both directions. The
         // stack of the task that is going to run is therefore the one that
         // the segment of task state points at, which is the stack of the
-        // user mode for a task that runs there.
-        segment.tss.rsp0 = next.context.rsp;
+        // kernel of the task, and not the stack of the user.
+        segment.tss.rsp0 = next.kernel_rsp;
+        voryn_kernel_stack_pointer = next.kernel_rsp;
 
         voryn_current_context = &current.context;
         voryn_next_context = &next.context;
@@ -285,6 +307,9 @@ pub extern var voryn_switch_cycles: u64;
 
 /// The smallest cost of a switch, in cycles.
 pub extern var voryn_switch_minimum: u64;
+
+/// The stack of the kernel of the task that is running.
+pub extern var voryn_kernel_stack_pointer: u64;
 
 /// Captures the context of the task that is running.
 extern fn voryn_capture_context(task_context: *Context) callconv(.c) void;

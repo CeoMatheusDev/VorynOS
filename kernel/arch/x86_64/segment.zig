@@ -23,34 +23,44 @@
 const std = @import("std");
 const voryn = @import("voryn_shared");
 
+const testing = std.testing;
+
 /// Builds a segment selector.
 ///
 /// The encoding of a selector is not a plain index:
 ///
 /// ```text
-/// bits 0-12  offset of the descriptor in the table, in bytes
-/// bit  3     table indicator, 0 for the global table and 1 for the local one
-/// bits 4-5   requested privilege level
+/// bits 0-1   requested privilege level
+/// bit  2     table indicator, 0 for the global table and 1 for the local one
+/// bits 3-15  offset of the descriptor in the table, in bytes
 /// ```
 ///
-/// The table indicator overlaps the offset field, therefore the selector is
-/// assembled and not described by a packed structure.
+/// The offset field holds the address of the descriptor and not its index,
+/// therefore the selector of the descriptor at the offset 24 is the value
+/// 24, and not the value 3. The table indicator and the privilege level
+/// occupy the two lowest fields, and not the fields above the offset.
+///
+/// The selector is assembled and not described by a packed structure,
+/// because the fields of the architecture are not contiguous in the way a
+/// packed structure would require.
 pub fn makeSelector(byte_offset: u13, table_indicator: u1, rpl: u2) u16 {
-    return @as(u16, byte_offset) | (@as(u16, table_indicator) << 3) | (@as(u16, rpl) << 4);
+    return @as(u16, byte_offset) |
+        (@as(u16, table_indicator) << 2) |
+        (@as(u16, rpl) & 0x3);
 }
 
 /// The selectors used by the kernel.
 pub const selectors = struct {
     /// Ring 0 code segment, at offset 8 of the table.
-    const kernel_code: u16 = makeSelector(8, 0, 0);
+    pub const kernel_code: u16 = makeSelector(8, 0, 0);
     /// Ring 0 data segment, at offset 16 of the table.
-    const kernel_data: u16 = makeSelector(16, 0, 0);
+    pub const kernel_data: u16 = makeSelector(16, 0, 0);
     /// Ring 3 code segment, at offset 24 of the table.
-    const user_code: u16 = makeSelector(24, 0, 3);
+    pub const user_code: u16 = makeSelector(24, 0, 3);
     /// Ring 3 data segment, at offset 32 of the table.
-    const user_data: u16 = makeSelector(32, 0, 3);
+    pub const user_data: u16 = makeSelector(32, 0, 3);
     /// Task state segment, at offset 40 of the table.
-    const task: u16 = makeSelector(40, 0, 0);
+    pub const task: u16 = makeSelector(40, 0, 0);
 };
 
 /// A GDT entry, eight bytes wide.
@@ -71,21 +81,45 @@ const GdtPointer = packed struct {
 
 /// The 64 bit task state segment.
 ///
-/// The layout is the one of the architecture: the stacks of the privilege
-/// levels, the seven interrupt stack table entries and the offset of the I/O
-/// permission bitmap. In long mode the offset of the bitmap is a 32 bit
-/// field at the end of the structure, the 16 bit field of the 32 bit layout
-/// is reserved.
-pub const TaskStateSegment = extern struct {
+/// The layout is the one of the architecture in the long mode, and it is not
+/// the layout of the protected mode: the structure of the long mode has no
+/// field for the selector of the stack segment, because the processor does
+/// not use it there. The offsets are therefore:
+///
+/// ```text
+/// 0x00  4   reserved
+/// 0x04  8   RSP0, the stack of the interrupts that arrive from ring 3
+/// 0x0C  8   RSP1, the stack of the interrupts that arrive from ring 1
+/// 0x14  8   RSP2, the stack of the interrupts that arrive from ring 2
+/// 0x1C  8   reserved
+/// 0x24  8   IST1, the stack of the double fault
+/// 0x2C  8   IST2
+/// 0x34  8   IST3
+/// 0x3C  8   IST4
+/// 0x44  8   IST5
+/// 0x4C  8   IST6
+/// 0x54  8   IST7
+/// 0x5C  8   reserved
+/// 0x64  4   reserved
+/// 0x66  2   offset of the I/O permission bitmap
+/// ```
+///
+/// The structure has 104 bytes and the limit of the segment is its last
+/// byte, 103.
+///
+/// The structure is packed because the fields of the long mode are not
+/// aligned with the natural alignment of their type: the stack of ring 3 is
+/// at the offset 4 and not at the offset 8, and the compiler would insert
+/// four bytes of padding between the first word and the first stack.
+pub const TaskStateSegment = packed struct {
     reserved0: u32 = 0,
-    reserved1: u32 = 0,
     /// Stack used when an interrupt arrives from ring 3.
     rsp0: u64 = 0,
     /// Stack used when an interrupt arrives from ring 1.
     rsp1: u64 = 0,
     /// Stack used when an interrupt arrives from ring 2.
     rsp2: u64 = 0,
-    reserved2: u64 = 0,
+    reserved1: u64 = 0,
     /// Stack used by the double fault handler.
     ist1: u64 = 0,
     ist2: u64 = 0,
@@ -94,18 +128,34 @@ pub const TaskStateSegment = extern struct {
     ist5: u64 = 0,
     ist6: u64 = 0,
     ist7: u64 = 0,
-    reserved3: u64 = 0,
+    reserved2: u32 = 0,
+    reserved3: u32 = 0,
     reserved4: u16 = 0,
-    /// Offset of the I/O permission bitmap in the 32 bit layout.
-    iomap_base_16: u16 = 0,
     /// Offset of the I/O permission bitmap in the 64 bit layout. The value
     /// marks the absence of the bitmap, the kernel does not use the
     /// privileged instructions that would need it.
-    iomap_base: u32 = 0xFFFF,
+    iomap_base: u16 = 0xFFFF,
 };
 
-/// Size of the task state segment structure.
-pub const tss_size = @sizeOf(TaskStateSegment);
+// The offsets of the structure are part of the contract with the processor:
+// the check below makes sure that the layout does not drift.
+comptime {
+    if (@offsetOf(TaskStateSegment, "rsp0") != 0x04) @compileError("the stack of ring 3 is not at the offset 4");
+    if (@offsetOf(TaskStateSegment, "rsp1") != 0x0C) @compileError("the stack of ring 1 is not at the offset 12");
+    if (@offsetOf(TaskStateSegment, "rsp2") != 0x14) @compileError("the stack of ring 2 is not at the offset 20");
+    if (@offsetOf(TaskStateSegment, "ist1") != 0x24) @compileError("the stack of the double fault is not at the offset 36");
+    if (@offsetOf(TaskStateSegment, "ist7") != 0x54) @compileError("the last stack of the table is not at the offset 84");
+    if (@offsetOf(TaskStateSegment, "iomap_base") != 0x66) @compileError("the map of the ports is not at the offset 102");
+    if (@offsetOf(TaskStateSegment, "iomap_base") + 2 != tss_size) @compileError("the task state segment does not have the size of the architecture");
+}
+
+/// The size of the structure of the long mode.
+///
+/// The compiler adds eight bytes of padding at the end of the structure,
+/// because the alignment of the structure is sixteen bytes. The processor
+/// only reads the first 104 bytes, and the limit of the segment is the
+/// offset of the last one.
+pub const tss_size = 104;
 
 /// Number of entries of the table, the task state segment counts as two.
 const entry_count = 7;
@@ -174,7 +224,8 @@ pub fn install(kernel_stack_top: u64) void {
     tss.rsp0 = kernel_stack_top;
     tss.ist1 = @intFromPtr(&double_fault_stack) + double_fault_stack.len;
 
-    const task = taskSegment(@intFromPtr(&tss), @intCast(tss_size));
+    // The limit of the segment is the offset of its last byte.
+    const task = taskSegment(@intFromPtr(&tss), @intCast(tss_size - 1));
     table[5] = task[0];
     table[6] = task[1];
 
@@ -229,3 +280,50 @@ extern fn voryn_load_gdt(pointer: *const align(8) GdtPointer) callconv(.c) void;
 
 /// Stores the global descriptor table into the given structure.
 extern fn voryn_store_gdt(pointer: *align(8) GdtPointer) callconv(.c) void;
+
+test "the selector carries the privilege level in the two lowest fields" {
+    // The descriptor of the third level of privilege is at the offset 24 of
+    // the table, and the selector of the third level has the value 3 in the
+    // field of the privilege level.
+    const selector = makeSelector(24, 0, 3);
+
+    try testing.expectEqual(@as(u16, 0x1b), selector);
+    try testing.expectEqual(@as(u16, 3), selector & 0x3);
+    try testing.expectEqual(@as(u16, 0), (selector >> 2) & 0x1);
+    try testing.expectEqual(@as(u16, 3), selector >> 3);
+}
+
+test "the selector of the local table is marked" {
+    const selector = makeSelector(24, 1, 3);
+
+    try testing.expectEqual(@as(u16, 1), (selector >> 2) & 0x1);
+    try testing.expectEqual(@as(u16, 3), selector & 0x3);
+}
+
+test "the selectors of the table are the expected ones" {
+    // The table has the null descriptor, the code and the data of the two
+    // levels of privilege, and the task state segment.
+    try testing.expectEqual(@as(u16, 0x08), selectors.kernel_code);
+    try testing.expectEqual(@as(u16, 0x10), selectors.kernel_data);
+    try testing.expectEqual(@as(u16, 0x1b), selectors.user_code);
+    try testing.expectEqual(@as(u16, 0x23), selectors.user_data);
+    try testing.expectEqual(@as(u16, 0x28), selectors.task);
+}
+
+test "the task state segment has the layout of the long mode" {
+    // The layout of the long mode is not the layout of the protected mode:
+    // the structure has no field for the selector of the stack segment, and
+    // the stack of ring 3 is therefore at the offset 4.
+    try testing.expectEqual(@as(usize, 0x04), @offsetOf(TaskStateSegment, "rsp0"));
+    try testing.expectEqual(@as(usize, 0x0C), @offsetOf(TaskStateSegment, "rsp1"));
+    try testing.expectEqual(@as(usize, 0x14), @offsetOf(TaskStateSegment, "rsp2"));
+    try testing.expectEqual(@as(usize, 0x24), @offsetOf(TaskStateSegment, "ist1"));
+    try testing.expectEqual(@as(usize, 0x54), @offsetOf(TaskStateSegment, "ist7"));
+    try testing.expectEqual(@as(usize, 0x66), @offsetOf(TaskStateSegment, "iomap_base"));
+
+    // The limit of the segment is the offset of its last byte, e o
+    // processador exige que o limite seja pelo menos 103, que é o tamanho
+    // da estrutura menos um.
+    try testing.expectEqual(@as(usize, 104), tss_size);
+    try testing.expect(tss_size - 1 >= 103);
+}
