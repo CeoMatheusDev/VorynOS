@@ -133,6 +133,9 @@ O núcleo possui uma infraestrutura inicial funcional para gerenciamento do proc
 - Estrutura de tarefa preparada para o terceiro nível de privilégio.
 - Mapeamento de páginas de usuário nas tabelas de página próprias.
 - Chamada de sistema pela instrução `syscall`, com o tratador em Zig.
+- Contrato da chamada de sistema com quatro chamadas, e conferência das
+  faixas do usuário nas tabelas de página antes de o núcleo tocar a memória
+  do usuário.
 - Pilha do núcleo por tarefa, e o tratador da chamada nunca roda sobre a
   pilha do usuário.
 - Medição do custo da troca de contexto pelo contador de tempo.

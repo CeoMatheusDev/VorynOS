@@ -105,6 +105,37 @@ const user_program_value: u64 = 0x5A5A_1234;
 /// that the answer came back.
 const user_result_address: u64 = user_data_address + 8;
 
+/// The address of the third word of the page of data of the user mode.
+///
+/// The program of the user mode writes there the result of the call that
+/// writes in the console.
+const user_write_address: u64 = user_data_address + 16;
+
+/// The address of the fourth word of the page of data of the user mode.
+///
+/// The program of the user mode writes there the result of the call that
+/// copies a block of memory.
+const user_copy_address: u64 = user_data_address + 24;
+
+/// The address of the fifth word of the page of data of the user mode.
+///
+/// The kernel compares the content with the page of code, and the equality
+/// proves that the copy happened.
+const user_copy_content_address: u64 = user_data_address + 32;
+
+/// The address of the seventh word of the page of data of the user mode.
+///
+/// The program of the user mode writes there the answer of a call with an
+/// address that is not of the user, and the value proves that the kernel
+/// refused the call.
+const user_refused_address: u64 = user_data_address + 48;
+
+/// The number of bytes that the program of the user mode writes.
+const user_write_length: u64 = 8;
+
+/// The number of bytes that the program of the user mode copies.
+const user_copy_length: u64 = 8;
+
 /// The result that the kernel answers to the call of the probe.
 const user_result_value: u64 = syscall.ping_result;
 
@@ -568,6 +599,10 @@ fn installScheduler() void {
 fn reportUserTask() void {
     const marker: *volatile u64 = @ptrFromInt(user_data_address);
     const result: *volatile u64 = @ptrFromInt(user_result_address);
+    const written: *volatile u64 = @ptrFromInt(user_write_address);
+    const copied: *volatile u64 = @ptrFromInt(user_copy_address);
+    const content: *volatile u64 = @ptrFromInt(user_copy_content_address);
+    const code: *volatile u64 = @ptrFromInt(user_code_address);
 
     // The task of the user mode is scheduled by the timer, therefore the
     // kernel waits for it instead of assuming that it already ran.
@@ -592,6 +627,42 @@ fn reportUserTask() void {
         });
     } else {
         serial.printLine("[VNK] user: the result of the call came back, 0x{x}", .{result.*});
+    }
+
+    // The write reads a buffer of the user after checking the range in the
+    // page tables, and the answer is the number of bytes written.
+    if (written.* != user_write_length) {
+        serial.printLine("[VNK] user: the write wrote 0x{x} bytes, expected {d}", .{
+            written.*,
+            user_write_length,
+        });
+    } else {
+        serial.printLine("[VNK] user: the write of the user mode wrote {d} bytes", .{written.*});
+    }
+
+    // A call with an address that is not of the user has to be refused,
+    // and the answer is the negative value of the error.
+    const refused: *volatile u64 = @ptrFromInt(user_refused_address);
+    if (refused.* != syscall.failure(syscall.Error.invalid_address)) {
+        serial.printLine("[VNK] user: the refused call answered 0x{x}, expected 0x{x}", .{
+            refused.*,
+            syscall.failure(syscall.Error.invalid_address),
+        });
+    } else {
+        serial.printLine("[VNK] user: the kernel refused the call of an address of the kernel", .{});
+    }
+
+    // The copy moves a block of the page of code to the page of data, and
+    // the content proves that the copy happened.
+    if (copied.* != user_copy_length) {
+        serial.printLine("[VNK] user: the copy copied 0x{x} bytes, expected {d}", .{
+            copied.*,
+            user_copy_length,
+        });
+    } else if (content.* != code.*) {
+        serial.printLine("[VNK] user: the copy holds 0x{x}, expected 0x{x}", .{ content.*, code.* });
+    } else {
+        serial.printLine("[VNK] user: the copy of the user mode moved {d} bytes", .{copied.*});
     }
 }
 

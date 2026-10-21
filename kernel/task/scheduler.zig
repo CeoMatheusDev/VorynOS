@@ -62,6 +62,8 @@ pub const Task = struct {
     kernel_rsp: u64 = 0,
     /// The state of the task.
     state: State = .ready,
+    /// The code with which the task ended.
+    exit_code: u64 = 0,
     /// The number of times the task was scheduled.
     schedules: u64 = 0,
 };
@@ -222,6 +224,17 @@ pub const Scheduler = struct {
         voryn_next_context = &next.context;
 
         return true;
+    }
+
+    /// Ends the task that is running.
+    ///
+    /// The task is marked as terminated, and the scheduler does not choose
+    /// it again. The processor keeps running the task until the next
+    /// interruption, and the task does not have to know that it ended.
+    pub fn terminateCurrent(self: *Scheduler, code: u64) void {
+        const current = self.current orelse return;
+        current.state = .terminated;
+        current.exit_code = code;
     }
 
     /// The state of the scheduler, with the measurements of the switches.

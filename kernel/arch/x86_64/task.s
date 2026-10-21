@@ -150,13 +150,28 @@ voryn_capture_context:
  * A program that runs in the third level of privilege.
  *
  * The program writes a known value into the page of data that the kernel
- * prepared for it, calls the system call of the kernel, writes the result
- * of the call in the same page and waits for the next interrupt.
+ * prepared for it, calls the four calls of the kernel, writes the results
+ * in the same page and ends the task.
  *
- * The two values prove two different things. The first one proves that the
- * task runs in the third level of privilege with access to its own pages,
- * and the second one proves that the call reached the handler of the
- * kernel and that the answer came back.
+ * The values prove four different things:
+ *
+ *   - the first one proves that the task runs in the third level of
+ *     privilege with access to its own pages;
+ *   - the result of the probe proves that the call reached the handler of
+ *     the kernel and that the answer came back;
+ *   - the result of the write proves that the kernel read a buffer of the
+ *     user after checking the range in the page tables;
+ *   - the result of the copy proves that the kernel copied a block of
+ *     memory of the user.
+ *
+ * The page of data of the user:
+ *
+ *   0x401000  the marker
+ *   0x401008  the result of the probe
+ *   0x401010  the result of the write
+ *   0x401018  the result of the copy
+ *   0x401020  the code copied from the page of code
+ *   0x401028  the message that the program writes in the console
  */
 .global voryn_user_program
 .type voryn_user_program, @function
@@ -167,8 +182,13 @@ voryn_user_program:
     movabsq $0x401000, %rdi
     movq %rax, (%rdi)
 
-    /* The call: the number of the call is in the first register, and the
-     * first argument is in the second. */
+    /* The message that the program writes in the console. */
+    movabsq $0x401028, %rdi
+    movabsq $0x0A534F6E79726F56, %rax   /* "VorynOS" and a new line */
+    movq %rax, (%rdi)
+
+    /* The call of the probe: the number of the call is in the first
+     * register, and the first argument is in the second. */
     movq $1, %rax             /* the number of the system call */
     movq $0xF00D, %rdi        /* the argument of the system call */
     syscall
@@ -178,8 +198,48 @@ voryn_user_program:
     movabsq $0x401008, %rdi
     movq %rax, (%rdi)
 
-    /* The program waits for the next interrupt. The instruction that halts
-     * the processor and the pause instruction are privileged, the loop only
+    /* The call that writes in the console: the buffer is in the first
+     * register, the length in the second, and the file in the third. */
+    movabsq $0x401028, %rdi   /* the buffer */
+    movq $8, %rsi             /* the length */
+    movq $1, %rdx             /* the console */
+    movq $2, %rax             /* the number of the system call */
+    syscall
+    movabsq $0x401010, %rdi
+    movq %rax, (%rdi)
+
+    /* The call that copies a block: the destination in the first
+     * register, the origin in the second, and the length in the third.
+     * The origin is the page of code, and the destination is the page of
+     * data. */
+    movabsq $0x401020, %rdi   /* the destination */
+    movabsq $0x400000, %rsi   /* the origin */
+    movq $8, %rdx             /* the length */
+    movq $3, %rax             /* the number of the system call */
+    syscall
+    movabsq $0x401018, %rdi
+    movq %rax, (%rdi)
+
+    /* A call with an address that is not of the user: the kernel has to
+     * refuse the call, and the answer is the negative value of the
+     * error. */
+    movabsq $0x1000, %rdi    /* an address of the kernel */
+    movq $8, %rsi             /* the length */
+    movq $1, %rdx             /* the console */
+    movq $2, %rax             /* the number of the system call */
+    syscall
+    movabsq $0x401030, %rdi
+    movq %rax, (%rdi)
+
+    /* The call that ends the task. The kernel marks the task as
+     * terminated, and the processor only leaves it in the next
+     * interruption. */
+    movq $0, %rdi             /* the code of exit */
+    movq $4, %rax             /* the number of the system call */
+    syscall
+
+    /* The task should not come back. The instruction that halts the
+     * processor and the pause instruction are privileged, the loop only
      * branches to itself. */
 1:  jmp 1b
 .size voryn_user_program, . - voryn_user_program

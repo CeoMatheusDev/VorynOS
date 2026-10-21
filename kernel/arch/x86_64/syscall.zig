@@ -57,6 +57,7 @@ const voryn = @import("voryn_shared");
 const serial = voryn.serial;
 
 const cpu = @import("cpu.zig");
+const paging = @import("paging.zig");
 const segment = @import("segment.zig");
 
 /// The register of the extended features of the processor.
@@ -126,12 +127,45 @@ pub const SyscallFrame = extern struct {
 /// they are the ones that the program of the user mode uses.
 pub const Number = struct {
     /// The call that answers with a known value, used to prove that the
-    /// path of the call works from the user mode.
+    /// path of the call works from the user mode and from the kernel.
     pub const ping: u64 = 1;
+    /// The call that writes a buffer of the user mode in the console.
+    pub const write: u64 = 2;
+    /// The call that copies a block of memory of the user mode.
+    pub const memcpy: u64 = 3;
+    /// The call that ends the task of the user mode.
+    pub const exit: u64 = 4;
 };
 
 /// The result that the kernel answers to the call of the probe.
 pub const ping_result: u64 = 0x42;
+
+/// The errors of the calls.
+///
+/// A call that fails answers with the negative value of the error, and the
+/// result of a call that succeeds is never negative.
+pub const Error = struct {
+    /// The number of the call does not exist.
+    pub const unknown_call: u64 = 1;
+    /// An address of the call does not belong to the user mode.
+    pub const invalid_address: u64 = 2;
+    /// The length of the call is zero or larger than the limit.
+    pub const invalid_length: u64 = 3;
+    /// The call is not allowed for the privilege level of the caller.
+    pub const not_allowed: u64 = 4;
+};
+
+/// The largest block that a call copies in one go.
+///
+/// The limit keeps the kernel from spending an unbounded time inside a
+/// call, and it is the same for the copy and for the write.
+pub const max_block_length: u64 = 64 * 1024;
+
+/// The files that the call of write knows.
+pub const Descriptor = struct {
+    /// The console of the kernel.
+    pub const console: u64 = 1;
+};
 
 /// The privilege level of the caller.
 ///
@@ -220,26 +254,100 @@ pub fn verify() bool {
 /// `frame` points at the state of the caller, and `privilege` is the level
 /// of privilege of the caller, which tells the handler whether the call
 /// comes from the user mode or from the kernel.
+///
+/// The result of the call is returned in the first register, e o valor
+/// negativo de um erro indica que a chamada falhou.
 pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callconv(.c) void {
     const number = frame.rax;
-    const argument = frame.rdi;
 
     const caller = switch (privilege) {
         Privilege.user => "user",
         else => "kernel",
     };
 
-    serial.printLine("[VNK] syscall {d} argument 0x{x} from {s}", .{
-        number,
-        argument,
-        caller,
-    });
-    serial.printLine("[VNK] syscall {d} flags 0x{x} return 0x{x}", .{
-        number,
-        frame.r11,
-        frame.rcx,
-    });
+    switch (number) {
+        Number.ping => {
+            serial.printLine("[VNK] syscall {d} from {s}", .{ number, caller });
+            frame.rax = ping_result;
+        },
+        Number.write => {
+            frame.rax = write(frame.rdi, frame.rsi, frame.rdx, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} wrote 0x{x} bytes", .{
+                number,
+                caller,
+                frame.rax,
+            });
+        },
+        Number.memcpy => {
+            frame.rax = memcpy(frame.rdi, frame.rsi, frame.rdx, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} copied 0x{x} bytes", .{
+                number,
+                caller,
+                frame.rax,
+            });
+        },
+        Number.exit => {
+            serial.printLine("[VNK] syscall {d} from {s}", .{ number, caller });
+            exitTask(frame.rdi, privilege);
+            frame.rax = 0;
+        },
+        else => {
+            serial.printLine("[VNK] syscall {d} from {s} is unknown", .{ number, caller });
+            frame.rax = failure(Error.unknown_call);
+        },
+    }
+}
 
-    // The result of the call is returned in the first register.
-    frame.rax = ping_result;
+/// The value of a call that failed.
+///
+/// The value is a negative number, e o seu valor absoluto é o código do
+/// erro.
+pub fn failure(code: u64) u64 {
+    return -%code;
+}
+
+/// Writes a buffer of the user mode in the console.
+///
+/// The buffer belongs to the user, and the kernel may not trust the
+/// address: the range is checked in the page tables before the read.
+fn write(buffer: u64, length: u64, descriptor: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+    if (descriptor != Descriptor.console) return failure(Error.not_allowed);
+    if (length == 0 or length > max_block_length) return failure(Error.invalid_length);
+    if (!paging.isUserRange(buffer, length, false)) return failure(Error.invalid_address);
+
+    const bytes: [*]const u8 = @ptrFromInt(buffer);
+    serial.write(bytes[0..@intCast(length)]);
+
+    return length;
+}
+
+/// Copies a block of memory of the user mode.
+///
+/// Both ranges are checked in the page tables before the copy, and the
+/// copy is made by the kernel, so that the user does not need a routine
+/// of its own for it.
+fn memcpy(destination: u64, source: u64, length: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+    if (length == 0 or length > max_block_length) return failure(Error.invalid_length);
+    if (!paging.isUserRange(source, length, false)) return failure(Error.invalid_address);
+    if (!paging.isUserRange(destination, length, true)) return failure(Error.invalid_address);
+
+    const from: [*]const u8 = @ptrFromInt(source);
+    const to: [*]u8 = @ptrFromInt(destination);
+    @memcpy(to[0..@intCast(length)], from[0..@intCast(length)]);
+
+    return length;
+}
+
+/// Ends the task of the user mode.
+///
+/// The task is marked as terminated, and the scheduler does not choose it
+/// again. The processor keeps running the task until the next
+/// interruption, and the task does not have to know that it ended.
+fn exitTask(code: u64, privilege: u64) void {
+    if (privilege != Privilege.user) return;
+
+    const scheduler = @import("../../task/scheduler.zig");
+    scheduler.scheduler.terminateCurrent(code);
 }

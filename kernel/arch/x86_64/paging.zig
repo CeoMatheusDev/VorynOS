@@ -259,6 +259,66 @@ pub fn mappedEntries() u32 {
     return count;
 }
 
+/// Checks whether a range of virtual addresses belongs to the user mode.
+///
+/// The function walks the hierarchy of the tables and verifies that every
+/// page of the range is present, that the page carries the bit of user, and
+/// that the page is writable when the range has to be written. A range of
+/// zero length is never valid.
+///
+/// The kernel uses the function before it touches a buffer that the user
+/// mode handed over: a user program can point to any address, and the
+/// kernel may not trust it.
+pub fn isUserRange(virtual: u64, length: u64, writable: bool) bool {
+    if (length == 0) return false;
+
+    // The end of the range is exclusive, and the addition is checked
+    // because an overflow would make the range look valid.
+    const end = std.math.add(u64, virtual, length) catch return false;
+    if (end < virtual) return false;
+
+    var address = virtual;
+    while (address < end) {
+        if (!isUserPage(address, writable)) return false;
+
+        // The next page, without overflow at the end of the space.
+        const next = std.math.add(u64, address, page_size) catch return false;
+        if (next <= address) return false;
+        address = next;
+    }
+
+    return true;
+}
+
+/// Checks whether a virtual address is in a page of the user mode.
+fn isUserPage(virtual: u64, writable: bool) bool {
+    const level4_index = (virtual >> 39) & 511;
+    const level3_index = (virtual >> 30) & 511;
+    const level2_index = (virtual >> 21) & 511;
+    const level1_index = (virtual >> 12) & 511;
+
+    const entry4 = level4.entries[level4_index];
+    if (entry4 & Flags.present == 0) return false;
+
+    const entry3 = tableOf(entry4).entries[level3_index];
+    if (entry3 & Flags.present == 0) return false;
+
+    const entry2 = tableOf(entry3).entries[level2_index];
+    if (entry2 & Flags.present == 0) return false;
+    if (entry2 & Flags.large != 0) {
+        // A large page of the user mode covers the whole range, and the
+        // kernel never maps one for the user.
+        return entry2 & Flags.user != 0 and (!writable or entry2 & Flags.writable != 0);
+    }
+
+    const entry1 = tableOf(entry2).entries[level1_index];
+    if (entry1 & Flags.present == 0) return false;
+    if (entry1 & Flags.user == 0) return false;
+    if (writable and entry1 & Flags.writable == 0) return false;
+
+    return true;
+}
+
 /// Reserves a level 2 table.
 fn allocateLevel2() ?*PageTable {
     if (level2_used >= level2_count) return null;

@@ -97,6 +97,8 @@ capacidades.
 | Preparação do coprocessor | CONCLUÍDO | o firmware o deixa desabilitado |
 | Tabelas de página com modo de usuário | CONCLUÍDO | o bit de usuário existe em todos os níveis |
 | Chamada de sistema | CONCLUÍDO | a instrução `syscall`, com o tratador em Zig |
+| Contrato da chamada de sistema | CONCLUÍDO | quatro chamadas, com o contrato em `docs/specs/syscall-abi.md` |
+| Conferência das faixas do usuário | CONCLUÍDO | uma chamada com um endereço do núcleo é recusada |
 | Modo de usuário | CONCLUÍDO | a tarefa escreve na sua página e a resposta da chamada volta |
 | Segmento de tarefa do modo de 64 bits | CONCLUÍDO | o layout é verificado em tempo de compilação |
 | Pilha do núcleo por tarefa | CONCLUÍDO | o tratador nunca roda sobre a pilha do usuário |
@@ -127,7 +129,11 @@ Critérios de aceite do restante do marco:
 
 1. Uma tarefa em modo de usuário executa, o que prova a tabela de segmentos,
    a pilha de usuário e a comutação de privilégio. **Cumprido.**
-2. A primeira chamada de sistema copia um bloco de memória entre processos.
+2. A primeira chamada de sistema copia um bloco de memória do usuário.
+   **Cumprido:** a chamada `memcpy` copia um bloco entre duas páginas do
+   usuário, depois de conferir as duas faixas nas tabelas de página, e uma
+   chamada com um endereço do núcleo é recusada. O que ainda falta é a
+   cópia **entre processos**, porque os processos ainda não existem.
 3. O canal de mensagens do VNX entrega uma mensagem entre dois processos e
    mede a latência.
 
