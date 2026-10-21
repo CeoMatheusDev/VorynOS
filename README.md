@@ -63,7 +63,7 @@ O desenvolvimento está organizado em marcos incrementais, com critérios técni
 | F0 | Fundação, toolchain, build e documentação | ✅ Concluído |
 | F1 | Bootloader UEFI e inicialização do kernel | ✅ Concluído |
 | F2 | Estruturas do processador, interrupções e memória | 🟢 Testado localmente |
-| F3 | Threads, scheduler, processos, syscalls e IPC | 📋 Proposto |
+| F3 | Threads, scheduler, processos, syscalls e IPC | 🟡 Em desenvolvimento |
 | F4 | Armazenamento e sistemas de arquivos | 📋 Proposto |
 | F5 | Runtime, SDK e aplicações nativas | 📋 Proposto |
 | F6 | Subsistema gráfico e ambiente desktop | 📋 Proposto |
@@ -122,6 +122,18 @@ O núcleo possui uma infraestrutura inicial funcional para gerenciamento do proc
 - Configuração inicial das interrupções de hardware.
 - Remapeamento dos controladores 8259.
 - Programação do temporizador 8254 a 100 Hz.
+- Preparação do coprocessor, que o firmware deixa desabilitado.
+
+**Execução de tarefas**
+
+- Escalonador preemptivo acionado pelo temporizador.
+- Contexto de tarefa com o quadro completo do processador.
+- Política circular, que não produz fome entre tarefas.
+- Tarefas do kernel em pilhas próprias.
+- Estrutura de tarefa preparada para o terceiro nível de privilégio.
+- Mapeamento de páginas de usuário nas tabelas de página próprias.
+- Porta de chamada de sistema com terceiro nível de privilégio.
+- Medição do custo da troca de contexto pelo contador de tempo.
 
 **Gerenciamento de memória**
 
@@ -184,9 +196,9 @@ As seguintes limitações são conhecidas e documentadas:
 | Memória virtual | Mapeamentos iniciais do kernel e framebuffer |
 | TSS | Estrutura carregada, mas uso das pilhas IST ainda incompleto |
 | Exceções | Tratamento fatal, sem recuperação |
-| Execução | Sem scheduler ou processos publicados |
+| Execução | Escalonador publicado, sem processos publicados |
 | Proteção | Sem execução em modo de usuário |
-| Syscalls | Não implementadas |
+| Syscalls | Porta e tratador implementados, a entrega a partir do usuário ainda falha |
 | IPC | Não implementado |
 | Capacidades | Não implementadas |
 | Armazenamento | Sem sistema de arquivos operacional no kernel |
@@ -194,9 +206,9 @@ As seguintes limitações são conhecidas e documentadas:
 | Interface gráfica | Não implementada |
 | Hardware físico | Sem validação documentada |
 
-A existência de segmentos de privilégio de usuário na GDT não significa que o sistema já suporte processos em modo de usuário.
+A existência de segmentos de privilégio de usuário na GDT, e a porta de chamada de sistema com terceiro nível de privilégio, não significam que o sistema já suporte processos em modo de usuário: uma exceção originada em uma tarefa de usuário ainda não chega ao tratador do núcleo, e por isso a tarefa de usuário não é agendada.
 
-Da mesma forma, o temporizador funcional ainda não representa um escalonador preemptivo.
+O escalonador preemptivo existe e mede o custo da troca de contexto, mas ainda não há processos, nem tarefas de usuário em funcionamento.
 
 Esses recursos pertencem aos próximos incrementos de desenvolvimento.
 
@@ -521,13 +533,12 @@ Esse marco introduzirá progressivamente os mecanismos necessários para executa
 
 Os principais objetivos são:
 
-1. Implementar threads e estruturas de contexto.
-2. Desenvolver um escalonador preemptivo.
-3. Medir o custo de troca de contexto.
-4. Introduzir execução em modo de usuário.
-5. Implementar a infraestrutura inicial de chamadas de sistema.
-6. Desenvolver comunicação entre processos.
-7. Introduzir mecanismos de controle por capacidades.
+1. Corrigir a entrega de exceções originadas em tarefas de usuário.
+2. Habilitar a execução em modo de usuário e a primeira chamada de sistema.
+3. Implementar processos com espaço de endereçamento próprio.
+4. Desenvolver comunicação entre processos.
+5. Introduzir mecanismos de controle por capacidades.
+6. Medir o custo de troca de contexto sob carga representativa.
 
 A implementação desses recursos deverá respeitar os contratos arquiteturais e os critérios de validação definidos pelo projeto.
 
