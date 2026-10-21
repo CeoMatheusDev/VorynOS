@@ -38,7 +38,7 @@ const physical = @import("memory/physical.zig");
 const scheduler = @import("task/scheduler.zig");
 
 /// Version of the kernel, reported on the console.
-const kernel_version = "0.1.0-dev.2";
+const kernel_version = "0.1.0-dev.3";
 
 /// The handler of a panic of the kernel.
 ///

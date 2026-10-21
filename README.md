@@ -7,7 +7,7 @@
 **Um sistema operacional independente, desenvolvido do zero para oferecer controle direto sobre o hardware, eficiência e liberdade tecnológica.**
 
 [![Zig](https://img.shields.io/badge/Zig-0.17.0-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
-[![Release](https://img.shields.io/badge/release-v0.1.0--dev.2-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases)
+[![Release](https://img.shields.io/badge/release-v0.1.0--dev.3-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases)
 [![License](https://img.shields.io/badge/license-GPL--3.0--only-22C55E)](LICENSE)
 [![Architecture](https://img.shields.io/badge/architecture-x86__64-64748B)](#arquitetura)
 [![Status](https://img.shields.io/badge/status-em%20desenvolvimento-EAB308)](#estado-do-projeto)
@@ -47,7 +47,7 @@ O projeto encontra-se em desenvolvimento inicial e **ainda não constitui um sis
 
 ## Estado do projeto
 
-> **Versão de desenvolvimento:** `v0.1.0-dev.2`  
+> **Versão de desenvolvimento:** `v0.1.0-dev.3`  
 > **Arquitetura inicial:** `x86_64`  
 > **Linguagem principal:** Zig 0.17.0  
 > **Firmware de inicialização:** UEFI  
