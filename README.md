@@ -1,6 +1,11 @@
+<div align="center">
 # VorynOS
 
 > **Liberdade • Performance • Seu Controle**
+
+[![Zig](https://img.shields.io/badge/Zig-0.17.0-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
+[![Release](https://img.shields.io/badge/release-v1.44.0-2563EB)](https://github.com/CeoMatheusDev/ZyntraUI/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-22C55E)](LICENSE)
 
 Sistema operacional independente, escrito do zero em Zig 0.17.0, com C23 e
 Assembly quando a tarefa exigir controle direto da máquina.
@@ -9,8 +14,11 @@ O VorynOS não é uma distribuição Linux, um fork do Windows, uma modificaçã
 de BSD, nem uma interface gráfica sobre outro kernel. O kernel, o runtime, as
 APIs e os mecanismos centrais são próprios e implementados neste repositório.
 
+[Getting started](#getting-started) · [Features](#why-zyntraui) · [Architecture](#architecture) · [Examples](#examples-and-validation)
+
 ![Logo do VorynOS](Logos_VorynOS.png)
 
+</div>
 ---
 
 ## Estado atual
