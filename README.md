@@ -19,7 +19,7 @@ APIs e os mecanismos centrais são próprios e implementados neste repositório.
 |-------|---------|--------|
 | F0 | Fundação: auditoria de ambiente, toolchain, estrutura, build, documentação, ADRs | **CONCLUÍDO** |
 | F1 | Boot: VNB em UEFI, carga do kernel, saída serial, framebuffer, handoff controlado | **TESTADO LOCALMENTE** |
-| F2 | Kernel: GDT, IDT, exceções, memória física e virtual, heap, timer | PROPOSTO |
+| F2 | Kernel: GDT, TSS, IDT, exceções, interrupções, memória física e virtual, heap, timer | **TESTADO LOCALMENTE** |
 | F3 | Execução: threads, scheduler, processos, user mode, syscalls, IPC, capacidades | PROPOSTO |
 | F4–F10 | Armazenamento, ecossistema, desktop, drivers, compatibilidade, IA, produção | PROPOSTO |
 
@@ -32,8 +32,10 @@ O que existe hoje, de fato e verificado:
   relocável, monta o contrato de handoff e executa `ExitBootServices` com
   nova tentativa em caso de mapa de memória alterado.
 - **VNK (Voryn Nucleus Kernel)**: núcleo mínimo, em Zig e Assembly, que
-  valida o contrato de handoff, reporta o estado da máquina e prova que o
-  framebuffer entregue pelo firmware é gravável.
+  valida o contrato de handoff, instala as estruturas do processador (tabela
+  de segmentos, segmento de tarefa, tabela de interrupções, tabelas de
+  página), gerencia a memória física e o heap, programa o temporizador e
+  relata as exceções com o estado completo do processador.
 - **Contrato de handoff** (`shared/handoff.zig`): estrutura versionada e
   verificada nos dois lados da fronteira firmware/kernel.
 - **Ferramenta de imagem de disco** (`tools/fatimg.zig`): construtor de volume
@@ -41,10 +43,9 @@ O que existe hoje, de fato e verificado:
 - **Testes**: suíte de unidade no host (`zig build test`) e teste automatizado
   de boot no QEMU/OVMF (`zig build qemu-test`).
 
-O que **não** existe ainda: paginação própria, GDT/IDT do kernel, gerenciador
-de memória física, heap, escalonador, processos, user mode, syscalls, IPC,
-sistema de arquivos, drivers, interface gráfica. Nenhuma dessas
-funcionalidades é declarada como implementada.
+O que **não** existe ainda: escalonador, processos, modo de usuário,
+syscalls, IPC, capacidades, sistema de arquivos, drivers, interface gráfica.
+Nenhuma dessas funcionalidades é declarada como implementada.
 
 ---
 
@@ -104,11 +105,19 @@ Saída real do teste automatizado de boot (`zig build qemu-test`):
 [VNB] leaving firmware, entering kernel at 0x24b660
 [VNK] Voryn Nucleus Kernel 0.1.0-dev.1
 [VNK] handoff ok: version=1 flags=0xf
-[VNK] kernel: base=0x200000 end=0x2858c0 entry=0x24b660
+[VNK] cpu: family=15 model=21 stepping=177 cores=1 phys_bits=40 virt_bits=48
 [VNK] memory: 87 regions, 203 MiB RAM
 [VNK] framebuffer: 2048x2048 bpp=32 pitch=8192 base=0x80000000
+[VNK] segments: gdt installed and verified
+[VNK] interrupts: idt installed and verified
+[VNK] segments: task state segment loaded
+[VNK] memory: 51551 pages, 360 used, 51191 free
+[VNK] paging: cr3 0xf401000 -> 0x355000
+[VNK] heap: 256 KiB region, 0 allocations, 0 bytes used
+[VNK] timer: 100 Hz, 5 ticks
 [VNK] framebuffer: write probe succeeded
 VORYN-KERNEL-READY
+[VNK] EXCEPTION 6: invalid opcode
 ```
 
 ---

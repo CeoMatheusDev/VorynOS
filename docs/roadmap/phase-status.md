@@ -20,11 +20,11 @@ critérios de "definição de concluído" do `AGENTS.md`.
 | Estrutura mínima | CONCLUÍDO | `boot/`, `kernel/`, `shared/`, `tools/`, `scripts/`, `docs/`, `tests/` |
 | Build reproduzível | CONCLUÍDO | `build.zig` + `build.zig.zon` |
 | Documentação | CONCLUÍDO | README, AGENTS, ADRs, especificações, roadmap, estratégia de teste |
-| ADRs | CONCLUÍDO | ADR-0001, ADR-0002, ADR-0003 |
+| ADRs | CONCLUÍDO | ADR-0001 a ADR-0004 |
 | Git | CONCLUÍDO | branch `main`, commits descritivos, sem publicação |
 | Testes iniciais | CONCLUÍDO | `zig build test` (unidade) e `zig build qemu-test` (boot) |
 
-### F1 — Boot — TESTADO LOCALMENTE
+### F1 — Boot — CONCLUÍDO
 
 | Objetivo | Estado | Evidência |
 |----------|--------|-----------|
@@ -40,33 +40,67 @@ critérios de "definição de concluído" do `AGENTS.md`.
 | `ExitBootServices` correto | CONCLUÍDO | mapa final capturado antes da chamada, repetição em caso de mapa alterado |
 | Transferência de controle | CONCLUÍDO | salto para `voryn_kernel_entry` com o contrato em `RDI` |
 
-Estado do núcleo: **EM DESENVOLVIMENTO** — o núcleo executa, valida o
-contrato e prova a escrita no framebuffer. Ainda não possui GDT, IDT,
-memória própria nem escalonador.
+### F2 — Kernel — TESTADO LOCALMENTE
 
-### F2 — Kernel — PROPOSTO
+| Objetivo | Estado | Evidência |
+|----------|--------|-----------|
+| Entrada do kernel | CONCLUÍDO | `kernel/arch/x86_64/entry.s`, pilha própria, ABI documentada |
+| GDT | CONCLUÍDO | tabela própria com código e dados dos níveis 0 e 3, verificada por `sgdt` |
+| TSS | CONCLUÍDO | segmento de tarefa carregado, com pilha de interrupção para a falha dupla |
+| IDT | CONCLUÍDO | 256 portas, verificada por `sidt` |
+| Exceções | CONCLUÍDO | tratador com o vetor, o código de erro, o RIP e os registradores |
+| Interrupções de hardware | CONCLUÍDO | portas 32 a 47, controllers 8259 reprogramados |
+| Temporizador | CONCLUÍDO | 8254 no modo 3, 100 Hz, contagem verificada |
+| Memória física | CONCLUÍDO | `kernel/memory/physical.zig`, bitmap de 4 GiB, 51551 páginas |
+| Memória virtual | CONCLUÍDO | `kernel/arch/x86_64/paging.zig`, tabelas próprias, `CR3` trocado |
+| Heap do kernel | CONCLUÍDO | `kernel/memory/heap.zig`, etiquetas de limite, fusão de blocos, verificação de corrupção |
+| Isolamento | PARCIAL | só o núcleo e o framebuffer estão mapeados; o resto da memória não é acessível |
 
-Objetivos: GDT, IDT, TSS, exceções, memória física, memória virtual, heap,
-timer.
+Sequência verificada no console serial:
 
-Primeiro incremento do F2, critérios de aceite propostos:
+```text
+[VNK] segments: gdt installed and verified
+[VNK] interrupts: idt installed and verified
+[VNK] segments: task state segment loaded
+[VNK] memory: 51551 pages, 360 used, 51191 free
+[VNK] paging: cr3 0xf401000 -> 0x355000
+[VNK] heap: 256 KiB region, 0 allocations, 0 bytes used
+[VNK] timer: 100 Hz, 5 ticks
+[VNK] framebuffer: write probe succeeded
+VORYN-KERNEL-READY
+[VNK] EXCEPTION 6: invalid opcode
+```
 
-1. O kernel instala GDT e TSS próprios e continua executando.
-2. Uma exceção deliberada (#DE, divisão por zero) é tratada pelo kernel e
-   impressa no console serial, sem travar.
-3. O kernel constrói suas próprias tabelas de página, com a região do kernel
-   mapeada por identidade e o resto sem mapeamento.
-4. O gerenciador de memória física reserva as regiões do contrato e permite
-   alocar e liberar páginas.
-5. Um heap do kernel aloca e libera blocos de tamanho variável, com
-   verificação de corrompimento.
-6. O temporizador programável dispara o handler de tick a 100 Hz.
+Limitações conhecidas do marco:
 
-### F3 a F10 — PROPOSTO
+- O heap é uma região fixa de 256 KiB dentro da imagem do núcleo, porque a
+  região precisa estar mapeada depois da troca das tabelas de página.
+- O bitmap do gerenciador de memória física cobre 4 GiB do espaço físico.
+- O segmento de tarefa é carregado, mas o índice de pilha de interrupção
+  ainda não é usado pelas portas.
+- Não há modo de usuário: os segmentos de usuário existem na tabela, mas
+  nada muda de privilégio.
+- O tratador de exceções é fatal: a execução para no primeiro erro.
+
+### F3 — Execução — PROPOSTO
+
+Objetivos: threads, scheduler, processos, user mode, syscalls, IPC,
+capacidades.
+
+Primeiro incremento do F3, critérios de aceite propostos:
+
+1. O núcleo alterna entre duas tarefas com o temporizador, medindo a
+   latência de troca de contexto.
+2. Uma tarefa em modo de usuário executa, o que prova a tabela de segmentos,
+   a pilha de usuário e a comutação de privilégio.
+3. A primeira chamada de sistema copia um bloco de memória entre processos.
+4. O canal de mensagens do VNX entrega uma mensagem entre dois processos e
+   mede a latência.
+
+### F4 a F10 — PROPOSTO
 
 | Marco | Conteúdo | Estado |
 |-------|----------|--------|
-| F3 | Threads, scheduler, processos, user mode, syscalls, IPC, capacidades | PROPOSTO |
 | F4 | Drivers de bloco, VNV, VFSX inicial, persistência, recuperação | PROPOSTO |
 | F5 | VEX, VLIB, VPK, runtime, SDK, aplicações nativas | PROPOSTO |
 | F6 | Input, rasterizador, compositor, janelas, VSH | PROPOSTO |
@@ -79,8 +113,8 @@ Primeiro incremento do F2, critérios de aceite propostos:
 
 | Risco | Impacto | Tratamento |
 |-------|---------|------------|
-| Ausência de paginação própria | Alto | F2 é o próximo marco; o kernel depende hoje do firmware |
-| Exceções tratadas pela UEFI | Médio | IDT própria no F2 |
-| Nomes FAT 8.3 no volume | Baixo | VIMG no F4 |
-| Sem ACPI | Médio | RSDP no F2, CPU no F3 |
-| Ausência de medição de desempenho | Médio | Benchmarks no F10, com métricas desde o início do F3 |
+| Ausência de modo de usuário | Alto | Primeiro incremento do F3 |
+| Heap fixo na imagem do núcleo | Médio | Heap dinâmico com o VNM no F3 |
+| Exceções fatais | Médio | Tratamento por tipo no F3, com teste de recuperação |
+| Ausência de medição de desempenho | Médio | Latência de troca de contexto e de syscall no F3 |
+| Ausência de teste de hardware | Médio | Marcado como não verificado até existir máquina de referência |

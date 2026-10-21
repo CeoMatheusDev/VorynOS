@@ -135,7 +135,14 @@ require_marker "[VNB] VorynOS"
 require_marker "[VNB] kernel placed"
 require_marker "[VNK] Voryn Nucleus Kernel"
 require_marker "[VNK] handoff ok"
+require_marker "[VNK] segments: gdt installed and verified"
+require_marker "[VNK] interrupts: idt installed and verified"
+require_marker "[VNK] segments: task state segment loaded"
+require_marker "[VNK] paging: cr3"
+require_marker "[VNK] timer:"
+require_marker "[VNK] framebuffer: write probe succeeded"
 require_marker "VORYN-KERNEL-READY"
+require_marker "[VNK] EXCEPTION 6: invalid opcode"
 
 if grep -qF "FATAL" "$SERIAL_LOG"; then
     echo "FAIL: the boot chain reported a fatal error" >&2

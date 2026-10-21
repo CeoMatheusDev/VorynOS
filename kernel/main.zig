@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 VorynOS contributors
 
-//! Voryn Nucleus Kernel (VNK) - early bring-up.
+//! Voryn Nucleus Kernel (VNK).
 //!
-//! This is the first code that runs with the kernel image resident in
-//! physical memory. It validates the boot handoff contract, reports what the
-//! firmware handed over and proves that the framebuffer described by the
-//! contract is actually writable.
+//! The kernel owns the processor structures of the machine: the segment
+//! table, the interrupt table, the page tables and the memory managers. The
+//! sequence of the initialisation is:
 //!
-//! Everything that follows (GDT, IDT, exceptions, memory management, the
-//! scheduler) is built on top of the guarantees established here.
+//!   1. validation of the boot handoff contract;
+//!   2. a copy of the handoff in the memory of the kernel, so that the
+//!      information survives the replacement of the page tables;
+//!   3. the segment table and the task state segment;
+//!   4. the interrupt table;
+//!   5. the physical memory manager;
+//!   6. the page tables of the kernel, which replace the ones of the
+//!      firmware;
+//!   7. the heap of the kernel;
+//!   8. the timer and the interrupt controllers.
 
 const std = @import("std");
 const voryn = @import("voryn_shared");
@@ -19,11 +26,41 @@ const memmap = voryn.memmap;
 const port = voryn.port;
 const serial = voryn.serial;
 
+const cpu = @import("arch/x86_64/cpu.zig");
+const interrupt = @import("arch/x86_64/interrupt.zig");
+const paging = @import("arch/x86_64/paging.zig");
+const segment = @import("arch/x86_64/segment.zig");
+const timer = @import("arch/x86_64/timer.zig");
+
+const heap = @import("memory/heap.zig");
+const physical = @import("memory/physical.zig");
+
 /// Version of the kernel, reported on the console.
 const kernel_version = "0.1.0-dev.1";
 
+/// Number of memory descriptors that the kernel keeps a copy of.
+const max_memory_descriptors = 1024;
+
+/// Size of the region that the heap of the kernel manages.
+const heap_size = 256 * 1024;
+
+/// Frequency of the timer, in interrupts per second.
+const timer_frequency = 100;
+
 /// Address of the kernel entry point, provided by the assembly trampoline.
 extern const voryn_kernel_entry_address: u64;
+
+/// Top of the boot stack of the kernel, provided by the assembly trampoline.
+extern const voryn_boot_stack_end: u8;
+
+/// A copy of the handoff structure in the memory of the kernel.
+var boot_info: handoff.BootHandoff = .{};
+
+/// A copy of the memory map in the memory of the kernel.
+var memory_map: [max_memory_descriptors]handoff.MemoryDescriptor = undefined;
+
+/// The region of memory that the heap of the kernel manages.
+var heap_region: [heap_size]u8 align(4096) = undefined;
 
 /// Kernel entry point, called by the assembly trampoline.
 ///
@@ -59,28 +96,79 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
         boot.kernel_entry,
     });
 
-    reportMemory(boot);
+    reportProcessor();
+
+    // The information of the firmware is copied into the memory of the
+    // kernel, because the page tables of the firmware are replaced later and
+    // the structures that they describe are not mapped anymore.
+    copyBootInformation(boot);
+
+    reportMemory();
     reportFramebuffer(boot);
+
+    installSegments();
+    installInterrupts();
+    installTaskState();
+
+    installMemoryManager();
+    installPageTables(boot);
+    installHeap();
+    installTimer();
 
     // Sentinel consumed by the automated boot test.
     serial.printLine("VORYN-KERNEL-READY", .{});
 
+    // The self test of the exception handling runs at the very end, because
+    // an exception stops the kernel.
+    selfTest();
+
     port.haltForever();
 }
 
+/// Copies the handoff and the memory map into the memory of the kernel.
+fn copyBootInformation(boot: *const handoff.BootHandoff) void {
+    boot_info = boot.*;
+
+    const count = @min(boot.memory_map_entries, max_memory_descriptors);
+    if (count == 0) return;
+    if (boot.memory_map_address >= handoff.identity_mapped_limit) return;
+
+    const source = @as([*]const handoff.MemoryDescriptor, @ptrFromInt(boot.memory_map_address))[0..count];
+    @memcpy(memory_map[0..count], source);
+}
+
+/// Reports the processor the kernel is running on.
+fn reportProcessor() void {
+    const info = cpu.detectProcessor();
+
+    var brand: [48]u8 = @splat(0);
+    var length: usize = 0;
+    while (length < brand.len and info.brand[length] != 0) : (length += 1) {}
+    brand[length] = 0;
+
+    serial.printLine("[VNK] cpu: family={d} model={d} stepping={d} cores={d} phys_bits={d} virt_bits={d}", .{
+        info.family,
+        info.model,
+        info.stepping,
+        info.logical_processors,
+        info.physical_address_bits,
+        info.linear_address_bits,
+    });
+
+    if (length > 0) {
+        serial.printLine("[VNK] cpu: brand=\"{s}\"", .{std.mem.sliceTo(&brand, 0)});
+    }
+}
+
 /// Reports the memory map that the firmware handed over.
-fn reportMemory(boot: *const handoff.BootHandoff) void {
-    if (boot.memory_map_entries == 0) {
+fn reportMemory() void {
+    const count = @min(boot_info.memory_map_entries, max_memory_descriptors);
+    if (count == 0) {
         serial.printLine("[VNK] memory: no map provided", .{});
         return;
     }
 
-    if (boot.memory_map_address >= handoff.identity_mapped_limit) {
-        serial.printLine("[VNK] memory: map at 0x{x} is not identity mapped", .{boot.memory_map_address});
-        return;
-    }
-
-    const map = @as([*]const handoff.MemoryDescriptor, @ptrFromInt(boot.memory_map_address))[0..boot.memory_map_entries];
+    const map = memory_map[0..count];
     const summary = memmap.summarize(map);
 
     serial.printLine("[VNK] memory: {d} regions, {d} MiB RAM", .{
@@ -107,13 +195,13 @@ fn reportMemory(boot: *const handoff.BootHandoff) void {
     }
 
     // The kernel image itself has to be covered by ordinary RAM.
-    if (!memmap.isUsableRange(map, boot.kernel_base, boot.kernel_end - boot.kernel_base)) {
+    if (!memmap.isUsableRange(map, boot_info.kernel_base, boot_info.kernel_end - boot_info.kernel_base)) {
         serial.printLine("[VNK] FATAL: kernel image is not backed by RAM", .{});
         port.haltForever();
     }
 }
 
-/// Reports the framebuffer and verifies that it can be written.
+/// Reports the framebuffer.
 fn reportFramebuffer(boot: *const handoff.BootHandoff) void {
     if (boot.flags & handoff.flag_framebuffer == 0) {
         serial.printLine("[VNK] framebuffer: none", .{});
@@ -128,27 +216,90 @@ fn reportFramebuffer(boot: *const handoff.BootHandoff) void {
         framebuffer.pitch,
         framebuffer.base,
     });
+}
 
+/// Installs the segment table and the task state segment of the kernel.
+fn installSegments() void {
+    const stack_top = @intFromPtr(&voryn_boot_stack_end);
+
+    segment.install(stack_top);
+
+    if (!segment.verify()) {
+        serial.printLine("[VNK] FATAL: the segment table was not installed", .{});
+        port.haltForever();
+    }
+
+    serial.printLine("[VNK] segments: gdt installed and verified", .{});
+}
+
+/// Installs the interrupt descriptor table of the kernel.
+fn installInterrupts() void {
+    interrupt.install();
+
+    if (!interrupt.verify()) {
+        serial.printLine("[VNK] FATAL: the interrupt table was not installed", .{});
+        port.haltForever();
+    }
+
+    serial.printLine("[VNK] interrupts: idt installed and verified", .{});
+}
+
+/// Loads the task state segment of the kernel.
+fn installTaskState() void {
+    segment.loadTaskState();
+    serial.printLine("[VNK] segments: task state segment loaded", .{});
+}
+
+/// Prepares the physical memory manager.
+fn installMemoryManager() void {
+    const count = @min(boot_info.memory_map_entries, max_memory_descriptors);
+    physical.manager.init(memory_map[0..count]);
+
+    // The memory that the kernel occupies is not available to the manager.
+    physical.manager.reserve(boot_info.kernel_base, boot_info.kernel_end - boot_info.kernel_base);
+    physical.manager.reserve(@intFromPtr(&memory_map), @sizeOf(@TypeOf(memory_map)));
+    physical.manager.reserve(@intFromPtr(&heap_region), heap_region.len);
+    physical.manager.reserve(@intFromPtr(&physical.manager.bitmap), physical.manager.bitmap.len);
+
+    const statistics = physical.manager.statistics;
+    serial.printLine("[VNK] memory: {d} pages, {d} used, {d} free", .{
+        statistics.total_pages,
+        statistics.used_pages,
+        statistics.free_pages,
+    });
+}
+
+/// Builds the page tables of the kernel and makes them the active ones.
+fn installPageTables(boot: *const handoff.BootHandoff) void {
+    paging.setup(
+        boot_info.kernel_base,
+        boot_info.kernel_end,
+        boot.framebuffer.base,
+        boot.framebuffer.size,
+    ) catch |err| {
+        serial.printLine("[VNK] FATAL: the page tables could not be built: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    const previous = cpu.readCr3();
+    paging.activate();
+
+    serial.printLine("[VNK] paging: cr3 0x{x} -> 0x{x}", .{ previous, paging.rootAddress() });
+
+    // The framebuffer is written after the new tables are active, which
+    // proves that the mapping of the device memory works.
+    probeFramebuffer();
+}
+
+/// Writes a value into the first pixel of the framebuffer and reads it back.
+///
+/// The probe only runs when the framebuffer is mapped by the tables of the
+/// kernel, which proves that the device memory is reachable.
+fn probeFramebuffer() void {
+    const framebuffer = boot_info.framebuffer;
     if (framebuffer.base == 0 or framebuffer.size < 4) return;
-    if (framebuffer.base >= handoff.identity_mapped_limit) {
-        serial.printLine("[VNK] framebuffer: above the identity mapped range, not probed", .{});
-        return;
-    }
+    if (framebuffer.base >= handoff.identity_mapped_limit) return;
 
-    // Only probe the framebuffer when the memory map does not report it as
-    // ordinary RAM: a stray write into free memory would corrupt the heap
-    // of the kernel that is about to be built.
-    if (boot.memory_map_entries != 0 and boot.memory_map_address < handoff.identity_mapped_limit) {
-        const map = @as([*]const handoff.MemoryDescriptor, @ptrFromInt(boot.memory_map_address))[0..boot.memory_map_entries];
-        if (memmap.findRegion(map, framebuffer.base)) |region| {
-            if (region.isUsableRam()) {
-                serial.printLine("[VNK] framebuffer: reported as RAM, not probed", .{});
-                return;
-            }
-        }
-    }
-
-    // Write a known value into the first pixel and read it back.
     const pixel: *volatile u32 = @ptrFromInt(framebuffer.base);
     const original = pixel.*;
     pixel.* = 0x00C0_FFEE;
@@ -160,4 +311,60 @@ fn reportFramebuffer(boot: *const handoff.BootHandoff) void {
     } else {
         serial.printLine("[VNK] framebuffer: write probe failed (readback=0x{x})", .{readback});
     }
+}
+
+/// Prepares the heap of the kernel and verifies that it works.
+fn installHeap() void {
+    heap.heap.init(&heap_region);
+
+    // The heap is exercised with a few blocks, which proves that the
+    // allocator and its bookkeeping work.
+    const block_size = 64;
+    var blocks: [4][*]u8 = undefined;
+    for (&blocks) |*block| {
+        const memory = heap.heap.alloc(block_size) orelse {
+            serial.printLine("[VNK] FATAL: the heap is exhausted", .{});
+            port.haltForever();
+        };
+        @memset(memory[0..block_size], 0xA5);
+        block.* = memory;
+    }
+    for (blocks) |block| {
+        heap.heap.free(block);
+    }
+
+    const statistics = heap.heap.statistics();
+    serial.printLine("[VNK] heap: {d} KiB region, {d} allocations, {d} bytes used", .{
+        statistics.total_bytes / 1024,
+        statistics.allocations,
+        statistics.used_bytes,
+    });
+}
+
+/// Prepares the timer and enables the interrupts.
+fn installTimer() void {
+    timer.init(timer_frequency);
+    timer.enableInterrupts();
+
+    // The kernel waits for a few ticks, which proves that the timer and the
+    // interrupt controllers work.
+    const start = timer.ticks();
+    var attempts: u64 = 0;
+    while (timer.ticks() - start < 5 and attempts < 100_000_000) : (attempts += 1) {
+        cpu.halt();
+    }
+
+    serial.printLine("[VNK] timer: {d} Hz, {d} ticks", .{ timer.ticksPerSecond(), timer.ticks() });
+}
+
+/// Verifies that the exception handling works.
+///
+/// The test provokes an invalid opcode and the handler of the kernel
+/// reports it and stops the machine. The automated boot test looks for the
+/// report.
+fn selfTest() void {
+    serial.printLine("[VNK] self test: provoking an invalid opcode", .{});
+    asm volatile ("ud2");
+    serial.printLine("[VNK] FATAL: the exception handling did not stop the kernel", .{});
+    port.haltForever();
 }

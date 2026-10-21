@@ -64,8 +64,15 @@ O modelo de componentes e seus custos estão em
 
 | Arquivo | Responsabilidade |
 |---------|------------------|
-| `main.zig` | Entrada do kernel, validação do handoff, relatório de estado |
+| `main.zig` | Entrada do kernel, sequência de inicialização, validação do handoff |
 | `arch/x86_64/entry.s` | Trampolim de entrada, pilha de boot, regras de ABI |
+| `arch/x86_64/cpu.zig` | Registradores de controle, `CPUID`, registradores de modelo |
+| `arch/x86_64/segment.zig` e `.s` | Tabela de segmentos, segmento de tarefa, recarga dos registradores |
+| `arch/x86_64/interrupt.zig` e `.s` | Tabela de interrupções, tratadores de exceção e de interrupção |
+| `arch/x86_64/paging.zig` | Tabelas de página do núcleo e a troca de `CR3` |
+| `arch/x86_64/timer.zig` | Temporizador 8254, controllers 8259, contagem de interrupções |
+| `memory/physical.zig` | Gerenciador de memória física sobre o mapa do contrato |
+| `memory/heap.zig` | Heap do núcleo com etiquetas de limite e verificação de corrupção |
 
 ### `tools/` — ferramentas de desenvolvimento
 
@@ -111,24 +118,25 @@ explícito e documentado.
 
 ## 5. Limitações conhecidas
 
-1. Não há paginação própria: o kernel usa as tabelas de página do firmware
-   (mapeamento por identidade dos primeiros 4 GiB). O marco F2 substitui
-   isso.
-2. Não há GDT nem IDT próprios: o kernel roda com as estruturas do
-   firmware, o que significa que uma exceção é tratada pela UEFI, não pelo
-   VorynOS.
-3. O loader não localiza o RSDP do ACPI; o campo existe no contrato mas
+1. O heap do núcleo é uma região fixa de 256 KiB dentro da imagem, porque
+   a região precisa continuar mapeada depois da troca das tabelas de página.
+2. O bitmap do gerenciador de memória física cobre 4 GiB do espaço físico.
+3. O tratador de exceções é fatal: a execução para no primeiro erro, sem
+   tentativa de recuperação.
+4. O índice de pilha de interrupção do segmento de tarefa está preparado,
+   mas as portas da tabela de interrupções ainda não o usam.
+5. O loader não localiza o RSDP do ACPI; o campo existe no contrato mas
    vale zero.
-4. O volume de teste usa nomes FAT 8.3; não há suporte a nomes longos.
-5. O sistema é single processor; não há suporte a SMP.
-6. Não há detecção de hardware além do framebuffer: VNH ainda não existe.
-7. O kernel é carregado a partir de um volume FAT através do protocolo de
+6. O volume de teste usa nomes FAT 8.3; não há suporte a nomes longos.
+7. O sistema é single processor; não há suporte a SMP.
+8. Não há detecção de hardware além do framebuffer: VNH ainda não existe.
+9. O kernel é carregado a partir de um volume FAT através do protocolo de
    sistema de arquivos simples do firmware; não há driver de bloco próprio.
 
 ## 6. O que vem a seguir
 
-O marco F2 (núcleo) implementa, nesta ordem: GDT e TSS próprios, IDT e
-tratamento de exceções, gerenciador de memória física a partir do mapa de
-handoff, tabelas de página próprias com identidade e isolamento do kernel,
-heap do kernel e temporizador programável. Cada etapa tem critério de aceite
+O marco F3 (execução) implementa, nesta ordem: alternância entre tarefas
+medida pelo temporizador, modo de usuário com a pilha de usuário e a
+comutação de privilégio, a primeira chamada de sistema, o canal de
+mensagens do VNX e as capacidades do VNC. Cada etapa tem critério de aceite
 verificável e teste automatizado no QEMU.
