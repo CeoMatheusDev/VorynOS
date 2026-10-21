@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Compilar e testar (x86_64, QEMU/OVMF)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Obter o código
+        uses: actions/checkout@v4
+
+      - name: Instalar Zig 0.17.0
+        uses: mlugg/setup-zig@v2
+        with:
+          zig-version: 0.17.0
+
+      - name: Instalar OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ovmf qemu-system-x86
+
+      - name: Verificar a versão do Zig
+        run: zig version
+
+      - name: Testes de unidade
+        run: zig build test
+
+      - name: Construir
+        run: zig build
+
+      - name: Teste de boot no QEMU
+        run: zig build qemu-test
+
+      - name: Verificar os artefatos
+        run: |
+          file zig-out/bin/voryn-boot.efi
+          file zig-out/bin/voryn-kernel
+          readelf -h zig-out/bin/voryn-kernel | head -12
