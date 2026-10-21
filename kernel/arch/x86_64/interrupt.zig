@@ -59,6 +59,12 @@ const IdtPointer = packed struct {
 /// Type of an interrupt gate: present, ring 0, interrupt gate.
 const gate_type: u8 = 0x8E;
 
+/// Type of an interrupt gate that the user mode may call: present, ring 3.
+const user_gate_type: u8 = 0xEE;
+
+/// The vector of the system calls.
+pub const syscall_vector: u8 = 0x80;
+
 /// The register frame that the stubs build.
 pub const Registers = extern struct {
     r15: u64 = 0,
@@ -152,8 +158,21 @@ pub fn install() void {
     // The vectors that are not handled point at a stub that reports them.
     const unexpected = stubFor(255);
     for (exception_count + hardware_interrupt_count..entry_count) |vector| {
+        if (vector == syscall_vector) continue;
         setGate(vector, unexpected);
     }
+
+    // The system call, the only gate that the user mode may call. It is
+    // installed after the reserved vectors, because its vector is part of
+    // them.
+    table[syscall_vector] = .{
+        .offset_low = @truncate(@intFromPtr(&voryn_syscall_entry)),
+        .selector = kernel_code_selector,
+        .ist = 0,
+        .type_attributes = user_gate_type,
+        .offset_middle = @truncate(@intFromPtr(&voryn_syscall_entry) >> 16),
+        .offset_high = @truncate(@intFromPtr(&voryn_syscall_entry) >> 32),
+    };
 
     table_pointer = .{
         .limit = @intCast(entry_count * @sizeOf(Gate) - 1),
@@ -257,31 +276,59 @@ pub fn verify() bool {
         pointer.limit == entry_count * @sizeOf(Gate) - 1;
 }
 
+/// The frame of the processor that the stub built.
+///
+/// The stub pushes a word for the error code and the vector, and the
+/// processor frame is above them. The order of the addresses is the reverse
+/// of the order of the pushes of the processor.
+pub const ProcessorFrame = struct {
+    /// The error code, zero when the exception does not push one.
+    error_code: u64 = 0,
+    /// The instruction that was being executed.
+    rip: u64 = 0,
+    /// The code segment.
+    cs: u64 = 0,
+    /// The flags.
+    rflags: u64 = 0,
+    /// The stack pointer.
+    rsp: u64 = 0,
+    /// The stack segment.
+    ss: u64 = 0,
+};
+
+/// Reads the frame of the processor from the frame of the registers.
+pub fn processorFrame(vector: u64, frame: *const Registers) ProcessorFrame {
+    const base = @intFromPtr(frame) + @sizeOf(Registers);
+
+    // The stub pushes a word for the error code, the processor pushes the
+    // real one right above it.
+    const has_error = hasErrorCode(vector);
+    const error_code: u64 = if (has_error) readWord(base + 8) else 0;
+    const pointer = base + 8 + (if (has_error) @as(usize, 8) else 0);
+
+    return .{
+        .error_code = error_code,
+        .rip = readWord(pointer),
+        .cs = readWord(pointer + 8),
+        .rflags = readWord(pointer + 16),
+        .rsp = readWord(pointer + 24),
+        .ss = readWord(pointer + 32),
+    };
+}
+
 /// Handler of the exceptions of the processor.
 ///
 /// The handler prints the state of the processor and stops the kernel: an
 /// exception that is not handled explicitly is fatal.
 export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv(.c) void {
-    const base = @intFromPtr(frame) + @sizeOf(Registers);
-
-    // The stub pushes a word for the error code, the processor pushes the
-    // real one right above it.
-    const error_code: u64 = if (hasErrorCode(vector))
-        readWord(base + 8)
-    else
-        0;
-
-    const frame_pointer = base + 8 + (if (hasErrorCode(vector)) @as(usize, 8) else 0);
-    const instruction_pointer = readWord(frame_pointer);
-    const code_selector = readWord(frame_pointer + 8);
-    const flags = readWord(frame_pointer + 16);
+    const processor = processorFrame(vector, frame);
 
     serial.printLine("[VNK] EXCEPTION {d}: {s}", .{ vector, vectorName(vector) });
-    serial.printLine("[VNK]   error code: 0x{x}", .{error_code});
+    serial.printLine("[VNK]   error code: 0x{x}", .{processor.error_code});
     serial.printLine("[VNK]   rip=0x{x} cs=0x{x} rflags=0x{x}", .{
-        instruction_pointer,
-        code_selector,
-        flags,
+        processor.rip,
+        processor.cs,
+        processor.rflags,
     });
     serial.printLine("[VNK]   rax=0x{x} rbx=0x{x} rcx=0x{x} rdx=0x{x}", .{
         frame.rax,
@@ -292,11 +339,32 @@ export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv
     serial.printLine("[VNK]   rsi=0x{x} rdi=0x{x} rsp=0x{x} rbp=0x{x}", .{
         frame.rsi,
         frame.rdi,
-        readWord(frame_pointer + 24),
+        processor.rsp,
         frame.rbp,
     });
 
     port.haltForever();
+}
+
+/// Handler of the system calls.
+///
+/// The handler runs in the kernel: the processor switched to the stack of the
+/// task state segment before it delivered the call.
+export fn voryn_syscall_handler(vector: u64, frame: *Registers) callconv(.c) void {
+    const processor = processorFrame(vector, frame);
+
+    const number = frame.rax;
+    const argument = frame.rdi;
+
+    serial.printLine("[VNK] syscall {d} argument 0x{x} cs=0x{x} ss=0x{x}", .{
+        number,
+        argument,
+        processor.cs,
+        processor.ss,
+    });
+
+    // The result of the call is returned in the first register.
+    frame.rax = 0x42;
 }
 
 /// Handler of the hardware interrupts.
@@ -338,52 +406,56 @@ extern fn voryn_load_idt(pointer: *const align(8) IdtPointer) callconv(.c) void;
 /// Stores the interrupt descriptor table.
 extern fn voryn_store_idt(pointer: *align(8) IdtPointer) callconv(.c) void;
 
-extern const voryn_exception_0: u8;
-extern const voryn_exception_1: u8;
-extern const voryn_exception_2: u8;
-extern const voryn_exception_3: u8;
-extern const voryn_exception_4: u8;
-extern const voryn_exception_5: u8;
-extern const voryn_exception_6: u8;
-extern const voryn_exception_7: u8;
-extern const voryn_exception_8: u8;
-extern const voryn_exception_9: u8;
-extern const voryn_exception_10: u8;
-extern const voryn_exception_11: u8;
-extern const voryn_exception_12: u8;
-extern const voryn_exception_13: u8;
-extern const voryn_exception_14: u8;
-extern const voryn_exception_15: u8;
-extern const voryn_exception_16: u8;
-extern const voryn_exception_17: u8;
-extern const voryn_exception_18: u8;
-extern const voryn_exception_19: u8;
-extern const voryn_exception_20: u8;
-extern const voryn_exception_21: u8;
-extern const voryn_exception_22: u8;
-extern const voryn_exception_23: u8;
-extern const voryn_exception_24: u8;
-extern const voryn_exception_25: u8;
-extern const voryn_exception_26: u8;
-extern const voryn_exception_27: u8;
-extern const voryn_exception_28: u8;
-extern const voryn_exception_29: u8;
-extern const voryn_exception_30: u8;
-extern const voryn_exception_31: u8;
-extern const voryn_exception_unexpected: u8;
-extern const voryn_interrupt_32: u8;
-extern const voryn_interrupt_33: u8;
-extern const voryn_interrupt_34: u8;
-extern const voryn_interrupt_35: u8;
-extern const voryn_interrupt_36: u8;
-extern const voryn_interrupt_37: u8;
-extern const voryn_interrupt_38: u8;
-extern const voryn_interrupt_39: u8;
-extern const voryn_interrupt_40: u8;
-extern const voryn_interrupt_41: u8;
-extern const voryn_interrupt_42: u8;
-extern const voryn_interrupt_43: u8;
-extern const voryn_interrupt_44: u8;
-extern const voryn_interrupt_45: u8;
-extern const voryn_interrupt_46: u8;
-extern const voryn_interrupt_47: u8;
+// The entry points are declared as variables: the address of a constant of
+// the standard library is the address of a copy, and the gates of the table
+// need the address of the symbol itself.
+extern var voryn_exception_0: u8;
+extern var voryn_exception_1: u8;
+extern var voryn_exception_2: u8;
+extern var voryn_exception_3: u8;
+extern var voryn_exception_4: u8;
+extern var voryn_exception_5: u8;
+extern var voryn_exception_6: u8;
+extern var voryn_exception_7: u8;
+extern var voryn_exception_8: u8;
+extern var voryn_exception_9: u8;
+extern var voryn_exception_10: u8;
+extern var voryn_exception_11: u8;
+extern var voryn_exception_12: u8;
+extern var voryn_exception_13: u8;
+extern var voryn_exception_14: u8;
+extern var voryn_exception_15: u8;
+extern var voryn_exception_16: u8;
+extern var voryn_exception_17: u8;
+extern var voryn_exception_18: u8;
+extern var voryn_exception_19: u8;
+extern var voryn_exception_20: u8;
+extern var voryn_exception_21: u8;
+extern var voryn_exception_22: u8;
+extern var voryn_exception_23: u8;
+extern var voryn_exception_24: u8;
+extern var voryn_exception_25: u8;
+extern var voryn_exception_26: u8;
+extern var voryn_exception_27: u8;
+extern var voryn_exception_28: u8;
+extern var voryn_exception_29: u8;
+extern var voryn_exception_30: u8;
+extern var voryn_exception_31: u8;
+extern var voryn_exception_unexpected: u8;
+extern var voryn_syscall_entry: u8;
+extern var voryn_interrupt_32: u8;
+extern var voryn_interrupt_33: u8;
+extern var voryn_interrupt_34: u8;
+extern var voryn_interrupt_35: u8;
+extern var voryn_interrupt_36: u8;
+extern var voryn_interrupt_37: u8;
+extern var voryn_interrupt_38: u8;
+extern var voryn_interrupt_39: u8;
+extern var voryn_interrupt_40: u8;
+extern var voryn_interrupt_41: u8;
+extern var voryn_interrupt_42: u8;
+extern var voryn_interrupt_43: u8;
+extern var voryn_interrupt_44: u8;
+extern var voryn_interrupt_45: u8;
+extern var voryn_interrupt_46: u8;
+extern var voryn_interrupt_47: u8;

@@ -91,12 +91,20 @@ capacidades.
 |----------|--------|-----------|
 | Escalonador preemptivo | CONCLUÍDO | alternância verificada pelo temporizador |
 | Tarefas do kernel | CONCLUÍDO | duas tarefas de trabalho, 20 trocas medidas |
-| Custo de troca de contexto | CONCLUÍDO | medido com o contador de tempo |
-| Modo de usuário | EM DESENVOLVIMENTO | — |
-| Chamadas de sistema | EM DESENVOLVIMENTO | — |
+| Custo de troca de contexto | CONCLUÍDO | 358 ciclos no melhor caso, média de 8 mil |
+| Política sem fome | CONCLUÍDO | a visita continua depois da tarefa atual |
+| Preparação do coprocessor | CONCLUÍDO | o firmware o deixa desabilitado |
+| Tabelas de página com modo de usuário | CONCLUÍDO | o bit de usuário existe em todos os níveis |
+| Porta da chamada de sistema | CONCLUÍDO | terceiro nível de privilégio, tratador em Zig |
+| Modo de usuário | EM DESENVOLVIMENTO | a tarefa existe, a entrega da exceção não funciona |
 | Processos | PROPOSTO | — |
 | Canal do VNX | PROPOSTO | — |
 | Capacidades do VNC | PROPOSTO | — |
+
+O modo de usuário está bloqueado por um defeito específico: uma exceção
+provocada pelo programa de usuário não chega ao tratador do núcleo, e a
+tarefa de usuário fica desabilitada até a causa ser encontrada. O diagnóstico
+está em ADR-0005.
 
 Critérios de aceite do restante do marco:
 

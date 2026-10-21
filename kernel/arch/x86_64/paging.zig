@@ -10,7 +10,9 @@
 //!     stack and the data keep their addresses;
 //!   * the linear framebuffer, mapped by identity and without the cache, so
 //!     that the memory of a device is not served from the cache of the
-//!     processor.
+//!     processor;
+//!   * the pages of the tasks that run in user mode, mapped with the bit
+//!     that allows the access from the third level of privilege.
 //!
 //! Everything else is left unmapped. An access to a page that is not mapped
 //! raises a page fault, which is the isolation that the kernel needs before
@@ -52,26 +54,111 @@ const PageTable = extern struct {
     entries: [512]u64 = @splat(0),
 };
 
+/// Number of level 2 tables that the kernel provides.
+const level2_count = 8;
+
+/// Number of level 1 tables that the kernel provides.
+const level1_count = 32;
+
 /// The level 4 table, the root of the hierarchy.
 var level4: PageTable align(4096) = .{};
 
 /// The level 3 table.
 var level3: PageTable align(4096) = .{};
 
-/// The level 2 table of the region of the kernel.
-var level2_kernel: PageTable align(4096) = .{};
+/// The level 2 tables, one for each gigabyte of the address space.
+var level2_pool: [level2_count]PageTable align(4096) = @splat(.{});
 
-/// The level 2 table of the region of the framebuffer.
-var level2_framebuffer: PageTable align(4096) = .{};
+/// The level 1 tables, one for each two megabytes of the address space.
+var level1_pool: [level1_count]PageTable align(4096) = @splat(.{});
 
-/// The level 1 table of the region of the kernel.
-var level1_kernel: PageTable align(4096) = .{};
+/// The next level 2 table that is handed out.
+var level2_used: usize = 0;
+
+/// The next level 1 table that is handed out.
+var level1_used: usize = 0;
 
 /// Errors reported while building the tables.
 pub const Error = error{
     /// The tables cannot describe the requested range.
     RangeTooLarge,
+    /// The kernel does not have enough tables for the requested mapping.
+    OutOfTables,
 };
+
+/// Maps a page of the kernel, with the same address in the physical and in
+/// the virtual address space.
+pub fn mapKernelPage(virtual: u64, physical: u64) Error!void {
+    return mapPage(virtual, physical, Flags.present | Flags.writable);
+}
+
+/// Maps a page that the tasks in user mode may access.
+pub fn mapUserPage(virtual: u64, physical: u64) Error!void {
+    return mapPage(virtual, physical, Flags.present | Flags.writable | Flags.user);
+}
+
+/// Maps a page.
+///
+/// The entries of the upper levels always carry the bit that allows the
+/// access from the user mode: the processor checks the bit in every level,
+/// and only the entry of the page itself decides whether the access is
+/// allowed. The pages of the kernel do not have the bit, therefore they
+/// stay inaccessible from the user mode.
+fn mapPage(virtual: u64, physical: u64, flags: u64) Error!void {
+    const level4_index = (virtual >> 39) & 511;
+    const level3_index = (virtual >> 30) & 511;
+    const level2_index = (virtual >> 21) & 511;
+    const level1_index = (virtual >> 12) & 511;
+
+    // The kernel only uses the first gigabyte of the address space for the
+    // tables of the hierarchy, which covers 512 gigabytes.
+    if (level4_index != 0) return error.RangeTooLarge;
+
+    if (level4.entries[level4_index] & Flags.present == 0) {
+        level4.entries[level4_index] = addressOf(&level3) | table_flags;
+    }
+    if (level3.entries[level3_index] & Flags.present == 0) {
+        const table = allocateLevel2() orelse return error.OutOfTables;
+        level3.entries[level3_index] = addressOf(table) | table_flags;
+    }
+
+    const level2 = tableOf(level3.entries[level3_index]);
+    if (level2.entries[level2_index] & Flags.present == 0) {
+        const table = allocateLevel1() orelse return error.OutOfTables;
+        level2.entries[level2_index] = addressOf(table) | table_flags;
+    }
+
+    const level1 = tableOf(level2.entries[level2_index]);
+    level1.entries[level1_index] = (physical & ~@as(u64, 0xFFF)) | flags;
+}
+
+/// The attributes of the entries of the upper levels of the hierarchy.
+const table_flags: u64 = Flags.present | Flags.writable | Flags.user;
+
+/// Maps a range of large pages of the kernel.
+fn mapLargeRange(virtual: u64, length: u64, flags: u64) Error!void {
+    const first = virtual / large_page_size;
+    const last = (virtual + length + large_page_size - 1) / large_page_size;
+
+    const level4_index = (virtual >> 39) & 511;
+    const level3_index = (virtual >> 30) & 511;
+
+    if (level4_index != 0) return error.RangeTooLarge;
+
+    if (level4.entries[level4_index] & Flags.present == 0) {
+        level4.entries[level4_index] = addressOf(&level3) | table_flags;
+    }
+    if (level3.entries[level3_index] & Flags.present == 0) {
+        const table = allocateLevel2() orelse return error.OutOfTables;
+        level3.entries[level3_index] = addressOf(table) | table_flags;
+    }
+
+    const level2 = tableOf(level3.entries[level3_index]);
+    var large = first;
+    while (large < last) : (large += 1) {
+        level2.entries[large % 512] = (large * large_page_size) | flags | Flags.large;
+    }
+}
 
 /// Prepares the tables of the kernel.
 ///
@@ -85,45 +172,36 @@ pub fn setup(
 ) Error!void {
     level4 = .{};
     level3 = .{};
-    level2_kernel = .{};
-    level2_framebuffer = .{};
-    level1_kernel = .{};
+    level2_pool = @splat(.{});
+    level1_pool = @splat(.{});
+    level2_used = 0;
+    level1_used = 0;
 
-    // The kernel image.
-    level4.entries[0] = addressOf(&level3) | Flags.present | Flags.writable;
-    level3.entries[0] = addressOf(&level2_kernel) | Flags.present | Flags.writable;
-
+    // The kernel image, by identity, with small pages.
     const first_page = kernel_base / page_size;
     const last_page = (kernel_end + page_size - 1) / page_size;
     if (last_page - first_page > 512) return error.RangeTooLarge;
 
-    // The level 2 table covers one gigabyte, the level 1 table one two
-    // megabyte region of it. The index of the entry follows from the address
-    // of the region, not from the beginning of the space.
-    const kernel_directory_index = (kernel_base >> 21) & 511;
-    level2_kernel.entries[kernel_directory_index] = addressOf(&level1_kernel) |
-        Flags.present | Flags.writable;
+    const level2_index = (kernel_base >> 21) & 511;
+    const level1 = allocateLevel1() orelse return error.OutOfTables;
+    const level2 = allocateLevel2() orelse return error.OutOfTables;
+
+    level4.entries[0] = addressOf(&level3) | table_flags;
+    level3.entries[0] = addressOf(level2) | table_flags;
+    level2.entries[level2_index] = addressOf(level1) | table_flags;
 
     var page = first_page;
     while (page < last_page) : (page += 1) {
-        level1_kernel.entries[page & 511] = (page * page_size) |
-            Flags.present | Flags.writable;
+        level1.entries[page % 512] = (page * page_size) | Flags.present | Flags.writable;
     }
 
-    // The framebuffer.
+    // The framebuffer, by identity, with large pages and without the cache.
     if (framebuffer_base != 0 and framebuffer_size != 0) {
-        const first_large = framebuffer_base / large_page_size;
-        const last_large = (framebuffer_base + framebuffer_size + large_page_size - 1) / large_page_size;
-
-        level4.entries[0] = addressOf(&level3) | Flags.present | Flags.writable;
-        level3.entries[(first_large >> 9) & 511] = addressOf(&level2_framebuffer) |
-            Flags.present | Flags.writable;
-
-        var large = first_large;
-        while (large < last_large) : (large += 1) {
-            level2_framebuffer.entries[large % 512] = (large * large_page_size) |
-                Flags.present | Flags.writable | Flags.large | Flags.cache_disabled;
-        }
+        try mapLargeRange(
+            framebuffer_base,
+            framebuffer_size,
+            Flags.present | Flags.writable | Flags.cache_disabled,
+        );
     }
 }
 
@@ -144,6 +222,28 @@ pub fn mappedEntries() u32 {
         if (entry & Flags.present != 0) count += 1;
     }
     return count;
+}
+
+/// Reserves a level 2 table.
+fn allocateLevel2() ?*PageTable {
+    if (level2_used >= level2_count) return null;
+    const table = &level2_pool[level2_used];
+    level2_used += 1;
+    return table;
+}
+
+/// Reserves a level 1 table.
+fn allocateLevel1() ?*PageTable {
+    if (level1_used >= level1_count) return null;
+    const table = &level1_pool[level1_used];
+    level1_used += 1;
+    return table;
+}
+
+/// Returns the table that an entry of a higher level points at.
+fn tableOf(entry: u64) *PageTable {
+    const address = entry & ~@as(u64, 0xFFF);
+    return @ptrFromInt(address);
 }
 
 /// The physical address of a table.

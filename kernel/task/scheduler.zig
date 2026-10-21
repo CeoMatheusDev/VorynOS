@@ -17,6 +17,7 @@ const std = @import("std");
 const voryn = @import("voryn_shared");
 
 const context = @import("context.zig");
+const segment = @import("../arch/x86_64/segment.zig");
 
 /// The context of a task.
 pub const Context = context.Context;
@@ -26,6 +27,12 @@ const kernel_code_selector: u64 = 0x08;
 
 /// The selector of the data segment of the kernel.
 const kernel_data_selector: u64 = 0x10;
+
+/// The selector of the code segment of the user mode.
+const user_code_selector: u64 = 0x1B;
+
+/// The selector of the data segment of the user mode.
+const user_data_selector: u64 = 0x23;
 
 /// The state of a task.
 pub const State = enum {
@@ -99,6 +106,9 @@ pub const Scheduler = struct {
         self.next_id = 0;
         self.statistics = .{};
 
+        // The smallest switch is measured, the first one is the reference.
+        voryn_switch_minimum = std.math.maxInt(u64);
+
         const task = self.allocate() orelse return;
         voryn_capture_context(&task.context);
         task.state = .running;
@@ -133,6 +143,36 @@ pub const Scheduler = struct {
         return task;
     }
 
+    /// Creates a task that runs in the third level of privilege.
+    ///
+    /// The task starts at `entry` with the stack of the user mode. The stack
+    /// is described by its virtual address, because the task only knows the
+    /// virtual address space.
+    pub fn spawnUser(
+        self: *Scheduler,
+        entry: u64,
+        user_stack_address: u64,
+        user_stack_length: u64,
+    ) ?*Task {
+        if (user_stack_length < 1024) return null;
+
+        const task = self.allocate() orelse return null;
+
+        const user_top = (user_stack_address + user_stack_length) & ~@as(u64, 0xF);
+
+        task.context = .{
+            .rsp = user_top,
+            .rflags = 0x202,
+            .rip = entry,
+            .cs = user_code_selector,
+            .ss = user_data_selector,
+        };
+        task.stack = @as([*]u8, @ptrFromInt(user_stack_address))[0..@intCast(user_stack_length)];
+        task.state = .ready;
+
+        return task;
+    }
+
     /// Decides whether the processor has to run another task.
     ///
     /// The function is called by the handler of the timer. When it returns
@@ -148,6 +188,13 @@ pub const Scheduler = struct {
         next.state = .running;
         self.current = next;
         next.schedules += 1;
+
+        // The processor loads the stack pointer of the task state segment
+        // whenever the privilege level changes, in both directions. The
+        // stack of the task that is going to run is therefore the one that
+        // the segment of task state points at, which is the stack of the
+        // user mode for a task that runs there.
+        segment.tss.rsp0 = next.context.rsp;
 
         voryn_current_context = &current.context;
         voryn_next_context = &next.context;
@@ -174,15 +221,32 @@ pub const Scheduler = struct {
         return statistics;
     }
 
-    /// Finds the next task that is ready, in the order of creation.
+    /// Finds the next task that is ready.
+    ///
+    /// The search continues after the current task, so that every task
+    /// reaches the processor. A policy that always returned the first task
+    /// of the list would starve the others.
     fn findNextReady(self: *const Scheduler, current: *Task) ?*Task {
-        for (self.tasks) |task| {
-            const value = task orelse continue;
-            if (value == current) continue;
-            if (value.state != .ready) continue;
-            return value;
+        const start = self.indexOf(current) + 1;
+
+        var offset: usize = 0;
+        while (offset < self.tasks.len) : (offset += 1) {
+            const index = (start + offset) % self.tasks.len;
+            const task = self.tasks[index] orelse continue;
+            if (task == current) continue;
+            if (task.state != .ready) continue;
+            return task;
         }
         return null;
+    }
+
+    /// The position of a task in the list of the scheduler.
+    fn indexOf(self: *const Scheduler, task: *Task) usize {
+        for (self.tasks, 0..) |entry, index| {
+            const value = entry orelse continue;
+            if (value == task) return index;
+        }
+        return 0;
     }
 
     /// Reserves a task of the storage of the scheduler.

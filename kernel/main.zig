@@ -39,6 +39,22 @@ const scheduler = @import("task/scheduler.zig");
 /// Version of the kernel, reported on the console.
 const kernel_version = "0.1.0-dev.1";
 
+/// The handler of a panic of the kernel.
+///
+/// The default handler of the standard library writes to the error stream of
+/// the host, which does not exist in the kernel. The handler of the kernel
+/// writes to the serial port and stops the machine.
+pub const panic = std.debug.FullPanic(kernelPanic);
+
+/// Reports a panic of the kernel.
+fn kernelPanic(message: []const u8, return_address: ?usize) noreturn {
+    serial.printLine("[VNK] PANIC: {s}", .{message});
+    if (return_address) |address| {
+        serial.printLine("[VNK] PANIC: at 0x{x}", .{address});
+    }
+    port.haltForever();
+}
+
 /// Number of memory descriptors that the kernel keeps a copy of.
 const max_memory_descriptors = 1024;
 
@@ -59,6 +75,34 @@ const task_count = 3;
 /// The stacks live in the image of the kernel because the region has to
 /// stay mapped after the replacement of the page tables.
 var task_stacks: [task_count][task_stack_size]u8 align(16) = undefined;
+
+/// The virtual address of the program of the task that runs in user mode.
+const user_code_address: u64 = 0x40_0000;
+
+/// The virtual address of the data of the task that runs in user mode.
+const user_data_address: u64 = 0x40_1000;
+
+/// The virtual address of the stack of the task that runs in user mode.
+const user_stack_address: u64 = 0x40_2000;
+
+/// The value that the program of the user mode writes in its page of data.
+const user_program_value: u64 = 0x5A5A_1234;
+
+/// Whether the task of the user mode is scheduled.
+///
+/// The task exists and its pages are mapped, but an exception that comes
+/// from it is not delivered to the handler of the kernel yet, and a task
+/// that faults would stop the machine. The switch is off until the cause is
+/// found, and it is verified by the automated boot test.
+const enable_user_task = false;
+
+/// The program of the task that runs in user mode, and its end.
+///
+/// The symbols are declared as variables because the address of the program
+/// is what the kernel needs, and the address of a constant of the standard
+/// library would be the address of a copy.
+extern var voryn_user_program: u8;
+extern var voryn_user_program_end: u8;
 
 /// Address of the kernel entry point, provided by the assembly trampoline.
 extern const voryn_kernel_entry_address: u64;
@@ -109,6 +153,9 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
         boot.kernel_entry,
     });
 
+    // The firmware leaves the coprocessor disabled, the kernel needs it.
+    cpu.enableFloatingPoint();
+
     reportProcessor();
 
     // The information of the firmware is copied into the memory of the
@@ -124,7 +171,9 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     installTaskState();
 
     installMemoryManager();
-    installPageTables(boot);
+    buildPageTables(boot);
+    installUserTask();
+    activatePageTables();
     installHeap();
     installScheduler();
     installTimer();
@@ -135,6 +184,7 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
         cpu.halt();
     }
     reportScheduler();
+    reportUserTask();
 
     // Sentinel consumed by the automated boot test.
     serial.printLine("VORYN-KERNEL-READY", .{});
@@ -290,8 +340,11 @@ fn installMemoryManager() void {
     });
 }
 
-/// Builds the page tables of the kernel and makes them the active ones.
-fn installPageTables(boot: *const handoff.BootHandoff) void {
+/// Builds the page tables of the kernel.
+///
+/// The tables are not active yet, so that the pages of the tasks that run in
+/// user mode can be mapped and prepared before the switch.
+fn buildPageTables(boot: *const handoff.BootHandoff) void {
     paging.setup(
         boot_info.kernel_base,
         boot_info.kernel_end,
@@ -301,7 +354,10 @@ fn installPageTables(boot: *const handoff.BootHandoff) void {
         serial.printLine("[VNK] FATAL: the page tables could not be built: {s}", .{@errorName(err)});
         port.haltForever();
     };
+}
 
+/// Makes the page tables of the kernel the active ones.
+fn activatePageTables() void {
     const previous = cpu.readCr3();
     paging.activate();
 
@@ -378,6 +434,55 @@ fn installTimer() void {
     serial.printLine("[VNK] timer: {d} Hz, {d} ticks", .{ timer.ticksPerSecond(), timer.ticks() });
 }
 
+/// Creates the task that runs in the third level of privilege.
+///
+/// The task has a program, a page of data and a stack of its own, all in
+/// pages that the kernel maps with the bit that allows the access from the
+/// user mode. The pages of the kernel are not accessible from there.
+fn installUserTask() void {
+    const code_page = physical.manager.allocate() orelse return reportOutOfMemory();
+    const data_page = physical.manager.allocate() orelse return reportOutOfMemory();
+    const user_stack_low = physical.manager.allocate() orelse return reportOutOfMemory();
+    const user_stack_high = physical.manager.allocate() orelse return reportOutOfMemory();
+    // The pages of the user mode. The pages are mapped before the program is
+    // copied, because the tables are already the active ones.
+    paging.mapUserPage(user_code_address, code_page) catch |err| {
+        serial.printLine("[VNK] FATAL: the page of the program could not be mapped: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    paging.mapUserPage(user_data_address, data_page) catch |err| {
+        serial.printLine("[VNK] FATAL: the page of data could not be mapped: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    paging.mapUserPage(user_stack_address, user_stack_low) catch |err| {
+        serial.printLine("[VNK] FATAL: the stack could not be mapped: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    paging.mapUserPage(user_stack_address + handoff.page_size, user_stack_high) catch |err| {
+        serial.printLine("[VNK] FATAL: the stack could not be mapped: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    // The program is copied into the page that the user mode sees.
+    const program_start = @intFromPtr(&voryn_user_program);
+    const program_end = @intFromPtr(&voryn_user_program_end);
+    const program_length = program_end - program_start;
+    const destination: [*]u8 = @ptrFromInt(user_code_address);
+    @memcpy(destination[0..program_length], @as([*]const u8, @ptrFromInt(program_start))[0..program_length]);
+
+    serial.printLine("[VNK] user: program at 0x{x}, data at 0x{x}, stack at 0x{x}", .{
+        user_code_address,
+        user_data_address,
+        user_stack_address,
+    });
+}
+
+/// Reports that the kernel does not have enough memory.
+fn reportOutOfMemory() noreturn {
+    serial.printLine("[VNK] FATAL: out of memory", .{});
+    port.haltForever();
+}
+
 /// Creates the tasks of the kernel.
 fn installScheduler() void {
     scheduler.scheduler.init();
@@ -385,7 +490,39 @@ fn installScheduler() void {
     _ = scheduler.scheduler.spawn(&workerOne, &task_stacks[1]);
     _ = scheduler.scheduler.spawn(&workerTwo, &task_stacks[2]);
 
+    // The task of the user mode has a stack of its own. The processor uses
+    // it when the privilege level changes, in both directions.
+    // The task of the user mode is created, but it is not scheduled yet: the
+    // exception that it provokes is not delivered correctly and the cause is
+    // still under investigation. See docs/roadmap/phase-status.md.
+    if (enable_user_task) {
+        const user_task = scheduler.scheduler.spawnUser(
+            user_code_address,
+            user_stack_address,
+            2 * handoff.page_size,
+        );
+        if (user_task == null) return reportOutOfMemory();
+    }
+
     serial.printLine("[VNK] tasks: {d} created", .{scheduler.scheduler.count});
+}
+
+/// Verifies that the task of the user mode wrote in the page of data.
+///
+/// The value is written by the program of the user mode, and it proves that
+/// the task ran in the third level of privilege with access to its own pages.
+fn reportUserTask() void {
+    const value: *volatile u64 = @ptrFromInt(user_data_address);
+    const written = value.*;
+
+    if (written == user_program_value) {
+        serial.printLine("[VNK] user: the program of the user mode wrote 0x{x} in its page", .{written});
+    } else {
+        serial.printLine("[VNK] user: the page of the user mode holds 0x{x}, expected 0x{x}", .{
+            written,
+            user_program_value,
+        });
+    }
 }
 
 /// Reports the state of the scheduler and the cost of the switches.

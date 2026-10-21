@@ -105,7 +105,7 @@ voryn_task_switch:
     /* The smallest switch is the best estimate of the cost of a switch, the
      * first ones are slower because of the cold caches. */
     cmpq %rax, voryn_switch_minimum(%rip)
-    jbe 1f
+    jb 1f
     movq %rax, voryn_switch_minimum(%rip)
 1:
 
@@ -145,6 +145,30 @@ voryn_capture_context:
     movq %rax, 80(%rdi)          /* the stack segment */
     ret
 .size voryn_capture_context, . - voryn_capture_context
+
+/*
+ * A program that runs in the third level of privilege.
+ *
+ * The program writes a known value into the page of data that the kernel
+ * prepared for it, calls the system call of the kernel and waits for the next
+ * interrupt.
+ */
+.global voryn_user_program
+.type voryn_user_program, @function
+voryn_user_program:
+    /* The program lives at a fixed virtual address, so the page of data is
+     * reached with an absolute address. */
+    movabsq $0x5A5A1234, %rax
+    movabsq $0x401000, %rdi
+    movq %rax, (%rdi)
+    movq $1, %rax             /* the number of the system call */
+    movq $0xF00D, %rdi        /* the argument of the system call */
+    int $0x80
+1:  hlt
+    jmp 1b
+.size voryn_user_program, . - voryn_user_program
+.global voryn_user_program_end
+voryn_user_program_end:
 
 /* The contexts of the tasks that are leaving and that are entering, and the
  * measurements of the switches. */

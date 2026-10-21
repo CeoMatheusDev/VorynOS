@@ -30,6 +30,14 @@ pub const managed_pages: u32 = @intCast(managed_address_space / page_size);
 /// Size of the bitmap in bytes.
 pub const bitmap_size: usize = (managed_pages + 7) / 8;
 
+/// The lowest physical address that the manager hands out.
+///
+/// The first megabyte of a PC holds the structures of the firmware, the
+/// interrupt vector table and the area of ROM of the cards of the bus. The
+/// firmware reports part of that area as ordinary memory, but the kernel
+/// never uses it.
+pub const minimum_address: u64 = 1024 * 1024;
+
 /// Summary of the state of the manager.
 pub const Statistics = struct {
     /// Pages of ordinary memory that the firmware reported.
@@ -75,6 +83,9 @@ pub const Manager = struct {
             }
         }
 
+        // The first megabyte is never handed out.
+        self.reserve(0, minimum_address);
+
         self.statistics.used_pages = 0;
         self.statistics.free_pages = self.statistics.total_pages;
     }
@@ -105,7 +116,7 @@ pub const Manager = struct {
         var attempts: u32 = 0;
         while (attempts < managed_pages) : (attempts += 1) {
             if (page >= managed_pages) page = 0;
-            if (!self.isUsed(page)) {
+            if (!self.isPageUsed(page)) {
                 self.setUsed(page, true);
                 self.statistics.used_pages += 1;
                 self.statistics.free_pages -= 1;

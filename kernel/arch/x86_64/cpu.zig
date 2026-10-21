@@ -149,6 +149,52 @@ pub fn halt() void {
     asm volatile ("hlt" ::: .{ .memory = true });
 }
 
+/// The control word of the x87 unit.
+var control_word: u16 = 0x037F;
+
+/// The control and the status words of the unit.
+var status_word: u32 = 0x1F80;
+
+/// Prepares the processor for the use of the floating point unit.
+///
+/// The firmware leaves the coprocessor disabled, and an attempt to execute a
+/// floating point instruction raises a coprocessor error. The kernel enables
+/// the unit, the state of the registers is saved by the processor and the
+/// exceptions of the unit are masked.
+pub fn enableFloatingPoint() void {
+    // The coprocessor is usable: the bit that reports it as unavailable is
+    // cleared, and the bit that makes the processor check the state of the
+    // task before every use is set.
+    var cr0 = readCr0();
+    cr0 &= ~(@as(u64, 1) << 2);
+    cr0 |= @as(u64, 1) << 1;
+    writeCr0(cr0);
+
+    // The state of the unit is saved by the processor and the exceptions of
+    // the unit are reported to the kernel.
+    var cr4 = readCr4();
+    cr4 |= (1 << 9) | (1 << 10);
+    writeCr4(cr4);
+
+    // Every exception of the unit is masked. The control word is given in
+    // memory, because the instruction has no immediate form. The words live
+    // in the data of the kernel, so that they have a fixed address.
+    control_word = 0x037F;
+    asm volatile ("fldcw %[control]"
+        :
+        : [control] "m" (control_word),
+        : .{ .memory = true }
+    );
+
+    // The control and the status words of the unit.
+    status_word = 0x1F80;
+    asm volatile ("ldmxcsr %[status]"
+        :
+        : [status] "m" (status_word),
+        : .{ .memory = true }
+    );
+}
+
 /// Information about the processor, collected with `CPUID`.
 pub const ProcessorInfo = struct {
     /// Family, model and stepping of the processor.
