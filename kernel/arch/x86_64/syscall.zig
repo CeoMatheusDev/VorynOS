@@ -76,14 +76,21 @@ const efer_sce: u64 = 1 << 0;
 
 /// The flags that the processor clears while the call is handled.
 ///
-/// The mask clears the trap flag and the direction flag. The interrupt flag
-/// is not in the mask, because the flags of the caller are restored when
-/// the call returns, and a task that runs in the user mode has to stay
-/// preemptible: with the interrupt flag in the mask, the task would come
-/// back from the call with the interrupts disabled and the preemptive
-/// scheduler would never choose it again. The reserved bit 1 is not in the
-/// mask either, because the architecture requires that it is always set.
-const flag_mask: u64 = 0x500;
+/// The mask clears the interrupt flag, the trap flag, the direction flag
+/// and the flags of the arithmetic. The reserved bit 1 is not in the mask,
+/// because the architecture requires that it is always set.
+///
+/// The interrupt flag has to be in the mask: the entry point builds the
+/// frame of the call on the stack of the kernel, and an interrupt that
+/// arrives in the middle of that sequence would write its own frame over
+/// the frame of the call.
+///
+/// The mask does not take the interrupt flag away from the caller: the
+/// processor saves the flags in the register R11 **before** it applies the
+/// mask, and the return restores the value of R11. A task that runs in the
+/// user mode therefore comes back from the call with the interrupts
+/// enabled, and the preemptive scheduler keeps choosing it.
+const flag_mask: u64 = 0x7FD;
 
 /// The state of the caller at the entry of a system call.
 ///
@@ -153,16 +160,17 @@ comptime {
 
 /// The value of the register of the star.
 ///
-/// The instruction reads the code segment of the kernel from the field of the
-/// low half, and the stack segment of the kernel from the field of the high
-/// half, adding eight to the value of the field. The field of the high half
-/// therefore holds the selector of the stack segment of the kernel less
-/// eight.
+/// The instruction reads the code segment of the kernel from the field of
+/// the low half, and the stack segment of the kernel from the value eight
+/// bytes above it: "SS just above CS". The table of the kernel has the
+/// data segment eight bytes after the code segment, and therefore the
+/// selector of the code segment serves for both.
 ///
-/// The emulator that the test uses adds eight to the value of the low half
-/// instead, and the table of the kernel has the data segment eight bytes
-/// after the code segment: the two rules give the same stack segment, e o
-/// valor abaixo serve para o processador e para o emulador.
+/// The field of the high half belongs to the instruction of return, which
+/// the kernel does not use: the return of the call is an interrupt return.
+/// The value that is written there is the selector of the data segment of
+/// the kernel less eight, and it keeps the register meaningful for a
+/// future instruction of return.
 fn starValue() u64 {
     return (@as(u64, segment.selectors.kernel_data - 8) << 48) |
         (@as(u64, segment.selectors.kernel_code) << 32);
@@ -171,8 +179,9 @@ fn starValue() u64 {
 /// Programs the registers of model of the system call.
 ///
 /// The instruction `syscall` reads the code segment of the kernel from the
-/// low half of the star, the stack segment of the kernel from the high
-/// half, and the address of the entry point from the second register.
+/// low half of the star, the stack segment of the kernel from the value
+/// eight bytes above it, and the address of the entry point from the second
+/// register.
 pub fn install() void {
     cpu.writeMsr(msr_star, starValue());
     cpu.writeMsr(msr_lstar, @intFromPtr(&voryn_syscall_instruction_entry));

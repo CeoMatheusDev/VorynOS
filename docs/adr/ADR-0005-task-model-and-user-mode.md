@@ -226,18 +226,29 @@ próprias desse caminho:
    chamadas. O tratador da chamada **nunca** roda sobre a pilha do usuário,
    e o usuário não pode reescrever o quadro do tratador. O segmento de
    tarefa aponta para a pilha do núcleo da tarefa que está em execução.
-3. **O registro `IA32_STAR` tem dois layouts na prática.** A arquitetura
-   diz que a instrução carrega o código do núcleo do campo da metade baixa
-   e a pilha do núcleo do campo da metade alta, somando oito ao valor; o
-   emulador soma oito ao valor do campo da metade baixa. Como a tabela do
-   núcleo tem o segmento de dados oito bytes depois do código, o mesmo
-   valor serve para os dois: o campo da metade alta recebe o seletor do
-   segmento de dados menos oito.
-4. **A máscara de flags não pode limpar a interrupção.** As flags de quem
-   chama viajam no registrador `R11`, e a volta restaura exatamente esse
-   valor: se a máscara limpasse a interrupção, a tarefa de usuário voltaria
-   com as interrupções desligadas e o escalonador preemptivo jamais a
-   escolheria de novo. A máscara limpa apenas a armadilha e a direção.
+3. **O registro `IA32_STAR` tem um layout só, e o núcleo o programa para
+   ele.** A arquitetura define a operação da instrução assim: o seletor do
+   código do núcleo vem do campo da metade baixa, `IA32_STAR[47:32]`, e o
+   seletor da pilha do núcleo vem do valor oito bytes acima dele, porque a
+   pilha do núcleo é *"SS just above CS"*. A tabela do núcleo tem o segmento
+   de dados oito bytes depois do segmento de código, e portanto o seletor do
+   código serve para os dois: o campo da metade baixa recebe o seletor do
+   código do núcleo, e a pilha do núcleo que o processador carrega é a do
+   seletor do código mais oito. O campo da metade alta pertence à instrução
+   de retorno, que o núcleo não usa, porque a volta da chamada é um retorno
+   de interrupção.
+4. **A máscara de flags tem de limpar a interrupção.** O ponto de entrada
+   monta o quadro da chamada na pilha do núcleo, e uma interrupção que
+   chegasse no meio dessa sequência escreveria o próprio quadro por cima do
+   quadro da chamada. A máscara limpa a interrupção, a armadilha, a direção
+   e as flags da aritmética.
+
+   A máscara **não** tira a interrupção de quem chamou: o processador salva
+   as flags no registrador `R11` **antes** de aplicar a máscara, e a volta
+   restaura o valor de `R11`. A medição confirma: com a máscara `0x7fd`, o
+   tratador leu `0x202` em `R11`, com a interrupção ligada, e a tarefa do
+   usuário mode voltou preemptível, e o escalonador preemptivo continuou a
+   escolhê-la ✓.
 
 ### 3.5 Correções que a investigação produziu
 
@@ -255,6 +266,27 @@ próprias desse caminho:
   terceiro nível de privilégio ✗. A instrução `pause` é rejeitada pelo
   emulador pelo mesmo motivo ✗, e a espera passa a ser um laço que só
   salta para si mesmo ✓.
+- **O seletor de segmento tem o nível de privilégio nos dois campos mais
+  baixos.** A função que monta o seletor colocava o indicador de tabela no
+  campo 3 e o nível de privilégio no campo 4, e o seletor do usuário saía
+  `0x38` e `0x30`: um índice fora da tabela, e com o nível de privilégio do
+  núcleo. A correção põe o indicador de tabela no campo 2 e o nível de
+  privilégio nos campos 0 e 1, e o seletor do usuário passa a ser `0x1b` e
+  `0x23` ✓. O defeito era silencioso: os seletores hardcoded do escalonador
+  estavam certos, e só o registro da chamada de sistema usava os valores
+  errados.
+- **O quadro do retorno de interrupção é montado na ordem inversa.** O
+  processador desempilha o endereço de retorno, o seletor do código, as
+  flags, o ponteiro de pilha e o seletor da pilha, e portanto o valor do
+  endereço de retorno é o que fica no endereço mais baixo do quadro. O
+  quadro da chamada de sistema era montado na ordem oposta, e o retorno
+  carregava o valor errado para o endereço de retorno ✗.
+- **O número da chamada não pode ser destruído antes de ser salvo.** O
+  ponto de entrada usava o primeiro registrador para ler o ponteiro de
+  pilha do usuário, e o número da chamada, que é o primeiro registrador do
+  usuário, deixava de existir: o tratador recebia o ponteiro de pilha no
+  lugar do número ✗. A medição mostrava o número `0x404000`, que é o topo
+  da pilha do usuário.
 
 ## 4. Custos e riscos
 
