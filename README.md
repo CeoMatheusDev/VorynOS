@@ -1,180 +1,634 @@
 <div align="center">
+
 # VorynOS
 
-> **Liberdade • Performance • Seu Controle**
+### Liberdade • Performance • Seu Controle
+
+**Um sistema operacional independente, desenvolvido do zero para oferecer controle direto sobre o hardware, eficiência e liberdade tecnológica.**
 
 [![Zig](https://img.shields.io/badge/Zig-0.17.0-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
-[![Release](https://img.shields.io/badge/release-v1.44.0-2563EB)](https://github.com/CeoMatheusDev/ZyntraUI/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-22C55E)](LICENSE)
+[![Release](https://img.shields.io/badge/release-v0.1.0--dev.1-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases)
+[![License](https://img.shields.io/badge/license-GPL--3.0--only-22C55E)](LICENSE)
+[![Architecture](https://img.shields.io/badge/architecture-x86__64-64748B)](#arquitetura)
+[![Status](https://img.shields.io/badge/status-em%20desenvolvimento-EAB308)](#estado-do-projeto)
 
-Sistema operacional independente, escrito do zero em Zig 0.17.0, com C23 e
-Assembly quando a tarefa exigir controle direto da máquina.
-
-O VorynOS não é uma distribuição Linux, um fork do Windows, uma modificação
-de BSD, nem uma interface gráfica sobre outro kernel. O kernel, o runtime, as
-APIs e os mecanismos centrais são próprios e implementados neste repositório.
-
-[Getting started](#getting-started) · [Features](#why-zyntraui) · [Architecture](#architecture) · [Examples](#examples-and-validation)
+[**Visão geral**](#visão-geral) ·
+[**Estado atual**](#estado-do-projeto) ·
+[**Compilação**](#compilação) ·
+[**Arquitetura**](#arquitetura) ·
+[**Documentação**](#documentação)
 
 ![Logo do VorynOS](Logos_VorynOS.png)
 
 </div>
+
 ---
 
-## Estado atual
+## Visão geral
 
-| Marco | Escopo | Estado |
-|-------|---------|--------|
-| F0 | Fundação: auditoria de ambiente, toolchain, estrutura, build, documentação, ADRs | **CONCLUÍDO** |
-| F1 | Boot: VNB em UEFI, carga do kernel, saída serial, framebuffer, handoff controlado | **TESTADO LOCALMENTE** |
-| F2 | Kernel: GDT, TSS, IDT, exceções, interrupções, memória física e virtual, heap, timer | **TESTADO LOCALMENTE** |
-| F3 | Execução: threads, scheduler, processos, user mode, syscalls, IPC, capacidades | PROPOSTO |
-| F4–F10 | Armazenamento, ecossistema, desktop, drivers, compatibilidade, IA, produção | PROPOSTO |
+O **VorynOS** é um projeto de sistema operacional independente, desenvolvido principalmente em **Zig**, utilizando **Assembly x86_64** para operações que exigem controle direto da arquitetura do processador.
 
-O que existe hoje, de fato e verificado:
+O projeto prioriza:
 
-- **VNB (Voryn Native Boot)**: aplicação UEFI x86_64 própria, escrita em Zig.
-  Descobre o framebuffer (GOP), adquire o mapa de memória do firmware, lê a
-  imagem do kernel do volume de boot, valida a imagem ELF64, posiciona os
-  segmentos em memória física, aplica as realocações de uma imagem
-  relocável, monta o contrato de handoff e executa `ExitBootServices` com
-  nova tentativa em caso de mapa de memória alterado.
-- **VNK (Voryn Nucleus Kernel)**: núcleo mínimo, em Zig e Assembly, que
-  valida o contrato de handoff, instala as estruturas do processador (tabela
-  de segmentos, segmento de tarefa, tabela de interrupções, tabelas de
-  página), gerencia a memória física e o heap, programa o temporizador e
-  relata as exceções com o estado completo do processador.
-- **Contrato de handoff** (`shared/handoff.zig`): estrutura versionada e
-  verificada nos dois lados da fronteira firmware/kernel.
-- **Ferramenta de imagem de disco** (`tools/fatimg.zig`): construtor de volume
-  FAT16 próprio, sem dependência de ferramentas externas de disco.
-- **Testes**: suíte de unidade no host (`zig build test`) e teste automatizado
-  de boot no QEMU/OVMF (`zig build qemu-test`).
+- **Independência:** kernel, bootloader, contratos e mecanismos fundamentais desenvolvidos especificamente para o VorynOS.
+- **Performance:** controle explícito sobre memória, execução, interrupções e comunicação entre componentes.
+- **Eficiência:** redução de abstrações desnecessárias, dependências externas e sobrecarga operacional.
+- **Segurança:** arquitetura orientada ao isolamento e ao controle de acesso por capacidades, com implementação progressiva.
+- **Modularidade:** componentes com responsabilidades e interfaces documentadas.
+- **Transparência:** desenvolvimento aberto, documentação técnica e distinção entre funcionalidades existentes e planejadas.
 
-O que **não** existe ainda: escalonador, processos, modo de usuário,
-syscalls, IPC, capacidades, sistema de arquivos, drivers, interface gráfica.
-Nenhuma dessas funcionalidades é declarada como implementada.
+O VorynOS **não é uma distribuição Linux, um fork do Windows, uma variante de BSD ou uma interface construída sobre outro sistema operacional**.
+
+Seu bootloader e kernel são implementações próprias.
+
+O projeto encontra-se em desenvolvimento inicial e **ainda não constitui um sistema operacional completo para uso cotidiano**.
+
+---
+
+## Estado do projeto
+
+> **Versão de desenvolvimento:** `v0.1.0-dev.1`  
+> **Arquitetura inicial:** `x86_64`  
+> **Linguagem principal:** Zig 0.17.0  
+> **Firmware de inicialização:** UEFI  
+> **Licença:** GPL-3.0-only  
+> **Última revisão documental:** 21/10/2026
+
+O desenvolvimento está organizado em marcos incrementais, com critérios técnicos de aceitação e documentação das evidências de funcionamento.
+
+### Progresso dos marcos
+
+| Marco | Descrição | Estado |
+|:---:|---|:---:|
+| F0 | Fundação, toolchain, build e documentação | ✅ Concluído |
+| F1 | Bootloader UEFI e inicialização do kernel | ✅ Concluído |
+| F2 | Estruturas do processador, interrupções e memória | 🟢 Testado localmente |
+| F3 | Threads, scheduler, processos, syscalls e IPC | 📋 Proposto |
+| F4 | Armazenamento e sistemas de arquivos | 📋 Proposto |
+| F5 | Runtime, SDK e aplicações nativas | 📋 Proposto |
+| F6 | Subsistema gráfico e ambiente desktop | 📋 Proposto |
+| F7 | Drivers, rede, áudio e hardware físico | 📋 Proposto |
+| F8 | Compatibilidade com formatos e APIs externas | 📋 Proposto |
+| F9 | Infraestrutura de inteligência artificial | 📋 Proposto |
+| F10 | Instalação, segurança, recuperação e produção | 📋 Proposto |
+
+**Importante:** os estados representam o conteúdo documentado e publicado na branch `main`. Funcionalidades desenvolvidas apenas localmente não são consideradas implementadas no repositório público.
+
+Consulte o [roadmap técnico](docs/roadmap/phase-status.md) para conhecer os objetivos, critérios de aceitação, limitações e riscos de cada marco.
+
+---
+
+## Funcionalidades implementadas
+
+### VNB — Voryn Native Boot
+
+Bootloader UEFI independente, implementado em Zig para a arquitetura x86_64.
+
+Responsabilidades implementadas:
+
+- Inicialização como aplicação UEFI.
+- Comunicação com os serviços do firmware.
+- Diagnóstico por console UEFI e porta serial.
+- Descoberta do framebuffer utilizando GOP.
+- Identificação do formato de pixels e das propriedades do framebuffer.
+- Obtenção e normalização do mapa de memória UEFI.
+- Leitura da imagem do kernel a partir do volume EFI.
+- Validação da estrutura ELF64.
+- Carregamento dos segmentos do kernel em memória.
+- Aplicação das realocações necessárias à imagem relocável.
+- Preparação do contrato de inicialização.
+- Encerramento dos serviços de boot por `ExitBootServices`.
+- Nova tentativa de encerramento quando o mapa de memória é alterado.
+- Transferência controlada da execução para o kernel.
+
+**Implementação:** `boot/uefi/`
+
+### VNK — Voryn Nucleus Kernel
+
+Kernel independente, implementado em Zig e Assembly.
+
+O núcleo possui uma infraestrutura inicial funcional para gerenciamento do processador, memória e interrupções.
+
+**Inicialização e arquitetura x86_64**
+
+- Ponto de entrada próprio.
+- Configuração da pilha inicial.
+- Validação do contrato recebido do bootloader.
+- Identificação de características do processador por CPUID.
+- Configuração da Global Descriptor Table (GDT).
+- Configuração da Task State Segment (TSS).
+- Configuração da Interrupt Descriptor Table (IDT).
+- Tratamento de exceções com diagnóstico dos registradores.
+- Configuração inicial das interrupções de hardware.
+- Remapeamento dos controladores 8259.
+- Programação do temporizador 8254 a 100 Hz.
+
+**Gerenciamento de memória**
+
+- Gerenciador de memória física baseado em bitmap.
+- Controle inicial de páginas físicas.
+- Construção de tabelas de páginas próprias.
+- Substituição das tabelas de páginas por meio de CR3.
+- Mapeamento do kernel e do framebuffer.
+- Heap com metadados de blocos.
+- Divisão e fusão de blocos de memória.
+- Verificação básica de corrupção do heap.
+
+**Diagnóstico**
+
+- Comunicação serial pela UART 16550.
+- Registro de eventos de inicialização.
+- Diagnóstico de exceções do processador.
+- Verificação de estruturas críticas durante o boot.
+- Teste de escrita no framebuffer.
+
+**Implementação:** `kernel/`
+
+### Contrato de inicialização
+
+O VorynOS utiliza um contrato próprio para transferir informações entre o bootloader e o kernel.
+
+Esse contrato permite comunicar:
+
+- Informações do framebuffer.
+- Mapa de memória.
+- Informações necessárias à inicialização do núcleo.
+- Identificadores e dados de validação do contrato.
+
+A estrutura possui versionamento e verificações de integridade estrutural.
+
+**Implementação:** `shared/handoff.zig`
+
+**Especificação:** [Boot Handoff Specification](docs/specs/boot-handoff-spec.md)
+
+### Ferramenta de imagem de disco
+
+O projeto inclui um construtor próprio de imagem FAT16, implementado em Zig.
+
+Essa ferramenta prepara o volume inicializável utilizado nos testes do sistema.
+
+**Implementação:** `tools/fatimg.zig`
+
+---
+
+## Limitações atuais
+
+O VorynOS está em estágio de desenvolvimento de infraestrutura.
+
+As seguintes limitações são conhecidas e documentadas:
+
+| Subsistema | Limitação |
+|---|---|
+| Memória física | Bitmap com cobertura de até 4 GiB |
+| Heap | Região fixa de 256 KiB |
+| Memória virtual | Mapeamentos iniciais do kernel e framebuffer |
+| TSS | Estrutura carregada, mas uso das pilhas IST ainda incompleto |
+| Exceções | Tratamento fatal, sem recuperação |
+| Execução | Sem scheduler ou processos publicados |
+| Proteção | Sem execução em modo de usuário |
+| Syscalls | Não implementadas |
+| IPC | Não implementado |
+| Capacidades | Não implementadas |
+| Armazenamento | Sem sistema de arquivos operacional no kernel |
+| Drivers | Sem infraestrutura geral de drivers |
+| Interface gráfica | Não implementada |
+| Hardware físico | Sem validação documentada |
+
+A existência de segmentos de privilégio de usuário na GDT não significa que o sistema já suporte processos em modo de usuário.
+
+Da mesma forma, o temporizador funcional ainda não representa um escalonador preemptivo.
+
+Esses recursos pertencem aos próximos incrementos de desenvolvimento.
 
 ---
 
 ## Requisitos
 
-| Componente | Versão | Observação |
-|------------|---------|------------|
-| Zig | 0.17.0 | Obrigatória. Verifique com `zig version`. |
-| QEMU | 10.x | `qemu-system-x86_64` com OVMF. |
-| OVMF | edk2 | `/usr/share/edk2/ovmf/OVMF_CODE.fd` e `OVMF_VARS.fd`. |
-| Bash, utilitários coreutils | qualquer | Usados apenas pelos scripts de teste. |
+### Ambiente de desenvolvimento
 
-Ambiente de desenvolvimento de referência: Fedora Linux 44, x86_64.
+| Componente | Requisito |
+|---|---|
+| Sistema de referência | Fedora Linux 44 |
+| Arquitetura | x86_64 |
+| Zig | 0.17.0 |
+| QEMU | 10.x |
+| Firmware | OVMF / edk2 |
+| Shell | Bash |
+| Utilitários | Coreutils |
+
+O projeto utiliza o sistema de compilação nativo do Zig.
+
+O ambiente principal de desenvolvimento é Linux, mas o kernel produzido é independente do sistema operacional utilizado para compilá-lo.
+
+### Verificar a toolchain
+
+```bash
+zig version
+qemu-system-x86_64 --version
+```
+
+No ambiente Fedora de referência, os arquivos do OVMF são encontrados em:
+
+```text
+/usr/share/edk2/ovmf/OVMF_CODE.fd
+/usr/share/edk2/ovmf/OVMF_VARS.fd
+```
+
+Os scripts de execução utilizam o QEMU e o firmware OVMF para inicializar o sistema.
 
 ---
 
-## Construção
+## Compilação
+
+### 1. Obter o código-fonte
 
 ```bash
-zig build                 # build completo: bootloader, kernel, ferramentas e imagem
-zig build test            # testes de unidade no host
-zig build qemu-test       # teste automatizado de boot (QEMU + OVMF)
-zig build qemu            # boot interativo no QEMU com console serial
-zig build check           # testes de unidade + teste de boot
+git clone https://github.com/CeoMatheusDev/VorynOS.git
+cd VorynOS
 ```
 
-Artefatos produced:
+### 2. Compilar o projeto
 
-```text
-zig-out/bin/voryn-boot.efi   aplicação UEFI do Voryn Native Boot
-zig-out/bin/voryn-kernel     imagem ELF64 relocável do Voryn Nucleus Kernel
-zig-out/bin/voryn-fsimg      construtor de imagem de disco
-zig-out/vorynos.img          volume EFI inicializável com os dois anteriores
+```bash
+zig build
 ```
 
-### Execução manual
+O processo constrói:
+
+- O bootloader UEFI.
+- O kernel ELF64.
+- A ferramenta de criação da imagem.
+- A imagem de inicialização.
+
+### 3. Executar os testes
+
+```bash
+zig build test
+```
+
+Executa os testes de unidade no ambiente host.
+
+```bash
+zig build qemu-test
+```
+
+Executa o teste automatizado de inicialização utilizando QEMU e OVMF.
+
+```bash
+zig build check
+```
+
+Executa os testes de unidade e o teste automatizado de boot.
+
+### 4. Inicializar o sistema
 
 ```bash
 zig build qemu
 ```
 
-O console serial é o canal de diagnóstico primário. Pressione `Ctrl+a x` para
-sair do emulador.
+Inicializa o VorynOS no QEMU em modo interativo.
 
----
+O console serial constitui o canal principal de diagnóstico.
 
-## Execução verificada
-
-Saída real do teste automatizado de boot (`zig build qemu-test`):
+Para encerrar o QEMU no modo de terminal serial, utilize:
 
 ```text
-[VNB] VorynOS 0.1.0-dev.1 - Voryn Native Boot
-[VNB] framebuffer 2048x2048 bpp=32 pitch=8192 size=0x1000000 base=0x80000000
-[VNB] memory map: 86 regions
-[VNB] kernel image: 3374370 bytes
-[VNB] kernel placed: base=0x200000 end=0x2858c0 entry=0x24b660 segments=4 relocations=165
-[VNB] leaving firmware, entering kernel at 0x24b660
-[VNK] Voryn Nucleus Kernel 0.1.0-dev.1
-[VNK] handoff ok: version=1 flags=0xf
-[VNK] cpu: family=15 model=21 stepping=177 cores=1 phys_bits=40 virt_bits=48
-[VNK] memory: 87 regions, 203 MiB RAM
-[VNK] framebuffer: 2048x2048 bpp=32 pitch=8192 base=0x80000000
-[VNK] segments: gdt installed and verified
-[VNK] interrupts: idt installed and verified
-[VNK] segments: task state segment loaded
-[VNK] memory: 51551 pages, 360 used, 51191 free
-[VNK] paging: cr3 0xf401000 -> 0x355000
-[VNK] heap: 256 KiB region, 0 allocations, 0 bytes used
-[VNK] timer: 100 Hz, 5 ticks
-[VNK] framebuffer: write probe succeeded
-VORYN-KERNEL-READY
-[VNK] EXCEPTION 6: invalid opcode
+Ctrl+A, X
 ```
+
+### Comandos disponíveis
+
+| Comando | Finalidade |
+|---|---|
+| `zig build` | Compilar os componentes e gerar a imagem |
+| `zig build image` | Construir a imagem de inicialização |
+| `zig build test` | Executar os testes de unidade |
+| `zig build qemu` | Inicializar o sistema interativamente |
+| `zig build qemu-test` | Executar o teste automatizado de boot |
+| `zig build check` | Executar a verificação integrada |
+
+### Artefatos
+
+Após a compilação, os principais artefatos são:
+
+```text
+zig-out/
+└── bin/
+    ├── voryn-boot.efi
+    ├── voryn-kernel
+    ├── voryn-fsimg
+    └── vorynos.img
+```
+
+| Artefato | Descrição |
+|---|---|
+| `voryn-boot.efi` | Aplicação UEFI do Voryn Native Boot |
+| `voryn-kernel` | Kernel ELF64 relocável |
+| `voryn-fsimg` | Ferramenta de construção de imagem FAT16 |
+| `vorynos.img` | Imagem de volume EFI inicializável |
 
 ---
 
 ## Arquitetura
 
-O modelo de componentes é o **Voryn Fabric**, documentado em
-[`docs/adr/ADR-0001-voryn-fabric.md`](docs/adr/ADR-0001-voryn-fabric.md):
+A arquitetura do projeto é organizada em torno do modelo denominado **Voryn Fabric**.
 
-| Componente | Nome | Responsabilidade |
-|------------|------|------------------|
-| VNB | Voryn Native Boot | Loader UEFI, fronteira firmware/kernel |
-| VNK | Voryn Nucleus Kernel | Mecanismos privilegiados mínimos |
-| VNH | Voryn Hardware Nexus | Descoberta e interface de hardware |
-| VNM | Voryn Nexus Memory | Memória física, virtual, alocadores |
-| VNT | Voryn Task Fabric | Tarefas e escalonamento |
+Esse modelo define componentes com responsabilidades específicas e contratos explícitos de comunicação.
+
+A arquitetura está documentada na decisão:
+
+[ADR-0001 — Voryn Fabric](docs/adr/ADR-0001-voryn-fabric.md)
+
+### Componentes
+
+| Sigla | Componente | Responsabilidade |
+|:---:|---|---|
+| VNB | Voryn Native Boot | Inicialização UEFI e carregamento do kernel |
+| VNK | Voryn Nucleus Kernel | Mecanismos privilegiados do núcleo |
+| VNH | Voryn Hardware Nexus | Descoberta e interfaces de hardware |
+| VNM | Voryn Nexus Memory | Gerenciamento de memória |
+| VNT | Voryn Task Fabric | Tarefas, threads e escalonamento |
 | VNX | Voryn Exchange | Comunicação entre processos |
-| VNC | Voryn Capability Fabric | Segurança por capacidades |
-| VND | Voryn Device Fabric | Drivers isoláveis |
-| VSN | Voryn Service Node | Serviços, supervisão, recuperação |
+| VNC | Voryn Capability Fabric | Controle de acesso por capacidades |
+| VND | Voryn Device Fabric | Infraestrutura de drivers |
+| VSN | Voryn Service Node | Serviços e supervisão |
 
-Mapa dos módulos e contratos: [`docs/architecture/overview.md`](docs/architecture/overview.md).
+**Os nomes acima representam a arquitetura planejada. Nem todos os componentes possuem implementação funcional.**
+
+Atualmente, as implementações publicadas concentram-se no VNB, no VNK, nas rotinas iniciais de memória e nos contratos compartilhados.
+
+### Fluxo de inicialização
+
+```text
+                 ┌─────────────────────┐
+                 │    Firmware UEFI    │
+                 └──────────┬──────────┘
+                            │
+                            ▼
+                 ┌─────────────────────┐
+                 │ VNB                 │
+                 │ Voryn Native Boot   │
+                 └──────────┬──────────┘
+                            │
+                   Carregamento ELF64
+                   Mapa de memória
+                   Framebuffer GOP
+                   Contrato de handoff
+                            │
+                            ▼
+                 ┌─────────────────────┐
+                 │  ExitBootServices   │
+                 └──────────┬──────────┘
+                            │
+                            ▼
+                 ┌─────────────────────┐
+                 │ VNK                 │
+                 │ Voryn Nucleus Kernel│
+                 └──────────┬──────────┘
+                            │
+              ┌─────────────┼─────────────┐
+              │             │             │
+              ▼             ▼             ▼
+          ┌───────┐    ┌─────────┐    ┌────────┐
+          │GDT/TSS│    │   IDT   │    │ Memória│
+          └───────┘    └─────────┘    └────────┘
+              │             │             │
+              └─────────────┼─────────────┘
+                            │
+                            ▼
+                 ┌─────────────────────┐
+                 │ Infraestrutura      │
+                 │ inicial do kernel   │
+                 └─────────────────────┘
+```
+
+Esse fluxo representa a infraestrutura atualmente implementada, sem pressupor a existência de processos, serviços ou ambiente gráfico.
+
+### Organização do código-fonte
+
+```text
+VorynOS/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+│
+├── boot/
+│   └── uefi/
+│       ├── main.zig
+│       └── vnb/
+│
+├── kernel/
+│   ├── arch/
+│   │   └── x86_64/
+│   ├── memory/
+│   └── main.zig
+│
+├── shared/
+│   ├── arch/
+│   ├── elf64.zig
+│   ├── handoff.zig
+│   ├── memmap.zig
+│   └── root.zig
+│
+├── tools/
+│   └── fatimg.zig
+│
+├── scripts/
+│   └── qemu-run.sh
+│
+├── tests/
+│   └── integration/
+│       └── boot-qemu.sh
+│
+├── docs/
+│   ├── adr/
+│   ├── architecture/
+│   ├── roadmap/
+│   ├── specs/
+│   ├── standards/
+│   └── testing/
+│
+├── AGENTS.md
+├── CONTRIBUTING.md
+├── SECURITY.md
+├── LICENSE
+├── build.zig
+├── build.zig.zon
+└── README.md
+```
+
+A organização separa código dependente da arquitetura, contratos compartilhados, ferramentas do host e testes de integração.
+
+---
+
+## Testes e validação
+
+O projeto utiliza diferentes níveis de verificação.
+
+### Testes de unidade
+
+Executados no ambiente host para validar componentes que não dependem diretamente da execução privilegiada.
+
+Entre eles:
+
+- Estruturas compartilhadas.
+- Validação de formatos.
+- Contratos de inicialização.
+- Gerenciadores de memória.
+
+### Testes de integração
+
+A inicialização é testada em uma máquina virtual x86_64 com firmware OVMF.
+
+O teste automatizado verifica marcadores de progresso emitidos pelo bootloader e pelo kernel.
+
+Também identifica condições de falha durante a inicialização.
+
+### Integração contínua
+
+O repositório possui um workflow de GitHub Actions:
+
+`.github/workflows/ci.yml`
+
+O workflow executa:
+
+1. Preparação da toolchain Zig.
+2. Instalação das dependências de emulação.
+3. Testes de unidade.
+4. Compilação dos artefatos.
+5. Teste automatizado de boot.
+6. Inspeção dos binários gerados.
+
+A existência do workflow não implica que todas as funcionalidades futuras estejam implementadas ou que o sistema tenha sido validado em hardware físico.
+
+### Evidências e critérios
+
+A estratégia de testes está documentada em:
+
+[Testing Strategy](docs/testing/testing-strategy.md)
+
+O estado de cada marco é registrado no:
+
+[Roadmap](docs/roadmap/phase-status.md)
+
+---
+
+## Próximos passos
+
+O próximo grande objetivo arquitetural é o **F3 — Execução**.
+
+Esse marco introduzirá progressivamente os mecanismos necessários para executar múltiplas tarefas e iniciar a separação entre kernel e aplicações.
+
+Os principais objetivos são:
+
+1. Implementar threads e estruturas de contexto.
+2. Desenvolver um escalonador preemptivo.
+3. Medir o custo de troca de contexto.
+4. Introduzir execução em modo de usuário.
+5. Implementar a infraestrutura inicial de chamadas de sistema.
+6. Desenvolver comunicação entre processos.
+7. Introduzir mecanismos de controle por capacidades.
+
+A implementação desses recursos deverá respeitar os contratos arquiteturais e os critérios de validação definidos pelo projeto.
+
+**Nenhum desses objetivos deve ser interpretado como funcionalidade concluída enquanto não houver implementação e evidências correspondentes.**
 
 ---
 
 ## Documentação
 
-| Documento | Conteúdo |
-|-----------|----------|
-| [`AGENTS.md`](AGENTS.md) | Protocolo de engenharia e regras de trabalho |
-| [`docs/adr/`](docs/adr/) | Decisões de arquitetura e seus custos |
-| [`docs/specs/`](docs/specs/) | Especificações normativas de contratos e formatos |
-| [`docs/standards/`](docs/standards/) | Padrões de versionamento e de nomes |
-| [`docs/roadmap/`](docs/roadmap/) | Marcos, estado e critérios de aceite |
-| [`docs/testing/`](docs/testing/) | Estratégia de teste e evidências |
+O VorynOS mantém documentação técnica junto ao código-fonte.
+
+| Documento | Descrição |
+|---|---|
+| [AGENTS.md](AGENTS.md) | Protocolo de engenharia e desenvolvimento |
+| [Architecture Overview](docs/architecture/overview.md) | Organização e contratos arquiteturais |
+| [ADR-0001](docs/adr/ADR-0001-voryn-fabric.md) | Modelo Voryn Fabric |
+| [ADR-0002](docs/adr/ADR-0002-boot-chain-and-uefi-abi.md) | Cadeia de inicialização e ABI UEFI |
+| [ADR-0003](docs/adr/ADR-0003-toolchain-and-build.md) | Toolchain e sistema de compilação |
+| [ADR-0004](docs/adr/ADR-0004-x86_64-abi-pitfalls.md) | Particularidades e problemas de ABI x86_64 |
+| [Boot Handoff](docs/specs/boot-handoff-spec.md) | Especificação do contrato de inicialização |
+| [Roadmap](docs/roadmap/phase-status.md) | Estado e planejamento dos marcos |
+| [Testing Strategy](docs/testing/testing-strategy.md) | Estratégia de validação |
+| [VVS-0001](docs/standards/VVS-0001.md) | Política de versionamento |
+| [VN-NAMES-0001](docs/standards/VN-NAMES-0001.md) | Convenções de nomenclatura |
+
+As decisões arquiteturais são registradas por meio de ADRs, incluindo suas justificativas, alternativas e consequências.
 
 ---
 
-## Repositório
+## Desenvolvimento
 
-- Branch principal: `main`
-- Commits pequenos e descritivos, escritos em português brasileiro.
-- Nenhuma publicação (push, tag, release) é feita sem autorização explícita.
+O VorynOS segue uma abordagem de engenharia incremental.
+
+As alterações devem priorizar:
+
+- Correção e previsibilidade.
+- Controle explícito de recursos.
+- Eficiência de memória.
+- Baixa sobrecarga de execução.
+- Interfaces e contratos documentados.
+- Testes reproduzíveis.
+- Organização consistente do código-fonte.
+- Ausência de dependências desnecessárias.
+
+### Política do repositório
+
+- Branch principal: `main`.
+- Commits descritivos em português brasileiro.
+- Alterações incrementais e verificáveis.
+- Documentação atualizada junto às implementações.
+- Publicação de alterações somente mediante autorização explícita do responsável pelo projeto.
+
+---
+
+## Contribuição
+
+Contribuições são bem-vindas.
+
+Antes de propor alterações, consulte:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — orientações para contribuições.
+- [AGENTS.md](AGENTS.md) — padrões e procedimentos de engenharia.
+- [SECURITY.md](SECURITY.md) — diretrizes para comunicação de vulnerabilidades.
+
+Contribuições devem respeitar a arquitetura existente, os contratos documentados e os critérios de qualidade definidos pelo projeto.
+
+---
+
+## Segurança
+
+O VorynOS ainda está em desenvolvimento inicial.
+
+Mecanismos avançados de isolamento, controle de capacidades, proteção entre processos e recuperação de falhas permanecem em planejamento.
+
+**Não utilize o sistema como ambiente de produção ou para processamento de informações sensíveis.**
+
+Para comunicar vulnerabilidades, consulte [SECURITY.md](SECURITY.md).
 
 ---
 
 ## Licença
 
-**GPL-3.0-only.** Todo o código deste repositório é original e escrito para o
-projeto; nenhuma implementação proprietária foi copiada. Contribuições são
-aceitas nos termos descritos em [CONTRIBUTING.md](CONTRIBUTING.md). Relatos de
-vulnerabilidade seguem [SECURITY.md](SECURITY.md).
+O VorynOS é disponibilizado sob a licença **GNU General Public License, versão 3, exclusivamente (GPL-3.0-only)**.
+
+Consulte o arquivo [LICENSE](LICENSE) para conhecer os termos completos.
+
+As contribuições estão sujeitas às condições estabelecidas em [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+<div align="center">
+
+### VorynOS
+
+**Liberdade • Performance • Seu Controle**
+
+*Construindo um sistema operacional independente, um componente de cada vez.*
+
+[Repositório](https://github.com/CeoMatheusDev/VorynOS) ·
+[Documentação](docs/) ·
+[Contribuir](CONTRIBUTING.md) ·
+[Licença](LICENSE)
+
+</div>
