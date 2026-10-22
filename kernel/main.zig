@@ -666,14 +666,13 @@ fn reportOutOfMemory() noreturn {
 
 /// Prepares the bounce pages of the paging module.
 ///
-/// The frames come from the physical manager, below the address where the
-/// image of the kernel starts to be mapped by identity: a frame in that
-/// range is not named by any other mapping of the kernel, so the identity
-/// entry that the paging module adds for it cannot collide with anything,
-/// and every address space carries the entry of the kernel, which makes
-/// the page reachable without a switch of `CR3`.
-fn allocateBounceFrame(limit: u64) ?u64 {
-    return physical.manager.allocateBelow(limit);
+/// The frames come from the physical manager, with no placement rule: a
+/// bounce page is never reached at its own address but through a view in
+/// the private range of the kernel, so any usable frame serves — the
+/// views simply point one entry of the private table at the frame that
+/// the caller wants to see.
+fn allocateBounceFrame() ?u64 {
+    return physical.manager.allocate();
 }
 
 /// Creates one demo process: an address space, three pages, and a task.
