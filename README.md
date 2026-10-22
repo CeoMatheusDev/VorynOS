@@ -587,9 +587,9 @@ All three have been implemented and verified. Interprocess communication support
 
 The remaining objectives for this milestone are:
 
-1. The **VNC capability model**, which determines what resources a process may access and addresses the open architectural question recorded in ADR-0001.
+1. **Capabilities of the address space and of the devices** — the capability fabric covers the channels of the VNX, and the resources of a process are not part of it yet.
 2. **Timed waiting** and waiting on multiple channels simultaneously.
-3. **Dynamic heap management** through VNM, the **signal in the process**, with a handler in the user space, the **policy by exception type**, which today is the same for every user-mode exception, and the **capability of the address space and of the devices**, which the model of capabilities does not cover yet.
+3. **Dynamic heap management** through VNM, the **signal in the process**, with a handler in the user space, and the **policy by exception type**, which today is the same for every user-mode exception.
 4. Measuring context-switch overhead under **representative workloads**, with more tasks and processes.
 
 These implementations must respect the project's architectural contracts and established validation criteria.

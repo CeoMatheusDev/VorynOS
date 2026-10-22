@@ -93,13 +93,17 @@ two is a real copy.
 
 ### 2.5 The user mode window has no fixed address
 
-The window sits **below** the kernel image, and its address is delivered to
-the task in the `rbx` register when the task starts. The window is
+The window sits **below the two-megabyte block that holds the kernel
+image**, and not right below the image itself, and its address is delivered
+to the task in the `rbx` register when the task starts. The window is
 described in the shared module, because the user mode program is written in
 assembly and both sides have to agree on the design byte by byte.
 
 The window of the process lives in a single two-megabyte block, and the
-private chain of the space uses a first-level table of its own.
+private chain of the space uses a first-level table of its own. The block
+below the image is the one that holds no page of the kernel, whatever the
+alignment of the image is, and the entry of the second level that the
+private table replaces therefore takes no kernel page out of the space.
 
 ### 2.6 The copy between processes goes through the kernel stack
 
@@ -110,7 +114,23 @@ in a buffer that lives in the kernel image, and the write to the destination
 happens with the destination space active. The buffer is reachable in both
 directions because the image is mapped in all spaces.
 
-### 2.7 The channel takes the sides as arguments
+### 2.7 The floating point state belongs to the task
+
+The processor does not save the state of the floating point unit and of the
+vector registers between the tasks in the long mode. The state is part of
+the task, and the kernel saves it at the **entry** of the interruption and
+of the system call, before the handler written in Zig runs: the code of the
+handler uses the vector registers, and a save made later would record the
+state of the handler and not the state of the task.
+
+The area of the instruction `fxsave` lives in the context of the task, at
+the offset 192, and the switch restores the area of the incoming task with
+`fxrstor`. A task that is created starts with the state that the unit has
+after `fninit`, and not with an area of zeros: the zeros leave every
+exception unmasked, and an ordinary operation would raise the exception of
+the vector unit.
+
+### 2.8 The channel takes the sides as arguments
 
 The call that sends and the one that receives a message take the **side** of
 the channel as an argument. A channel belongs to two tasks, and each side
@@ -199,6 +219,7 @@ The boot test runs in `zig build qemu-test`, and the full suite
 | Isolation between two processes | IMPLEMENTED — LOCALLY TESTED |
 | Copy between two processes | IMPLEMENTED — LOCALLY TESTED |
 | Message delivery between two processes | IMPLEMENTED — LOCALLY TESTED |
-| VNC capability transfer | PROPOSED |
-| Call that blocks waiting for a message | PROPOSED |
+| VNC capability transfer | IMPLEMENTED — LOCALLY TESTED |
+| Call that blocks waiting for a message | IMPLEMENTED — LOCALLY TESTED |
+| Floating point state per task | IMPLEMENTED — LOCALLY TESTED |
 | Measurement of the delivery latency with the processor clock | IMPLEMENTED — LOCALLY TESTED |

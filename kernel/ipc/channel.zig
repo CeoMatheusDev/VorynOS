@@ -22,11 +22,12 @@
 //! would take it back. Each side has its own queue, and a message sent
 //! by one side waits in the queue of the other side.
 //!
-//! The channel does not block. A task that asks for a message and finds
-//! the queue empty receives the error of the empty queue, and the task
-//! that waits for a message has to ask again. The blocking is a separate
-//! increment, because it requires the system call to be able to resume
-//! after the message arrives.
+//! The channel does not block on its own. A task that asks for a message
+//! with the call of the queue and finds it empty receives the error of the
+//! empty queue, and asks again. A task that does not want to ask again
+//! registers itself as a waiter of the side with the call of the blocking
+//! receive: the message that arrives is delivered directly to the task, and
+//! the kernel wakes it up.
 
 const std = @import("std");
 

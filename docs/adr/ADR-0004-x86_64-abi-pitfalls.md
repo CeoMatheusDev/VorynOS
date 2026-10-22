@@ -109,7 +109,42 @@ extended explicitly.
 The far switch was preferred over the far return: it does not touch the
 stack and it eliminates a class of alignment problems of the removed frame.
 
-### 2.8 Zig 0.17's inline assembly has its own rules
+### 2.8 The stub of an exception with an error code breaks the stack alignment
+
+The System V AMD64 convention requires the stack pointer to be a multiple
+of sixteen **before** the `call`, so that the callee finds the return
+address at `rsp % 16 == 8` and every aligned access of the frame stays
+aligned. The processor pushes a frame of five words when the exception
+comes from the user mode, and of six words when the exception carries an
+error code. Five words and six words have different parities, and the
+stub adds the same number of words in both cases.
+
+The result was an exception handler called with `rsp % 16 == 0` at the
+entry, and the first aligned vector access of the Zig code raised a
+general protection fault (#GP, vector 13) **inside the handler**. The
+second fault entered the same stub, with the same misalignment, and the
+machine entered a fault loop. In `Debug` the compiler does not use the
+aligned form of the vector instructions, and the defect did not show up;
+in `ReleaseSafe` it did.
+
+The stubs now call `ALIGN_STACK` and `UNALIGN_STACK` around the handler,
+and the padding is decided from the value of the stack pointer at the
+entry. The same pair is used by the hardware interrupt stub, which also
+has to support an interruption that comes from the kernel itself.
+
+### 2.9 The sixteen-bit move keeps the upper half of the register
+
+`movw %cs, %ax` writes the low sixteen bits of `rax` and leaves the upper
+forty-eight bits untouched. The routine that captured the context of the
+first task stored the selector of the code segment right after storing the
+address of return in the same register, and the field of the context
+received the high bits of the address. The selector was not a selector,
+and the interrupt return of a resumed task would refuse it.
+
+The selector is written to a register that was zeroed first, or directly
+to the memory of the context with a sixteen-bit move.
+
+### 2.10 Zig 0.17's inline assembly has its own rules
 
 - The input operand has to be an **identifier**, not an expression: an
   address or a conversion must live in a local variable.
@@ -130,6 +165,8 @@ Each pitfall has a form in the code that avoids it:
 | Order of the installations | `kernel/main.zig` |
 | Sixteen-bit selector | `kernel/arch/x86_64/segment.s` |
 | Zero-extended selector | `movzwq` before the far jump |
+| Stack alignment at the entry | `ALIGN_STACK` and `UNALIGN_STACK` in `interrupt.s` |
+| Sixteen-bit move | `xorl` before the move, or a move to memory |
 | Inline assembly rules | accesses in assembly |
 
 ## 4. Consequences

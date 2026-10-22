@@ -152,9 +152,8 @@ channel and the side that holds the message. The result is the kind of the
 message, and the value of the message comes back in the `RDX`.
 
 The call **does not block**: an empty queue returns the error 5, and the
-program repeats the call until the message arrives. The blocking is a
-separate increment, because it requires the call to be able to continue
-after the message arrives.
+program repeats the call until the message arrives. The blocking form is
+the call 8, `receive_blocking`, described in section 5.4.
 
 ### 5.3 `copy_to`
 

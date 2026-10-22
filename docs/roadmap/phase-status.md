@@ -26,7 +26,7 @@ reorganization of the public versioning milestones is registered in
 | Minimal structure | COMPLETED | `boot/`, `kernel/`, `shared/`, `tools/`, `scripts/`, `docs/`, `tests/` |
 | Reproducible build | COMPLETED | `build.zig` + `build.zig.zon` |
 | Documentation | COMPLETED | README, AGENTS, ADRs, specifications, roadmap, testing strategy |
-| ADRs | COMPLETED | ADR-0001 to ADR-0004 |
+| ADRs | COMPLETED | ADR-0001 to ADR-0003 |
 | Git | COMPLETED | branch `main`, descriptive commits, no publication |
 | Initial tests | COMPLETED | `zig build test` (unit) and `zig build qemu-test` (boot) |
 
@@ -107,9 +107,10 @@ capabilities.
 | Preparation of the coprocessor | COMPLETED | the firmware leaves it disabled |
 | Page tables with user mode | COMPLETED | the user bit exists in every level |
 | Complete task context | COMPLETED | the fifteen registers are preserved on every switch |
+| Floating point state per task | COMPLETED | the state is saved at the entry of the interruption and of the call, and restored by the switch |
 | Kernel stack separated from the code stack | COMPLETED | the processor frame is never in a page of the user |
 | System call | COMPLETED | the `syscall` instruction, with the handler in Zig |
-| Contract of the system call | COMPLETED | eight calls, with the contract in `docs/specs/syscall-abi.md` |
+| Contract of the system call | COMPLETED | ten calls, with the contract in `docs/specs/syscall-abi.md` |
 | Checking of the user ranges | COMPLETED | a call with an address of the kernel is refused |
 | User mode | COMPLETED | the task writes in its page and the answer of the call comes back |
 | Task segment of the 64 bit mode | COMPLETED | the layout is verified at compile time |
