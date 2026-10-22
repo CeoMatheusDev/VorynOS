@@ -57,6 +57,44 @@ pub const Kind = enum {
     process,
 };
 
+/// The values that name the kind of a capability in the system call
+/// interface.
+///
+/// The values are part of the contract of the calls, and not of the kernel:
+/// a program that calls `grant` or `revoke` writes one of them in the
+/// register of the kind.
+pub const KindWire = struct {
+    /// The capability of a channel.
+    pub const channel: u64 = 0;
+    /// The capability of a process.
+    pub const process: u64 = 1;
+};
+
+/// The kind that a value of the system call interface names.
+pub fn kindFromWire(value: u64) ?Kind {
+    return switch (value) {
+        KindWire.channel => .channel,
+        KindWire.process => .process,
+        else => null,
+    };
+}
+
+/// The value of the system call interface that names the kind.
+pub fn kindToWire(kind: Kind) u64 {
+    return switch (kind) {
+        .channel => KindWire.channel,
+        .process => KindWire.process,
+    };
+}
+
+/// The name of the kind, for the diagnostics.
+pub fn kindName(kind: Kind) []const u8 {
+    return switch (kind) {
+        .channel => "channel",
+        .process => "process",
+    };
+}
+
 /// The rights of a capability.
 ///
 /// The rights are bits, and a holder can have a subset of the rights that
@@ -77,6 +115,24 @@ pub const Rights = struct {
     /// give it away.
     pub const use: u64 = send | receive;
 };
+
+/// The rights that a capability of the kind can carry.
+///
+/// The right of delegation is common to the two kinds. The other rights
+/// are the operations that the subject accepts: a channel accepts messages,
+/// and a process accepts a write in its address space.
+pub fn allowedRights(kind: Kind) u64 {
+    return switch (kind) {
+        .channel => Rights.send | Rights.receive | Rights.delegate,
+        .process => Rights.write | Rights.delegate,
+    };
+}
+
+/// True when the rights are not empty and apply to the kind.
+pub fn validRights(kind: Kind, rights: u64) bool {
+    if (rights == 0) return false;
+    return rights & ~allowedRights(kind) == 0;
+}
 
 /// The number of entries of the table of capabilities.
 pub const max_capabilities = 16;
@@ -477,4 +533,45 @@ test "the handle of a capability is found by its subject" {
     try testing.expectEqual(handle, handleOf(1, .channel, 2).?);
     try testing.expect(handleOf(1, .channel, 3) == null);
     try testing.expect(handleOf(2, .channel, 2) == null);
+}
+
+test "the wire of the kind names exactly the two kinds" {
+    try testing.expect(kindFromWire(KindWire.channel).? == .channel);
+    try testing.expect(kindFromWire(KindWire.process).? == .process);
+    try testing.expect(kindFromWire(2) == null);
+    try testing.expect(kindFromWire(std.math.maxInt(u64)) == null);
+
+    try testing.expectEqual(KindWire.channel, kindToWire(.channel));
+    try testing.expectEqual(KindWire.process, kindToWire(.process));
+}
+
+test "the rights of the kind are the operations of the subject" {
+    try testing.expect(validRights(.channel, Rights.use));
+    try testing.expect(validRights(.channel, Rights.delegate));
+    try testing.expect(validRights(.channel, Rights.use | Rights.delegate));
+    try testing.expect(!validRights(.channel, Rights.write));
+    try testing.expect(!validRights(.channel, 0));
+
+    try testing.expect(validRights(.process, Rights.write));
+    try testing.expect(validRights(.process, Rights.write | Rights.delegate));
+    try testing.expect(!validRights(.process, Rights.send));
+    try testing.expect(!validRights(.process, 0));
+}
+
+test "the process capability that is delegated can be taken back" {
+    init();
+
+    const handle = create(.process, 1, Rights.write | Rights.delegate).?;
+    try testing.expect(give(0, handle, Rights.write | Rights.delegate));
+
+    // The owner lends the space without the right of delegation, and the
+    // holder uses it.
+    try testing.expect(transfer(0, 1, handle, Rights.write));
+    try testing.expect(holdsSubject(1, .process, 1, Rights.write));
+    try testing.expect(!holds(1, handle, Rights.delegate));
+
+    // The owner takes the capability back, and the holder cannot write in
+    // the space any more.
+    try testing.expect(revoke(0, 1, handle));
+    try testing.expect(!holdsSubject(1, .process, 1, Rights.write));
 }

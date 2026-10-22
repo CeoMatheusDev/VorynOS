@@ -5,7 +5,7 @@
 | **State** | ACCEPTED |
 | **Date** | 2026-10-22 |
 | **Scope** | The interface between the user mode and the kernel |
-| **Contract version** | `syscall_abi = 4` |
+| **Contract version** | `syscall_abi = 5` |
 
 ## 1. Objective
 
@@ -21,12 +21,15 @@ Version 2 adds the channel calls and the call that copies a block between
 two processes. Version 3 adds the call that **blocks** waiting for a
 message. Version 4 adds the calls that give a capability to another process
 and that take it back, and it **requires** the capability of the channel
-that the calls of the channel use.
+that the calls of the channel use. Version 5 adds the **kind** of the
+capability to the calls that give and take it, so that a process can
+delegate the capability of an address space as well as the capability of a
+channel.
 
-The calls of the earlier versions **do not change their number and do not
-change their meaning**, with one exception that is deliberate and that the
-section 9 describes: the calls that touch a channel need the capability of
-the channel, and a process that does not hold it is refused.
+The calls of the earlier versions **do not change their number**. Their
+behavior changes in the points that the sections 9 and 10 describe: the
+calls that touch a channel need the capability of the channel, and the
+calls 9 and 10 carry the kind of the capability.
 
 ## 2. The mechanism
 
@@ -118,7 +121,7 @@ Ends the user task. The kernel marks the task as terminated and the
 scheduler does not choose it again; the processor leaves the task on the
 next interrupt. The exit code is registered in the task.
 
-## 5. The calls of version 2 and version 4
+## 5. The calls of the versions 2, 4 and 5
 
 | Number | Call | Arguments | Result |
 |--------|---------|-----------|-----------|
@@ -126,8 +129,8 @@ next interrupt. The exit code is registered in the task.
 | 6 | `receive` | `RDI` channel, `RSI` side | the kind of the message, and the value in the `RDX` |
 | 7 | `copy_to` | `RDI` process, `RSI` destination, `RDX` source, `R8` length | the number of bytes copied |
 | 8 | `receive_blocking` | `RDI` channel, `RSI` side | the kind of the message, and the value in the `RDX` |
-| 9 | `grant` | `RDI` process, `RSI` channel, `RDX` rights | zero, when the capability was given |
-| 10 | `revoke` | `RDI` process, `RSI` channel | zero, when the capability was taken back |
+| 9 | `grant` | `RDI` process, `RSI` kind, `RDX` subject, `R8` rights | zero, when the capability was given |
+| 10 | `revoke` | `RDI` process, `RSI` kind, `RDX` subject | zero, when the capability was taken back |
 
 ### 5.1 `send`
 
@@ -212,44 +215,65 @@ The call returns the error 5 when the queue is empty and **there is no
 other task to run**: a wait that would be the only task of the system would
 be a busy loop, and not a wait.
 
-### 5.5 The calls of the version 4
+### 5.5 The calls that give and take a capability
+
+The calls 9 and 10 entered the contract in the version 4, and the version 5
+added the kind of the capability. A capability is about a **subject**, and
+the subject is a channel or a process: the kind says which one the call
+names.
+
+| Kind | Value | Subject |
+|---|---|---|
+| channel | 0 | the identifier of the channel |
+| process | 1 | the identifier of the process whose address space the capability describes |
+
+A kind that does not have one of the values above is refused with the error
+11, `unknown_kind`. The kernel does not guess what a value that it does not
+know would mean.
 
 #### 5.5.1 `grant`
 
 Gives a capability of the caller to another process. The arguments are the
-identifier of the target process, the identifier of the subject of the
-capability — the channel — and the rights that the target receives.
+identifier of the target process, the kind of the capability, the identifier
+of the subject, and the rights that the target receives.
 
 The caller has to hold the capability of the subject with the right of
-delegation. The rights that the target receives have to be a subset of the
-rights that the caller holds, and the right of delegation is **not** part
-of what the target receives, unless the caller asks for it explicitly.
+delegation. The rights that the target receives have to be non-empty, they
+have to apply to the kind, and they have to be a subset of the rights that
+the caller holds. The right of delegation is **not** part of what the target
+receives, unless the caller asks for it explicitly.
 
-The rights of the version 4 are:
+The rights of the version 5 are:
 
-| Right | Meaning |
-|---|---|
-| 1 | The right to put a message in the subject |
-| 2 | The right to take a message of the subject |
-| 4 | The right to give the capability to another process |
+| Right | Value | Meaning | Kind |
+|---|---|---|---|
+| `send` | 1 | The right to put a message in the subject | channel |
+| `receive` | 2 | The right to take a message of the subject | channel |
+| `delegate` | 4 | The right to give the capability to another process | channel, process |
+| `write` | 8 | The right to write in the address space of the subject | process |
 
-The call answers with the error 10 when the caller does not hold the
-capability, when the rights are wider than the rights of the caller, or
-when the process does not exist.
+A right that belongs to another kind is refused with the error 12,
+`invalid_rights`, and so is an empty set of rights: a capability that
+authorizes nothing is not a capability.
+
+The call answers with the error 6 when the channel does not exist, with the
+error 8 when the process does not exist, and with the error 10 when the
+caller does not hold the capability, when the rights are wider than the
+rights of the caller, or when the target process does not exist.
 
 #### 5.5.2 `revoke`
 
 Takes a capability back from another process. The arguments are the
-identifier of the target process and the identifier of the subject of the
-capability — the channel.
+identifier of the target process, the kind of the capability and the
+identifier of the subject.
 
 The caller has to hold the capability of the subject with the right of
 delegation: the owner of the capability takes it back from the process it
 gave it to.
 
-The call answers with the error 10 when the caller does not hold the
-capability with the right of delegation, and with the error 8 when the
-process does not exist.
+The call answers with the error 6 when the channel does not exist, with the
+error 8 when the process does not exist, and with the error 10 when the
+caller does not hold the capability with the right of delegation.
 
 ## 6. The result and the errors
 
@@ -268,7 +292,9 @@ the code of the error:
 | 7 | full queue | the side of the channel does not accept more messages |
 | 8 | unknown process | the identifier of the process does not exist |
 | 9 | impossible wait | the task waited for a message and there was no other task to run |
-| 10 | not authorized | the process does not hold the capability of the channel |
+| 10 | not authorized | the process does not hold the capability of the subject |
+| 11 | unknown kind | the kind of the capability does not exist |
+| 12 | invalid rights | the rights are empty, or they do not apply to the kind |
 
 The limit of the length is **64 KiB** per call, and it exists so that the
 kernel does not spend an undetermined time inside a call.
@@ -301,14 +327,16 @@ knowing the error codes.
     the check of the capability happens **before** the queue is touched.
 11. A capability that a process receives does not carry the right of
     delegation unless the process that gives it asks for it explicitly.
+12. A change to the arguments of an existing call is a break of the
+    contract, and it increments the version, as a new call does.
 
-## 8. What version 4 does not have
+## 8. What version 5 does not have
 
-- **The capability of the address space.** The process has access to the
-  whole space of the user mode, and the model of capabilities does not
-  change that yet.
 - **The capability that carries a memory range.** A capability is about a
   subject of the kernel, and a range of memory is not one of them.
+- **The rights of read and of execution over a process.** The capability
+  of a process carries the right to write in its address space, and not the
+  right to read it nor to execute its code.
 - **The capability of a device.** No driver exists to hold one.
 - **Files.** The `write` call knows only the console.
 - **Message structure.** There is no message format defined, and the
@@ -339,3 +367,25 @@ because the calls 1 to 8 do not change their number nor their meaning.
 The rule of the VVS-0001 asks for a bigger version of the contract for a
 change of this kind, and the version 4 is that bigger version. The version
 number is the only thing that changes for the programs that keep working.
+
+## 10. The break of the version 5
+
+The version 5 **breaks** the contract of the version 4 in the two calls
+that give and take a capability, and the break is deliberate.
+
+The version 4 named the subject of the capability in the second argument
+and the rights in the third one, and the subject was always a channel. A
+process could not delegate the capability of an address space, because the
+call had no way to say that the subject was a process. The version 5 adds
+the kind as the second argument, moves the subject to the third one, and
+the rights of `grant` to the fourth one.
+
+A program that was compiled against the version 4 and that calls 9 or 10
+**stops working**: in `grant`, the kernel reads the channel as the kind and
+the rights as the subject; in `revoke`, the channel is read as the kind and
+the subject is whatever the third register held. The calls 1 to 8 do not
+change their number nor their meaning, and a program that uses only them
+keeps working.
+
+The rule of the VVS-0001 asks for a bigger version of the contract for a
+change of this kind, and the version 5 is that bigger version.

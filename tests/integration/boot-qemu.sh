@@ -255,6 +255,11 @@ require_marker "[VNK] user: the copy without the capability of the address space
 require_marker "[VNK] capabilities: the address space of the process 1 belongs to the process 0"
 require_pattern '\[VNK\] capabilities: the process [0-9]+ holds the capability of the channel 0' 'the delegation of the capability'
 require_pattern '\[VNK\] capabilities: the process [0-9]+ does not hold the capability of the channel 0 any more' 'the revocation of the capability'
+require_marker "[VNK] syscall 9 from user gave the capability of the process 1 to the process 2, result 0x0"
+require_marker "[VNK] syscall 10 from user took the capability of the process 1 back from the process 2, result 0x0"
+require_marker "[VNK] capabilities: the calls delegated the address space of the process 1 to the process 2 and took it back"
+require_marker "[VNK] user: the grant with an unknown kind was refused with the error 11"
+require_marker "[VNK] user: the grant with the rights of another kind was refused with the error 12"
 require_marker "[VNK] user: the second process wrote 0x5a5a1235 in its own page"
 require_marker "[VNK] user: the copy between the two processes moved 8 bytes"
 require_marker "VORYN-KERNEL-READY"

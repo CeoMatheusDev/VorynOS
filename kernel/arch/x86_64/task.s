@@ -356,6 +356,11 @@ voryn_capture_context:
  *   0x50  the result of the copy with the overlapping ranges
  *   0x58  the result of the copy to the other process
  *   0x60  the block that the copy to the other process wrote
+ *   0x80  the result of the copy that a process without the capability made
+ *   0x88  the result of the delegation of the address space
+ *   0x90  the result of the revocation of the address space
+ *   0x98  the result of the grant with a kind that does not exist
+ *   0xa0  the result of the grant with the rights of another kind
  */
 .global voryn_user_program
 .type voryn_user_program, @function
@@ -480,6 +485,28 @@ voryn_user_program:
     leaq 0x1080(%rbx), %rdi   /* the place of the refusal */
     movq %rax, (%rdi)
 
+    /* The call with a kind that the kernel does not know is refused, and
+     * the kernel does not guess the meaning of the value. */
+    movq $1, %rdi             /* the process of the destination */
+    movabsq $0xFFFF, %rsi     /* a kind that does not exist */
+    movq $0, %rdx             /* the channel */
+    movq $1, %r8              /* the right to send */
+    movq $9, %rax             /* the number of the system call */
+    syscall
+    leaq 0x1098(%rbx), %rdi
+    movq %rax, (%rdi)
+
+    /* The call with a right of another kind is refused: the right of write
+     * belongs to a process, and not to a channel. */
+    movq $1, %rdi             /* the process of the destination */
+    movq $0, %rsi             /* the kind: channel */
+    movq $0, %rdx             /* the channel */
+    movq $8, %r8              /* the write, a right of a process */
+    movq $9, %rax             /* the number of the system call */
+    syscall
+    leaq 0x10A0(%rbx), %rdi
+    movq %rax, (%rdi)
+
     movabsq $0x0, %rdi
     movq %rax, (%rdi)
 9:
@@ -520,8 +547,9 @@ voryn_user_program:
      * the third process receives are the use of the channel and not the
      * right of delegation: the chain of delegation stops there. */
     movq $2, %rdi             /* the process of the destination */
-    movq $0, %rsi             /* the channel */
-    movq $3, %rdx             /* the rights: send and receive */
+    movq $0, %rsi             /* the kind: channel */
+    movq $0, %rdx             /* the channel */
+    movq $3, %r8              /* the rights: send and receive */
     movq $9, %rax             /* the number of the system call */
     syscall
     leaq 0x1078(%rbx), %rdi   /* the result of the delegation */
@@ -555,7 +583,8 @@ voryn_user_program:
      * that is not needed any more does not stay in the set of the process
      * that answered. */
     movq $1, %rdi             /* the process of the destination */
-    movq $0, %rsi             /* the channel */
+    movq $0, %rsi             /* the kind: channel */
+    movq $0, %rdx             /* the channel */
     movq $10, %rax            /* the number of the system call */
     syscall
     leaq 0x1070(%rbx), %rdi   /* the result of the revocation */
@@ -574,6 +603,29 @@ voryn_user_program:
     movq $7, %rax             /* the number of the system call */
     syscall
     leaq 0x1058(%rbx), %rdi
+    movq %rax, (%rdi)
+
+    /* The delegation of the capability of the address space through the
+     * call. The kind one is the process, and the subject is the process
+     * that answers: it is the same capability that the copy used. The
+     * rights are the right to write in the space, and not the right of
+     * delegation. */
+    movq $2, %rdi             /* the process of the destination */
+    movq $1, %rsi             /* the kind: process */
+    movq $1, %rdx             /* the process that answers */
+    movq $8, %r8              /* the rights: write */
+    movq $9, %rax             /* the number of the system call */
+    syscall
+    leaq 0x1088(%rbx), %rdi   /* the result of the delegation */
+    movq %rax, (%rdi)
+
+    /* The capability is taken back from the process that received it. */
+    movq $2, %rdi             /* the process of the destination */
+    movq $1, %rsi             /* the kind: process */
+    movq $1, %rdx             /* the process that answers */
+    movq $10, %rax            /* the number of the system call */
+    syscall
+    leaq 0x1090(%rbx), %rdi   /* the result of the revocation */
     movq %rax, (%rdi)
 
     /* The call that ends the task. */

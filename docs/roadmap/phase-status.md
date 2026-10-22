@@ -110,7 +110,7 @@ capabilities.
 | Floating point state per task | COMPLETED | the state is saved at the entry of the interruption and of the call, and restored by the switch |
 | Kernel stack separated from the code stack | COMPLETED | the processor frame is never in a page of the user |
 | System call | COMPLETED | the `syscall` instruction, with the handler in Zig |
-| Contract of the system call | COMPLETED | ten calls, with the contract in `docs/specs/syscall-abi.md` |
+| Contract of the system call | COMPLETED | ten calls, with the contract in `docs/specs/syscall-abi.md`, version 5 |
 | Checking of the user ranges | COMPLETED | a call with an address of the kernel is refused |
 | User mode | COMPLETED | the task writes in its page and the answer of the call comes back |
 | Task segment of the 64 bit mode | COMPLETED | the layout is verified at compile time |
@@ -131,7 +131,8 @@ capabilities.
 | Capability fabric of the VNC | COMPLETED | the kernel holds the table, the process holds the set, and the chain of delegation stops |
 | Capabilities of the channels of the VNX | COMPLETED | a process without the capability of the channel is refused, and the owner delegates and revokes it |
 | Capability of the address space of a process | COMPLETED | the copy into the space of a process without the capability is refused |
-| VNC capabilities | PROPOSED | the capability of the devices is not implemented yet |
+| Delegation of the address space through the calls | COMPLETED | the owner delegates the capability of the process to the third process and takes it back, with the kind of the capability |
+| Capability of a device | PROPOSED | the capability of the devices is not implemented yet |
 
 The user mode is **implemented and verified**. The user task runs in the
 third privilege level, writes in its own page of data, calls the kernel with
@@ -205,11 +206,11 @@ Acceptance criteria of the rest of the milestone:
 
 What is still missing in the milestone:
 
-1. **The capabilities of the address space and of the devices.** The model
-   of capabilities exists and works, but it covers the channels of the VNX
-   only: the process still has access to the whole space of the user mode.
-   The question of the ADR-0001 is answered for the shared resource, and
-   it is open for the others.
+1. **The capability of the devices.** The model covers the channels and
+   the address spaces, and a device is not a subject yet: the framebuffer
+   is the only device of the kernel, and no capability describes it. The
+   question of the ADR-0001 is answered for the shared resources, and it is
+   open for the devices.
 2. **More processes.** The kernel creates three processes, and it is two of
    them that talk: the third exists to prove that a process that fails does
    not bring the others down. The number of address spaces is limited by a

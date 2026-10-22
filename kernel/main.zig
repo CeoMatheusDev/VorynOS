@@ -270,6 +270,30 @@ fn userCopyRefusedAddress() u64 {
     return userDataAddress() + usermode.data_copy_refused;
 }
 
+/// The address of the word that holds the result of the delegation of the
+/// capability of an address space through the call.
+fn userProcessGrantedAddress() u64 {
+    return userDataAddress() + usermode.data_process_granted;
+}
+
+/// The address of the word that holds the result of the revocation of the
+/// capability of an address space through the call.
+fn userProcessRevokedAddress() u64 {
+    return userDataAddress() + usermode.data_process_revoked;
+}
+
+/// The address of the word that holds the result of the grant with a kind
+/// that the kernel does not know.
+fn userKindRefusedAddress() u64 {
+    return userDataAddress() + usermode.data_kind_refused;
+}
+
+/// The address of the word that holds the result of the grant with a right
+/// that does not apply to the kind.
+fn userRightsRefusedAddress() u64 {
+    return userDataAddress() + usermode.data_rights_refused;
+}
+
 /// The address of the thirteenth word of the page of data of the user mode.
 ///
 /// The copy to the other process writes there the block that it copied.
@@ -698,12 +722,13 @@ fn installCapabilities() void {
         port.haltForever();
     };
 
-    const handle = capability.create(.channel, 0, capability.Rights.all) orelse {
+    const channel_rights = capability.Rights.use | capability.Rights.delegate;
+    const handle = capability.create(.channel, 0, channel_rights) orelse {
         serial.printLine("[VNK] FATAL: the table of capabilities is full", .{});
         port.haltForever();
     };
 
-    if (!capability.give(owner.id, handle, capability.Rights.all)) {
+    if (!capability.give(owner.id, handle, channel_rights)) {
         serial.printLine("[VNK] FATAL: the capability of the channel could not be given", .{});
         port.haltForever();
     }
@@ -1053,6 +1078,78 @@ fn reportCapabilities() void {
         serial.printLine("[VNK] capabilities: the revocation of the process {d} failed with 0x{x}", .{
             owner.id,
             revoked,
+        });
+    }
+
+    // The delegation of the capability of the address space through the
+    // calls. The owner lends the space of the process that answers to the
+    // third process and takes it back; the two results and the final state
+    // of the set prove that the calls carry the kind of the capability.
+    attempts = 0;
+    var process_revoked: u64 = 1;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        process_revoked = userWord(owner, userProcessRevokedAddress());
+        if (process_revoked == 0) break;
+        cpu.halt();
+    }
+
+    const process_granted = userWord(owner, userProcessGrantedAddress());
+    const process_holds = capability.holdsSubject(
+        stranger.id,
+        .process,
+        answerer.id,
+        capability.Rights.write,
+    );
+
+    if (process_granted == 0 and process_revoked == 0 and !process_holds) {
+        serial.printLine("[VNK] capabilities: the calls delegated the address space of the process {d} to the process {d} and took it back", .{
+            answerer.id,
+            stranger.id,
+        });
+    } else {
+        serial.printLine("[VNK] capabilities: the delegation of the address space through the calls failed: 0x{x} 0x{x}", .{
+            process_granted,
+            process_revoked,
+        });
+    }
+
+    // The refusals of the calls that carry the kind of the capability. The
+    // values are written by the third process, which holds no capability:
+    // the refusal has to come from the kind and from the rights, and not
+    // from the missing capability.
+    attempts = 0;
+    var kind_refused: u64 = 0;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        kind_refused = userWord(stranger, userKindRefusedAddress());
+        if (kind_refused != 0) break;
+        cpu.halt();
+    }
+
+    attempts = 0;
+    var rights_refused: u64 = 0;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        rights_refused = userWord(stranger, userRightsRefusedAddress());
+        if (rights_refused != 0) break;
+        cpu.halt();
+    }
+
+    if (kind_refused == syscall.failure(syscall.Error.unknown_kind)) {
+        serial.printLine("[VNK] user: the grant with an unknown kind was refused with the error {d}", .{
+            syscall.Error.unknown_kind,
+        });
+    } else {
+        serial.printLine("[VNK] user: the grant with an unknown kind was not refused, the result is 0x{x}", .{
+            kind_refused,
+        });
+    }
+
+    if (rights_refused == syscall.failure(syscall.Error.invalid_rights)) {
+        serial.printLine("[VNK] user: the grant with the rights of another kind was refused with the error {d}", .{
+            syscall.Error.invalid_rights,
+        });
+    } else {
+        serial.printLine("[VNK] user: the grant with the rights of another kind was not refused, the result is 0x{x}", .{
+            rights_refused,
         });
     }
 }

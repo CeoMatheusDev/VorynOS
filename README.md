@@ -153,7 +153,7 @@ The kernel provides an initial functional infrastructure for processor managemen
 - A dynamically selected user-mode window positioned outside the kernel image and assigned to the task during creation.
 - Copying a memory block from one process to another, reading from the source address space and writing to the destination address space.
 - VNX message channels supporting message delivery between two processes, with delivery latency measured using the processor clock.
-- **Capability fabric of the VNC**: the kernel holds the table of the capabilities and every process holds a set of them. A process that does not hold the capability of a channel does not use it, and the owner of the channel delegates the capability to another process and takes it back.
+- **Capability fabric of the VNC**: the kernel holds the table of the capabilities and every process holds a set of them. A process that does not hold the capability of a channel does not use it, and the owner of the channel delegates the capability to another process and takes it back. The calls carry the kind of the capability, so the owner of the address space of a process can delegate it as well.
 - A **blocking** system call that waits for a message: the waiting task is not scheduled, the scheduler selects another task, and message arrival wakes the waiting task with the result stored in its saved context.
 
 **Memory Management**

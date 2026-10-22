@@ -134,8 +134,8 @@ Two calls carry the model to the processes:
 
 | Call | Number | Arguments |
 |---|---|---|
-| `grant` | 9 | the target process, the subject of the capability, the rights |
-| `revoke` | 10 | the target process, the subject of the capability |
+| `grant` | 9 | the target process, the kind, the subject of the capability, the rights |
+| `revoke` | 10 | the target process, the kind, the subject of the capability |
 
 The `grant` moves a capability to another process, and the rights that the
 target receives have to be a subset of the rights that the caller holds.
@@ -143,8 +143,16 @@ The `revoke` takes the capability back, and only the holder of the right
 of delegation can do it: the owner of the capability takes it back from the
 process it gave it to.
 
-The contract of the calls moves from the version 3 to the version 4. The
-calls 1 to 8 **do not change** their number nor their meaning.
+The calls carry the **kind** of the capability: the value 0 names a channel
+and the value 1 names a process. The kind is what lets the owner lend the
+address space of a process through the same calls that lend a channel.
+
+The contract of the calls moved from the version 3 to the version 4 with
+the calls 9 and 10, and from the version 4 to the version 5 with the kind.
+The calls 1 to 8 **do not change** their number nor their meaning. The
+break of the version 5 is deliberate: a program compiled against the
+version 4 that calls 9 or 10 sees the arguments shift, and it has to be
+compiled against the new version.
 
 ## 3. What was discarded
 
@@ -174,8 +182,9 @@ is the same for the other subjects.
 
 ## 4. The consequence for the contract
 
-The contract of the system call moves to the version 4, with the calls 9
-and 10, and with the error 10, `not_authorized`.
+The contract of the system call moves to the version 5, with the calls 9
+and 10 carrying the kind of the capability, and with the errors 11,
+`unknown_kind`, and 12, `invalid_rights`.
 
 The calls 1 to 8 keep their number and their meaning, and **their
 behavior changes in two points**: the calls that touch a channel now need
@@ -186,11 +195,19 @@ that nobody gave it, or that wrote in the space of a process without the
 capability of that space, **stops working**; the program that used the
 resources that the kernel gave it keeps working.
 
+The version 5 changes the arguments of the calls 9 and 10, and not their
+meaning: the subject of the capability is still the resource that the
+call lends, and the kind is the new argument that says whether the subject
+is a channel or a process. A program that calls 9 or 10 and was compiled
+against the version 4 **stops working** until it is compiled against the
+version 5; a program that uses the calls 1 to 8 keeps working without a
+change.
+
 This is a break of the contract, and it is deliberate: the version 3 let
-every process use every channel, and that was the defect. The rule of the
-VVS-0001 says that a break of the layout of a contract needs a `MAJOR` of
-the system or a bigger version of the contract, and the version 4 of the
-contract is exactly that.
+every process use every channel, and the version 4 could not lend the
+address space. The rule of the VVS-0001 says that a break of the layout of
+a contract needs a `MAJOR` of the system or a bigger version of the
+contract, and the version 5 of the contract is exactly that.
 
 ## 5. The consequence for the kernel
 
@@ -217,7 +234,12 @@ The automated boot test verifies, in addition to what was already verified:
   trip, with the capability that the kernel gave to both of them;
 - that a process **without** the capability of an address space is refused
   when it copies a block into that space, and that the refusal is the
-  error 10.
+  error 10;
+- that the owner **delegates the capability of the address space** to the
+  third process through the call 9 with the kind of the process, and takes
+  it back through the call 10;
+- that a call with an **unknown kind** is refused with the error 11, and
+  that a call with a right of another kind is refused with the error 12.
 
 The unit tests of the module verify the properties of the model itself:
 the capability that nobody holds authorizes nothing, the rights of the
@@ -238,11 +260,17 @@ limit.
 | The call `grant` | IMPLEMENTED — LOCALLY TESTED |
 | The call `revoke` | IMPLEMENTED — LOCALLY TESTED |
 | The capability of the address space of a process | IMPLEMENTED — LOCALLY TESTED |
+| The kind of the capability in the calls | IMPLEMENTED — LOCALLY TESTED |
+| The delegation of the address space through the calls | IMPLEMENTED — LOCALLY TESTED |
 | The capability that carries a memory range | PROPOSED |
 | The capability of a device | PROPOSED |
 
-The calls `grant` and `revoke` name the subject as a channel, and the
-contract of the calls does not carry the kind of the capability yet. The
-delegation of the capability of an address space exists in the module and
-is exercised by the unit tests, but a process cannot delegate it to
-another one through the calls until the contract carries the kind.
+The calls `grant` and `revoke` carry the kind of the capability, and the
+value 0 names a channel and the value 1 names a process. A process can
+delegate the capability of an address space to another one and take it
+back, with the same calls that delegate a channel. The rights of a kind are
+the operations that its subject accepts, and a right of another kind is
+refused with the error 12.
+
+The capability of a device is the next subject of the model, and it is
+still proposed: no driver exists to hold one.

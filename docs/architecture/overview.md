@@ -104,7 +104,7 @@ system.
 | Memory map | array of `MemoryDescriptor` (40 bytes) | `shared/handoff.zig` |
 | Kernel image | relocatable ELF64 (`ET_DYN`) | `shared/elf64.zig` |
 | User mode window | offset constants, shared with the assembly | `shared/usermode.zig` |
-| System call contract | version `syscall_abi = 4`, ten calls | `docs/specs/syscall-abi.md` |
+| System call contract | version `syscall_abi = 5`, ten calls | `docs/specs/syscall-abi.md` |
 | Task context | `extern struct` with the fifteen registers | `kernel/task/context.zig` |
 | Console | `std.Io.Writer` writer over the UART | `shared/arch/x86_64/serial.zig` |
 

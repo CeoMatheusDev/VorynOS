@@ -82,6 +82,16 @@ pub const data_capability_granted: u64 = 0x78;
 /// The result of the copy that a process without the capability of the
 /// address space made.
 pub const data_copy_refused: u64 = 0x80;
+/// The result of the delegation of the capability of the address space
+/// through the call.
+pub const data_process_granted: u64 = 0x88;
+/// The result of the revocation of the capability of the address space
+/// through the call.
+pub const data_process_revoked: u64 = 0x90;
+/// The result of the grant with a kind that the kernel does not know.
+pub const data_kind_refused: u64 = 0x98;
+/// The result of the grant with a right of another kind.
+pub const data_rights_refused: u64 = 0xA0;
 
 /// The block that the program of the user mode writes for the copy with the
 /// overlapping ranges.
@@ -108,6 +118,16 @@ test "the words of the page of the data do not overlap" {
         data_answer,
         data_overlap_origin,
         data_overlap_result,
+        data_copy_result,
+        data_copy_target,
+        data_capability_refused,
+        data_capability_revoked,
+        data_capability_granted,
+        data_copy_refused,
+        data_process_granted,
+        data_process_revoked,
+        data_kind_refused,
+        data_rights_refused,
     };
 
     for (words, 0..) |word, index| {

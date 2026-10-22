@@ -182,9 +182,9 @@ pub const Number = struct {
     pub const copy_to: u64 = 7;
     /// The call that gives a capability of the caller to another process.
     ///
-    /// The arguments are the identifier of the target process, the
-    /// identifier of the subject of the capability — the channel — and the
-    /// rights that the target receives.
+    /// The arguments are the identifier of the target process, the kind of
+    /// the capability, the identifier of the subject — the channel or the
+    /// process — and the rights that the target receives.
     ///
     /// The caller has to hold the capability with the right of delegation,
     /// and the rights that the target receives have to be a subset of the
@@ -193,8 +193,9 @@ pub const Number = struct {
     pub const grant: u64 = 9;
     /// The call that takes a capability back from another process.
     ///
-    /// The arguments are the identifier of the target process and the
-    /// identifier of the subject of the capability — the channel.
+    /// The arguments are the identifier of the target process, the kind of
+    /// the capability and the identifier of the subject — the channel or the
+    /// process.
     ///
     /// The caller has to hold the capability with the right of delegation:
     /// the owner of the capability takes it back from the process it gave it
@@ -234,10 +235,15 @@ pub const Error = struct {
     /// The process does not hold the capability that the call needs.
     ///
     /// The error says that the process does not hold the capability of the
-    /// channel that the call names. The process that does not hold it
-    /// cannot use the channel, and the capability is what the owner of the
-    /// channel gave to the processes that may use it.
+    /// subject that the call names. The process that does not hold it
+    /// cannot use the subject, and the capability is what the owner of the
+    /// subject gave to the processes that may use it.
     pub const not_authorized: u64 = 10;
+    /// The kind of the capability does not exist.
+    pub const unknown_kind: u64 = 11;
+    /// The rights are empty, or they do not apply to the kind of the
+    /// capability.
+    pub const invalid_rights: u64 = 12;
 };
 
 /// The largest block that a call copies in one go.
@@ -456,21 +462,27 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
             });
         },
         Number.grant => {
-            frame.rax = grant(frame.rdi, frame.rsi, frame.rdx, privilege);
-            serial.printLine("[VNK] syscall {d} from {s} gave the channel {d} to the process {d}", .{
+            frame.rax = grant(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
+            const kind = capability.kindFromWire(frame.rsi);
+            serial.printLine("[VNK] syscall {d} from {s} gave the capability of the {s} {d} to the process {d}, result 0x{x}", .{
                 number,
                 caller,
-                frame.rsi,
+                if (kind) |value| capability.kindName(value) else "unknown",
+                frame.rdx,
                 frame.rdi,
+                frame.rax,
             });
         },
         Number.revoke => {
-            frame.rax = revoke(frame.rdi, frame.rsi, privilege);
-            serial.printLine("[VNK] syscall {d} from {s} took the channel {d} back from the process {d}", .{
+            frame.rax = revoke(frame.rdi, frame.rsi, frame.rdx, privilege);
+            const kind = capability.kindFromWire(frame.rsi);
+            serial.printLine("[VNK] syscall {d} from {s} took the capability of the {s} {d} back from the process {d}, result 0x{x}", .{
                 number,
                 caller,
-                frame.rsi,
+                if (kind) |value| capability.kindName(value) else "unknown",
+                frame.rdx,
                 frame.rdi,
+                frame.rax,
             });
         },
         Number.copy_to => {
@@ -747,28 +759,39 @@ fn copyTo(process: u64, destination: u64, source: u64, length: u64, privilege: u
 
 /// Gives a capability of the caller to another process.
 ///
-/// The arguments are the identifier of the target process, the identifier
-/// of the subject of the capability — the channel — and the rights that the
-/// target receives.
+/// The arguments are the identifier of the target process, the kind of the
+/// capability, the identifier of the subject — the channel or the process —
+/// and the rights that the target receives.
 ///
 /// The caller has to hold the capability of the subject with the right of
 /// delegation. The rights that the target receives have to be a subset of
 /// the rights that the caller holds, and the right of delegation is not
 /// part of them unless the caller asks for it explicitly.
-fn grant(process_id: u64, channel_id: u64, rights: u64, privilege: u64) u64 {
+fn grant(process_id: u64, kind_value: u64, subject: u64, rights: u64, privilege: u64) u64 {
     if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    // The kind is part of the contract: a value that the kernel does not
+    // know is refused, and not guessed.
+    const kind = capability.kindFromWire(kind_value) orelse
+        return failure(Error.unknown_kind);
 
     const target = paging.spaceById(process_id) orelse
         return failure(Error.unknown_process);
     const caller = callerProcess() orelse return failure(Error.not_authorized);
 
-    // The channel that does not exist and the capability that the caller
+    // The rights of a kind are the operations that its subject accepts: a
+    // channel does not accept a write, and a process does not accept a
+    // message. An empty set is refused, because it would be a capability
+    // that authorizes nothing.
+    if (!capability.validRights(kind, rights)) return failure(Error.invalid_rights);
+
+    // The subject that does not exist and the capability that the caller
     // does not hold are two different refusals: the first says that the
     // subject does not exist, and the second says that the caller has no
     // permission over it.
-    if (channel_module.get(channel_id) == null) return failure(Error.unknown_channel);
+    if (!subjectExists(kind, subject)) return failure(subjectError(kind));
 
-    const handle = capability.handleOf(caller, .channel, channel_id) orelse
+    const handle = capability.handleOf(caller, kind, subject) orelse
         return failure(Error.not_authorized);
 
     if (!capability.transfer(caller, target.id, handle, rights)) {
@@ -780,26 +803,26 @@ fn grant(process_id: u64, channel_id: u64, rights: u64, privilege: u64) u64 {
 
 /// Takes a capability back from another process.
 ///
-/// The arguments are the identifier of the target process and the identifier
-/// of the subject of the capability — the channel.
+/// The arguments are the identifier of the target process, the kind of the
+/// capability and the identifier of the subject — the channel or the
+/// process.
 ///
 /// The caller has to hold the capability of the subject with the right of
 /// delegation: the owner of the capability takes it back from the process
 /// it gave it to.
-fn revoke(process_id: u64, channel_id: u64, privilege: u64) u64 {
+fn revoke(process_id: u64, kind_value: u64, subject: u64, privilege: u64) u64 {
     if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    const kind = capability.kindFromWire(kind_value) orelse
+        return failure(Error.unknown_kind);
 
     const target = paging.spaceById(process_id) orelse
         return failure(Error.unknown_process);
     const caller = callerProcess() orelse return failure(Error.not_authorized);
 
-    // The channel that does not exist and the capability that the caller
-    // does not hold are two different refusals: the first says that the
-    // subject does not exist, and the second says that the caller has no
-    // permission over it.
-    if (channel_module.get(channel_id) == null) return failure(Error.unknown_channel);
+    if (!subjectExists(kind, subject)) return failure(subjectError(kind));
 
-    const handle = capability.handleOf(caller, .channel, channel_id) orelse
+    const handle = capability.handleOf(caller, kind, subject) orelse
         return failure(Error.not_authorized);
 
     if (!capability.revoke(caller, target.id, handle)) {
@@ -807,6 +830,27 @@ fn revoke(process_id: u64, channel_id: u64, privilege: u64) u64 {
     }
 
     return 0;
+}
+
+/// True when the subject of a capability of the kind exists.
+///
+/// The subject of a channel is the identifier of the channel, and the
+/// subject of a process is the identifier of the process. Both are resolved
+/// in the module that owns them, and not in the table of capabilities: the
+/// table may hold a capability of a subject that is already gone.
+fn subjectExists(kind: capability.Kind, subject: u64) bool {
+    return switch (kind) {
+        .channel => channel_module.get(subject) != null,
+        .process => paging.spaceById(subject) != null,
+    };
+}
+
+/// The error of a call that names a subject that does not exist.
+fn subjectError(kind: capability.Kind) u64 {
+    return switch (kind) {
+        .channel => Error.unknown_channel,
+        .process => Error.unknown_process,
+    };
 }
 
 /// The buffer that holds the block of a copy between two processes.
