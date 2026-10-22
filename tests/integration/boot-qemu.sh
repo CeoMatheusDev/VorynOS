@@ -39,49 +39,97 @@ if [[ ! -f "$IMAGE" ]]; then
 fi
 
 # --- locate the firmware ----------------------------------------------------
+#
+# O firmware do QEMU é procurado em três lugares: as variáveis de ambiente,
+# os pares de arquivos conhecidos das distribuições, e uma busca no sistema
+# de arquivos. A busca existe porque a distribuição de referência do
+# ambiente de teste pode instalar o firmware em um caminho que o projeto
+# não conhece, e um teste que falha por causa de um caminho não é um
+# teste: é uma falha de ambiente.
+#
+# Cada par é "código:variáveis", e o par tem de ser coerente: o firmware de
+# quatro megabytes vem com o arquivo de variáveis de quatro megabytes, e o
+# de dois megabytes com o de dois megabytes.
+#
+# O formato de cada arquivo vem do nome dele, e o QEMU aceita formatos
+# diferentes nos dois dispositivos de flash: um código de quatro megabytes
+# em qcow2 com as variáveis em raw funciona.
 
-OVMF_CANDIDATES=(
-    "${OVMF_CODE:-}"
-    /usr/share/edk2/ovmf/OVMF_CODE.fd
-    /usr/share/edk2/x64/OVMF_CODE.fd
-    /usr/share/edk2-ovmf/OVMF_CODE.fd
-    /usr/share/OVMF/OVMF_CODE.fd
-    /usr/share/qemu/OVMF_CODE.fd
+OVMF_PAIRS=(
+    "${OVMF_CODE:-}:${OVMF_VARS:-}"
+    "/usr/share/edk2/ovmf/OVMF_CODE.fd:/usr/share/edk2/ovmf/OVMF_VARS.fd"
+    "/usr/share/edk2/ovmf/OVMF_CODE_4M.fd:/usr/share/edk2/ovmf/OVMF_VARS_4M.fd"
+    "/usr/share/edk2/x64/OVMF_CODE.fd:/usr/share/edk2/x64/OVMF_VARS.fd"
+    "/usr/share/edk2-ovmf/OVMF_CODE.fd:/usr/share/edk2-ovmf/OVMF_VARS.fd"
+    "/usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd"
+    "/usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd"
+    "/usr/share/qemu/OVMF_CODE.fd:/usr/share/qemu/OVMF_VARS.fd"
 )
 
-OVMF_VARS_CANDIDATES=(
-    "${OVMF_VARS:-}"
-    /usr/share/edk2/ovmf/OVMF_VARS.fd
-    /usr/share/edk2/x64/OVMF_VARS.fd
-    /usr/share/edk2-ovmf/OVMF_VARS.fd
-    /usr/share/OVMF/OVMF_VARS.fd
-    /usr/share/qemu/OVMF_VARS.fd
-)
+# The roots searched when none of the known paths has the firmware.
+OVMF_SEARCH_ROOTS=("/usr/share" "/usr/lib" "/usr/local/share" "/opt")
 
-find_first() {
-    for candidate in "$@"; do
-        if [[ -n "$candidate" && -f "$candidate" ]]; then
-            echo "$candidate"
+# The format of a firmware file, from its name.
+format_of() {
+    case "$1" in
+        *.qcow2) echo "qcow2" ;;
+        *) echo "raw" ;;
+    esac
+}
+
+# The first file with the given name, in the known roots.
+search_file() {
+    local name="$1"
+    local root found
+    for root in "${OVMF_SEARCH_ROOTS[@]}"; do
+        [[ -d "$root" ]] || continue
+        found="$(find "$root" -maxdepth 5 -type f -name "$name" 2>/dev/null | sort | head -1)"
+        if [[ -n "$found" ]]; then
+            echo "$found"
             return 0
         fi
     done
     return 1
 }
 
-if ! OVMF_CODE_PATH="$(find_first "${OVMF_CANDIDATES[@]}")"; then
-    echo "qemu-boot-test: no OVMF firmware found, set OVMF_CODE" >&2
+OVMF_CODE_PATH=""
+OVMF_VARS_PATH=""
+
+for pair in "${OVMF_PAIRS[@]}"; do
+    code="${pair%%:*}"
+    vars="${pair#*:}"
+    [[ -n "$code" && -f "$code" ]] || continue
+    [[ -n "$vars" && -f "$vars" ]] || continue
+    OVMF_CODE_PATH="$code"
+    OVMF_VARS_PATH="$vars"
+    break
+done
+
+# The search of the system, when the known paths do not have the firmware.
+if [[ -z "$OVMF_CODE_PATH" ]]; then
+    for candidate in OVMF_CODE.fd OVMF_CODE_4M.fd OVMF_CODE_4M.qcow2; do
+        code="$(search_file "$candidate")" || continue
+        vars_name="${candidate/CODE/VARS}"
+        vars="$(search_file "$vars_name")" || continue
+        OVMF_CODE_PATH="$code"
+        OVMF_VARS_PATH="$vars"
+        break
+    done
+fi
+
+if [[ -z "$OVMF_CODE_PATH" ]]; then
+    echo "qemu-boot-test: no OVMF firmware found" >&2
+    echo "qemu-boot-test: the pairs searched were:" >&2
+    for pair in "${OVMF_PAIRS[@]}"; do
+        echo "qemu-boot-test:   $pair" >&2
+    done
+    echo "qemu-boot-test: the roots searched were: ${OVMF_SEARCH_ROOTS[*]}" >&2
+    echo "qemu-boot-test: set OVMF_CODE and OVMF_VARS to point at the firmware" >&2
     exit 2
 fi
 
-if ! OVMF_VARS_PATH="$(find_first "${OVMF_VARS_CANDIDATES[@]}")"; then
-    echo "qemu-boot-test: no OVMF variable store found, set OVMF_VARS" >&2
-    exit 2
-fi
-
-if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
-    echo "qemu-boot-test: qemu-system-x86_64 is not installed" >&2
-    exit 2
-fi
+OVMF_CODE_FORMAT="$(format_of "$OVMF_CODE_PATH")"
+OVMF_VARS_FORMAT="$(format_of "$OVMF_VARS_PATH")"
 
 # --- run --------------------------------------------------------------------
 
@@ -91,7 +139,7 @@ trap 'rm -rf "$WORK_DIRECTORY"' EXIT
 SERIAL_LOG="$WORK_DIRECTORY/serial.log"
 cp "$OVMF_VARS_PATH" "$WORK_DIRECTORY/vars.fd"
 
-echo "qemu-boot-test: booting $IMAGE (firmware: $OVMF_CODE_PATH)"
+echo "qemu-boot-test: booting $IMAGE (firmware: $OVMF_CODE_PATH, format: $OVMF_CODE_FORMAT)"
 
 set +e
 timeout --signal=TERM "$TIMEOUT" qemu-system-x86_64 \
@@ -99,8 +147,8 @@ timeout --signal=TERM "$TIMEOUT" qemu-system-x86_64 \
     -m 256 \
     -smp 1 \
     -drive "file=$IMAGE,format=raw,if=virtio" \
-    -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE_PATH" \
-    -drive "if=pflash,format=raw,file=$WORK_DIRECTORY/vars.fd" \
+    -drive "if=pflash,format=$OVMF_CODE_FORMAT,readonly=on,file=$OVMF_CODE_PATH" \
+    -drive "if=pflash,format=$OVMF_VARS_FORMAT,file=$WORK_DIRECTORY/vars.fd" \
     -serial "file:$SERIAL_LOG" \
     -display none \
     -no-reboot \

@@ -21,7 +21,10 @@ jobs:
       - name: Instalar Zig 0.17.0
         uses: mlugg/setup-zig@v2
         with:
-          zig-version: 0.17.0
+          # A entrada da ação se chama `version`. O nome `zig-version` é
+          # ignorado pela ação com um aviso, e a compilação usaria a versão
+          # padrão da imagem do runner, e não a versão alvo do projeto.
+          version: 0.17.0
 
       - name: Instalar OVMF
         run: |
@@ -29,7 +32,21 @@ jobs:
           sudo apt-get install -y ovmf qemu-system-x86
 
       - name: Verificar a versão do Zig
-        run: zig version
+        run: |
+          set -euo pipefail
+          actual="$(zig version)"
+          echo "a versão do Zig é $actual"
+          if [ "$actual" != "0.17.0" ]; then
+            echo "::error::a versão alvo do Zig é 0.17.0, e a versão instalada é $actual"
+            exit 1
+          fi
+
+      - name: Diagnosticar o firmware do QEMU
+        run: |
+          set -euo pipefail
+          echo "os arquivos do firmware encontrados no sistema:"
+          find /usr/share /usr/lib -maxdepth 5 -type f \
+            \( -name 'OVMF_CODE*' -o -name 'OVMF_VARS*' \) 2>/dev/null | sort || true
 
       - name: Testes de unidade
         run: zig build test
