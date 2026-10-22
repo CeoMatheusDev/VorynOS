@@ -279,7 +279,7 @@ pub fn initChannels() void {
 
 /// Sends a message to a channel of the kernel.
 ///
-/// The function is the interface of the kernel with the channel, e o
+/// The function is the interface of the kernel with the channel, and the
 /// module of the channel is imported in a single place, so that the state of
 /// the channel does not depend on the import path.
 pub fn sendMessage(channel_id: u64, side: u64, kind: u64, value: u64) bool {
@@ -537,18 +537,14 @@ fn memcpy(destination: u64, source: u64, length: u64, privilege: u64) u64 {
 
     // The ranges may overlap, and the user chooses the two addresses: a
     // copy that ignored the overlap would corrupt the data, and a copy
-    // that refused the overlap would deny a call that is legitimate. The
-    // copy goes backwards when the destination is above the origin.
-    const overlap = destination < source + length and source < destination + length;
-    if (overlap) {
-        var index: u64 = length;
-        while (index > 0) {
-            index -= 1;
-            to[@intCast(index)] = from[@intCast(index)];
-        }
-    } else {
-        @memmove(to[0..@intCast(length)], from[0..@intCast(length)]);
-    }
+    // that refused the overlap would deny a call that is legitimate.
+    //
+    // The direction of the copy depends on which of the two ranges is
+    // above: a copy that always goes backwards destroys the origin when
+    // the destination is below it, and a copy that always goes forward
+    // destroys the origin when the destination is above it. The move of
+    // the memory knows the two cases, and the copy uses it.
+    @memmove(to[0..@intCast(length)], from[0..@intCast(length)]);
 
     return length;
 }
