@@ -240,3 +240,9 @@ limit.
 | The capability of the address space of a process | IMPLEMENTED — LOCALLY TESTED |
 | The capability that carries a memory range | PROPOSED |
 | The capability of a device | PROPOSED |
+
+The calls `grant` and `revoke` name the subject as a channel, and the
+contract of the calls does not carry the kind of the capability yet. The
+delegation of the capability of an address space exists in the module and
+is exercised by the unit tests, but a process cannot delegate it to
+another one through the calls until the contract carries the kind.
