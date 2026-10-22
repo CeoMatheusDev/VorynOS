@@ -44,6 +44,7 @@ const syscall = @import("arch/x86_64/syscall.zig");
 const timer = @import("arch/x86_64/timer.zig");
 
 const heap = @import("memory/heap.zig");
+const capability = @import("security/capability.zig");
 const physical = @import("memory/physical.zig");
 const scheduler = @import("task/scheduler.zig");
 
@@ -245,6 +246,24 @@ fn userCopyResultAddress() u64 {
     return userDataAddress() + usermode.data_copy_result;
 }
 
+/// The address of the word that holds the result of the call that a
+/// process without the capability made.
+fn userCapabilityRefusedAddress() u64 {
+    return userDataAddress() + usermode.data_capability_refused;
+}
+
+/// The address of the word that holds the result of the revocation of a
+/// capability.
+fn userCapabilityRevokedAddress() u64 {
+    return userDataAddress() + usermode.data_capability_revoked;
+}
+
+/// The address of the word that holds the result of the delegation of a
+/// capability.
+fn userCapabilityGrantedAddress() u64 {
+    return userDataAddress() + usermode.data_capability_granted;
+}
+
 /// The address of the thirteenth word of the page of data of the user mode.
 ///
 /// The copy to the other process writes there the block that it copied.
@@ -376,6 +395,13 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // wipe the message that the task had already sent.
     syscall.initChannels();
 
+    // The kernel is the root authority of the capabilities: it creates the
+    // capability of the channel of the VNX and gives it to the process
+    // that owns it. The other processes only use the channel after the
+    // owner gives them the capability, and the process that does not hold
+    // it is refused.
+    installCapabilities();
+
     installScheduler();
     installTimer();
 
@@ -386,6 +412,7 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     }
     reportScheduler();
     reportUserTask();
+    reportCapabilities();
 
     // Sentinel consumed by the automated boot test.
     serial.printLine("VORYN-KERNEL-READY", .{});
@@ -639,6 +666,54 @@ fn installTimer() void {
     serial.printLine("[VNK] timer: {d} Hz, {d} ticks", .{ timer.ticksPerSecond(), timer.ticks() });
 }
 
+/// Creates the capability of the channel of the VNX and gives it to the
+/// process that owns it.
+///
+/// The kernel is the root authority: it is the only one that creates a
+/// capability. The capability of the channel belongs to the process of role
+/// zero, which is the process that starts the conversation, and the other
+/// processes receive it only when the owner gives it to them.
+///
+/// The owner of the channel holds the right of delegation, and the process
+/// that answers holds the use of the channel and **not** the right of
+/// delegation: the process that receives the capability can use the
+/// channel, and cannot give it to a third process. The chain of delegation
+/// is the property that the model has to keep, and it is verified by the
+/// unit tests of the module.
+fn installCapabilities() void {
+    capability.init();
+
+    const owner = user_space orelse {
+        serial.printLine("[VNK] FATAL: the process that owns the channel does not exist", .{});
+        port.haltForever();
+    };
+    const answerer = second_space orelse {
+        serial.printLine("[VNK] FATAL: the process that answers does not exist", .{});
+        port.haltForever();
+    };
+
+    const handle = capability.create(.channel, 0, capability.Rights.all) orelse {
+        serial.printLine("[VNK] FATAL: the table of capabilities is full", .{});
+        port.haltForever();
+    };
+
+    if (!capability.give(owner.id, handle, capability.Rights.all)) {
+        serial.printLine("[VNK] FATAL: the capability of the channel could not be given", .{});
+        port.haltForever();
+    }
+
+    // The kernel is the root authority, and it gives the use of the channel
+    // to the process that answers. The process that answers cannot give it
+    // to a third process, because the right of delegation was not given to
+    // it.
+    if (!capability.give(answerer.id, handle, capability.Rights.use)) {
+        serial.printLine("[VNK] FATAL: the capability of the channel could not be given", .{});
+        port.haltForever();
+    }
+
+    serial.printLine("[VNK] capabilities: the channel 0 belongs to the process {d}", .{owner.id});
+}
+
 /// Creates the task that runs in the third level of privilege.
 ///
 /// The task has a program, a page of data and a stack of its own, all in
@@ -835,6 +910,94 @@ fn installScheduler() void {
 /// privilege with access to its own pages, and the second one proves that
 /// the call reached the handler of the kernel and that the answer came
 /// back to the user mode.
+/// Reports the state of the capabilities of the VNC.
+///
+/// The report verifies three properties of the model, and the three are
+/// read from the processes that use the channel:
+///
+///   * the process that holds **no** capability is refused when it uses a
+///     channel, and the refusal is the error of the missing capability;
+///   * the delegation of the owner reaches the process that the owner
+///     chose, and the process holds the capability of the channel after
+///     it;
+///   * the revocation of the owner takes the capability back, and the
+///     process that answered does not hold it any more.
+///
+/// The report waits for the processes, because they run at the same time
+/// as the kernel and the values appear when they are written.
+fn reportCapabilities() void {
+    const owner = user_space orelse return;
+    const answerer = second_space orelse return;
+    const stranger = third_space orelse return;
+
+    // The refusal of the process that holds no capability.
+    var attempts: u64 = 0;
+    var refused: u64 = 0;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        refused = userWord(stranger, userCapabilityRefusedAddress());
+        if (refused != 0) break;
+        cpu.halt();
+    }
+
+    const expected = syscall.failure(syscall.Error.not_authorized);
+    if (refused == expected) {
+        serial.printLine("[VNK] user: the process without the capability was refused with the error {d}", .{
+            syscall.Error.not_authorized,
+        });
+    } else {
+        serial.printLine("[VNK] user: the process without the capability was not refused, the result is 0x{x}", .{
+            refused,
+        });
+    }
+
+    // The delegation of the owner.
+    attempts = 0;
+    var granted: u64 = 1;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        granted = userWord(owner, userCapabilityGrantedAddress());
+        if (granted == 0) break;
+        cpu.halt();
+    }
+
+    if (granted == 0) {
+        serial.printLine("[VNK] capabilities: the process {d} holds the capability of the channel 0", .{
+            stranger.id,
+        });
+    } else {
+        serial.printLine("[VNK] capabilities: the delegation of the process {d} failed with 0x{x}", .{
+            owner.id,
+            granted,
+        });
+    }
+
+    // The revocation of the owner.
+    attempts = 0;
+    var revoked: u64 = 1;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        revoked = userWord(owner, userCapabilityRevokedAddress());
+        if (revoked == 0) break;
+        cpu.halt();
+    }
+
+    if (revoked == 0) {
+        const holds = capability.holdsSubject(answerer.id, .channel, 0, capability.Rights.use);
+        if (holds) {
+            serial.printLine("[VNK] capabilities: the process {d} still holds the capability of the channel 0", .{
+                answerer.id,
+            });
+        } else {
+            serial.printLine("[VNK] capabilities: the process {d} does not hold the capability of the channel 0 any more", .{
+                answerer.id,
+            });
+        }
+    } else {
+        serial.printLine("[VNK] capabilities: the revocation of the process {d} failed with 0x{x}", .{
+            owner.id,
+            revoked,
+        });
+    }
+}
+
 fn reportUserTask() void {
     const space = user_space orelse return;
 

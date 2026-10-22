@@ -100,6 +100,19 @@ The exception in the kernel remains fatal, and the test of the end of the
 boot verifies that the report of the `#DE` appears: stopping the machine
 with a provoked exception is what the test asks for.
 
+The **capabilities** are verified the same way. The third process holds no
+capability of any channel, and the call that uses one is refused; the
+owner of the channel delegates the capability to a third process and takes
+it back from the process that answered; and the test verifies the refusal,
+the delegation and the revocation.
+
+The unit tests of the module of the capabilities verify the properties of
+the model itself: the capability that nobody holds authorizes nothing, the
+rights of the holder are a subset of the rights of the capability, the
+delegation that does not carry the right of delegation stops the chain, the
+revocation takes the capability back, and the table and the set do not grow
+without a limit.
+
 The performance measurement is done with the time counter of the processor,
 and the cost of the context switch and the latency of the delivery of a
 message are reported on the console on every run.
@@ -130,3 +143,6 @@ are never invented nor rounded to "correct".
 - There is no concurrency test: there is still no concurrent code.
 - There is no performance measurement: the set measures correctness, not
   speed. The first measurement (boot time) enters in F2.
+- The capability model covers the channels of the VNX only. There is no
+  capability of a range of memory nor of a device, and the process still
+  reaches the whole space of the user mode.

@@ -224,6 +224,9 @@ require_marker "[VNK] channel: the message arrived in"
 require_marker "deliveries to a task that was waiting"
 require_pattern '\[VNK\]   the process [0-9]+ was killed, and the kernel continues' 'the process that was killed by the exception'
 require_pattern '\[VNK\] tasks: [0-9]+ blocks, [0-9]+ killed' 'the report of the killed processes'
+require_marker "[VNK] user: the process without the capability was refused with the error 10" 'the refusal of the process without the capability'
+require_pattern '\[VNK\] capabilities: the process [0-9]+ holds the capability of the channel 0' 'the delegation of the capability'
+require_pattern '\[VNK\] capabilities: the process [0-9]+ does not hold the capability of the channel 0 any more' 'the revocation of the capability'
 require_marker "[VNK] user: the second process wrote 0x5a5a1235 in its own page"
 require_marker "[VNK] user: the copy between the two processes moved 8 bytes"
 require_marker "VORYN-KERNEL-READY"

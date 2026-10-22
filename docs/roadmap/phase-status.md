@@ -127,7 +127,9 @@ capabilities.
 | Processor frame with one single shape | COMPLETED | the stub normalizes the frame, and the handler and the switch read the same shape |
 | Handling of the exceptions by type | COMPLETED | the exception of the user mode kills the process, and the one of the kernel stops the machine |
 | Recovery of the process that failed | COMPLETED | the process dies, the others continue, and the machine reaches the end of the boot |
-| VNC capabilities | PROPOSED | — |
+| Capability fabric of the VNC | COMPLETED | the kernel holds the table, the process holds the set, and the chain of delegation stops |
+| Capabilities of the channels of the VNX | COMPLETED | a process without the capability of the channel is refused, and the owner delegates and revokes it |
+| VNC capabilities | PROPOSED | the capability of the address space and of the devices is not implemented yet |
 
 The user mode is **implemented and verified**. The user task runs in the
 third privilege level, writes in its own page of data, calls the kernel with
@@ -189,11 +191,23 @@ Acceptance criteria of the rest of the milestone:
    one with an error code is eight bytes larger. The diagnosis is in
    ADR-0008.
 
+6. A process does not use a channel that it does not hold the
+   capability of. **Fulfilled:** the kernel holds the table of the
+   capabilities and every process holds a set of them, the calls of the
+   channel check the capability of the process of the caller before they
+   touch the queue, and the process that holds no capability is refused
+   with the error 10. The owner of the channel delegates the capability to
+   another process and takes it back, and the delegation that does not
+   carry the right of delegation stops the chain. The diagnosis is in
+   ADR-0009.
+
 What is still missing in the milestone:
 
-1. **The capabilities of the VNC.** The open question of ADR-0001 remains
-   open: the call does not carry capabilities, and the process has access to
-   the whole space of the user mode.
+1. **The capabilities of the address space and of the devices.** The model
+   of capabilities exists and works, but it covers the channels of the VNX
+   only: the process still has access to the whole space of the user mode.
+   The question of the ADR-0001 is answered for the shared resource, and
+   it is open for the others.
 2. **More processes.** The kernel creates three processes, and it is two of
    them that talk: the third exists to prove that a process that fails does
    not bring the others down. The number of address spaces is limited by a

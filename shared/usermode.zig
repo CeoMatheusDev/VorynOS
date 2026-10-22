@@ -73,6 +73,12 @@ pub const data_copy_result: u64 = 0x58;
 /// The offset of the block that the copy to the other process writes in the
 /// space of the other process.
 pub const data_copy_target: u64 = 0x60;
+/// The result of the call that a process without the capability makes.
+pub const data_capability_refused: u64 = 0x68;
+/// The result of the revocation of a capability.
+pub const data_capability_revoked: u64 = 0x70;
+/// The result of the delegation of a capability.
+pub const data_capability_granted: u64 = 0x78;
 
 /// The block that the program of the user mode writes for the copy with the
 /// overlapping ranges.

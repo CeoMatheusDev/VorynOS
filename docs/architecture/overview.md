@@ -81,6 +81,7 @@ system.
 | `task/context.zig` | Complete context of a task: all the registers of the processor |
 | `task/scheduler.zig` | Preemptive scheduler, creation of tasks and of processes, switch of space |
 | `ipc/channel.zig` | Message channel of the VNX: two queues per channel, the wait and the latency of the delivery |
+| `security/capability.zig` | The capability fabric of the VNC: the table of the kernel and the set of each process |
 
 ### `tools/` — development tools
 
@@ -103,7 +104,7 @@ system.
 | Memory map | array of `MemoryDescriptor` (40 bytes) | `shared/handoff.zig` |
 | Kernel image | relocatable ELF64 (`ET_DYN`) | `shared/elf64.zig` |
 | User mode window | offset constants, shared with the assembly | `shared/usermode.zig` |
-| System call contract | version `syscall_abi = 3`, eight calls | `docs/specs/syscall-abi.md` |
+| System call contract | version `syscall_abi = 4`, ten calls | `docs/specs/syscall-abi.md` |
 | Task context | `extern struct` with the fifteen registers | `kernel/task/context.zig` |
 | Console | `std.Io.Writer` writer over the UART | `shared/arch/x86_64/serial.zig` |
 
@@ -146,6 +147,11 @@ an explicit and documented layout.
     processor is rewritten to a loop of the kernel, and the scheduler does
     not choose it again. The exception that comes from the **kernel** is
     fatal, because the state of the kernel after the error is unknown.
+13. A process does not use a channel that it does not hold the capability
+    of: the check of the capability happens in the kernel, before the queue
+    is touched, and the process that does not hold it is refused. The
+    handle of a capability is an index of a table of the kernel, and it
+    means nothing outside it.
 
 ## 5. Known limitations
 
@@ -172,6 +178,9 @@ an explicit and documented layout.
     wait.
 11. The kernel is loaded from a FAT volume through the simple file system
     protocol of the firmware; there is no block driver of its own.
+12. The capability of the model of the VNC covers the channels of the VNX
+    only: the process has access to the whole space of the user mode, and
+    there is no capability of a range of memory nor of a device.
 
 ## 6. What comes next
 

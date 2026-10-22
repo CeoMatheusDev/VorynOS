@@ -66,6 +66,7 @@ const voryn = @import("voryn_shared");
 const serial = voryn.serial;
 
 const channel_module = @import("../../ipc/channel.zig");
+const capability = @import("../../security/capability.zig");
 const cpu = @import("cpu.zig");
 const paging = @import("paging.zig");
 const segment = @import("segment.zig");
@@ -179,6 +180,26 @@ pub const Number = struct {
     /// because the instruction of the call replaces the fourth register with
     /// the address of return.
     pub const copy_to: u64 = 7;
+    /// The call that gives a capability of the caller to another process.
+    ///
+    /// The arguments are the identifier of the target process, the
+    /// identifier of the subject of the capability — the channel — and the
+    /// rights that the target receives.
+    ///
+    /// The caller has to hold the capability with the right of delegation,
+    /// and the rights that the target receives have to be a subset of the
+    /// rights that the caller holds. The right of delegation is not part of
+    /// what the target receives, unless the caller asks for it explicitly.
+    pub const grant: u64 = 9;
+    /// The call that takes a capability back from another process.
+    ///
+    /// The arguments are the identifier of the target process and the
+    /// identifier of the subject of the capability — the channel.
+    ///
+    /// The caller has to hold the capability with the right of delegation:
+    /// the owner of the capability takes it back from the process it gave it
+    /// to.
+    pub const revoke: u64 = 10;
 };
 
 /// The result that the kernel answers to the call of the probe.
@@ -210,6 +231,13 @@ pub const Error = struct {
     /// The task waited for a message and there was no other task to run,
     /// and the wait would be a busy loop.
     pub const wait_impossible: u64 = 9;
+    /// The process does not hold the capability that the call needs.
+    ///
+    /// The error says that the process does not hold the capability of the
+    /// channel that the call names. The process that does not hold it
+    /// cannot use the channel, and the capability is what the owner of the
+    /// channel gave to the processes that may use it.
+    pub const not_authorized: u64 = 10;
 };
 
 /// The largest block that a call copies in one go.
@@ -427,6 +455,24 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
                 frame.rax,
             });
         },
+        Number.grant => {
+            frame.rax = grant(frame.rdi, frame.rsi, frame.rdx, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} gave the channel {d} to the process {d}", .{
+                number,
+                caller,
+                frame.rsi,
+                frame.rdi,
+            });
+        },
+        Number.revoke => {
+            frame.rax = revoke(frame.rdi, frame.rsi, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} took the channel {d} back from the process {d}", .{
+                number,
+                caller,
+                frame.rsi,
+                frame.rdi,
+            });
+        },
         Number.copy_to => {
             frame.rax = copyTo(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
             serial.printLine("[VNK] syscall {d} from {s} copied 0x{x} bytes to the process {d}", .{
@@ -518,6 +564,13 @@ fn send(channel_id: u64, side: u64, kind: u64, value: u64, privilege: u64) u64 {
     const channel = channel_module.get(channel_id) orelse
         return failure(Error.unknown_channel);
 
+    // The process that does not hold the capability of the channel does
+    // not put messages in it.
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+    if (!checkCapability(process, channel_id, capability.Rights.send)) {
+        return failure(Error.not_authorized);
+    }
+
     const message = channel_module.Message{ .kind = kind, .value = value };
 
     // The message goes straight to the task that waits for the queue, and
@@ -534,6 +587,29 @@ fn send(channel_id: u64, side: u64, kind: u64, value: u64, privilege: u64) u64 {
     return 0;
 }
 
+/// The identifier of the process of the caller, or null when the caller
+/// does not belong to a process.
+///
+/// The function is the way the calls of the user mode find the process that
+/// made them. The capability of a process belongs to the process, and not
+/// to the task: two tasks of the same process share the same capability.
+fn callerProcess() ?u64 {
+    const scheduler = @import("../../task/scheduler.zig");
+    const task = scheduler.scheduler.current orelse return null;
+    const space = task.space orelse return null;
+    return space.id;
+}
+
+/// Checks that the process of the caller holds the capability of the
+/// channel, with the right that the call needs.
+///
+/// The function is the enforcement of the model of capabilities: a process
+/// that does not hold the capability of a channel does not use the channel,
+/// whatever the identifier of the channel is.
+fn checkCapability(process: u64, channel_id: u64, right: u64) bool {
+    return capability.holdsSubject(process, .channel, channel_id, right);
+}
+
 /// Takes a message from a channel.
 ///
 /// The argument is the identifier of the channel. The result is the type
@@ -542,6 +618,13 @@ fn send(channel_id: u64, side: u64, kind: u64, value: u64, privilege: u64) u64 {
 /// empty queue.
 fn receive(frame: *SyscallFrame, channel_id: u64, side: u64, privilege: u64) u64 {
     if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    // The process that does not hold the capability of the channel does
+    // not take messages of it.
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+    if (!checkCapability(process, channel_id, capability.Rights.receive)) {
+        return failure(Error.not_authorized);
+    }
 
     const channel = channel_module.get(channel_id) orelse
         return failure(Error.unknown_channel);
@@ -570,6 +653,13 @@ fn receive(frame: *SyscallFrame, channel_id: u64, side: u64, privilege: u64) u64
 /// arrives later, in the context saved of the task.
 fn receiveBlocking(frame: *SyscallFrame, channel_id: u64, side: u64, privilege: u64) u64 {
     if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    // The process that does not hold the capability of the channel does
+    // not wait for a message of it.
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+    if (!checkCapability(process, channel_id, capability.Rights.receive)) {
+        return failure(Error.not_authorized);
+    }
 
     const channel = channel_module.get(channel_id) orelse
         return failure(Error.unknown_channel);
@@ -648,6 +738,70 @@ fn copyTo(process: u64, destination: u64, source: u64, length: u64, privilege: u
     paging.setActiveSpace(saved_space);
 
     return length;
+}
+
+/// Gives a capability of the caller to another process.
+///
+/// The arguments are the identifier of the target process, the identifier
+/// of the subject of the capability — the channel — and the rights that the
+/// target receives.
+///
+/// The caller has to hold the capability of the subject with the right of
+/// delegation. The rights that the target receives have to be a subset of
+/// the rights that the caller holds, and the right of delegation is not
+/// part of them unless the caller asks for it explicitly.
+fn grant(process_id: u64, channel_id: u64, rights: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    const target = paging.spaceById(process_id) orelse
+        return failure(Error.unknown_process);
+    const caller = callerProcess() orelse return failure(Error.not_authorized);
+
+    // The channel that does not exist and the capability that the caller
+    // does not hold are two different refusals: the first says that the
+    // subject does not exist, and the second says that the caller has no
+    // permission over it.
+    if (channel_module.get(channel_id) == null) return failure(Error.unknown_channel);
+
+    const handle = capability.handleOf(caller, .channel, channel_id) orelse
+        return failure(Error.not_authorized);
+
+    if (!capability.transfer(caller, target.id, handle, rights)) {
+        return failure(Error.not_authorized);
+    }
+
+    return 0;
+}
+
+/// Takes a capability back from another process.
+///
+/// The arguments are the identifier of the target process and the identifier
+/// of the subject of the capability — the channel.
+///
+/// The caller has to hold the capability of the subject with the right of
+/// delegation: the owner of the capability takes it back from the process
+/// it gave it to.
+fn revoke(process_id: u64, channel_id: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    const target = paging.spaceById(process_id) orelse
+        return failure(Error.unknown_process);
+    const caller = callerProcess() orelse return failure(Error.not_authorized);
+
+    // The channel that does not exist and the capability that the caller
+    // does not hold are two different refusals: the first says that the
+    // subject does not exist, and the second says that the caller has no
+    // permission over it.
+    if (channel_module.get(channel_id) == null) return failure(Error.unknown_channel);
+
+    const handle = capability.handleOf(caller, .channel, channel_id) orelse
+        return failure(Error.not_authorized);
+
+    if (!capability.revoke(caller, target.id, handle)) {
+        return failure(Error.not_authorized);
+    }
+
+    return 0;
 }
 
 /// The buffer that holds the block of a copy between two processes.

@@ -416,6 +416,20 @@ voryn_user_program:
      * unaffected. */
     cmpq $2, %r12
     jne 9f
+
+    /* The process of role two does not hold the capability of any
+     * channel, and the call that uses one is refused: the kernel does not
+     * let a process use a channel that nobody gave it. The refusal is
+     * written in the page of data, and the kernel reads it. */
+    movq $1, %rdi             /* the channel that nobody holds */
+    movq $1, %rsi             /* the side of the process that answers */
+    movq $1, %rdx             /* the type of the message */
+    movq $0x5A5A1234, %r8     /* the value of the message */
+    movq $5, %rax             /* the number of the system call */
+    syscall
+    leaq 0x1068(%rbx), %rdi   /* the place of the refusal */
+    movq %rax, (%rdi)
+
     movabsq $0x0, %rdi
     movq %rax, (%rdi)
 9:
@@ -450,6 +464,19 @@ voryn_user_program:
 
     /* The process that starts the conversation. */
 5:
+    /* The owner of the channel gives the capability to the third
+     * process. The capability is what allows a process to use a channel,
+     * and the process that does not hold it is refused. The rights that
+     * the third process receives are the use of the channel and not the
+     * right of delegation: the chain of delegation stops there. */
+    movq $2, %rdi             /* the process of the destination */
+    movq $0, %rsi             /* the channel */
+    movq $3, %rdx             /* the rights: send and receive */
+    movq $9, %rax             /* the number of the system call */
+    syscall
+    leaq 0x1078(%rbx), %rdi   /* the result of the delegation */
+    movq %rax, (%rdi)
+
     /* The message for the channel: the arguments are the channel, the side
      * of the process that answers, the type of the message and the value
      * of the message. */
@@ -472,6 +499,17 @@ voryn_user_program:
      * is written in the eighth word of the page of data. */
     leaq 0x1038(%rbx), %rdi
     movq %rdx, (%rdi)
+
+    /* The owner takes the capability back from the process that answered:
+     * the revocation is the other half of the model, and the capability
+     * that is not needed any more does not stay in the set of the process
+     * that answered. */
+    movq $1, %rdi             /* the process of the destination */
+    movq $0, %rsi             /* the channel */
+    movq $10, %rax            /* the number of the system call */
+    syscall
+    leaq 0x1070(%rbx), %rdi   /* the result of the revocation */
+    movq %rax, (%rdi)
 
     /* The copy to the other process. The arguments are the identifier of
      * the process of the destination, the address of the destination in

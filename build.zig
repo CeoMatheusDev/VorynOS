@@ -164,6 +164,20 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(kernel_tests).step);
 
+    // The security modules of the kernel are free of architecture specific
+    // code and are tested on the host as well.
+    const security_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/security/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    security_test_module.addImport("voryn_shared", shared);
+    const security_tests = b.addTest(.{
+        .name = "security-tests",
+        .root_module = security_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(security_tests).step);
+
     // The architecture modules that do not touch the hardware are tested on
     // the host as well.
     const arch_test_module = b.createModule(.{
@@ -179,13 +193,13 @@ pub fn build(b: *std.Build) void {
     unit_test_step.dependOn(&b.addRunArtifact(arch_tests).step);
 
     const qemu_test_step = b.step("qemu-test", "Run the automated boot test in QEMU");
-    const qemu_test = b.addSystemCommand(&.{"bash", "tests/integration/boot-qemu.sh"});
+    const qemu_test = b.addSystemCommand(&.{ "bash", "tests/integration/boot-qemu.sh" });
     qemu_test.addPrefixedFileArg("--image=", image_path);
     qemu_test.has_side_effects = true;
     qemu_test_step.dependOn(&qemu_test.step);
 
     const qemu_run_step = b.step("qemu", "Boot the image in QEMU");
-    const qemu_run = b.addSystemCommand(&.{"bash", "scripts/qemu-run.sh"});
+    const qemu_run = b.addSystemCommand(&.{ "bash", "scripts/qemu-run.sh" });
     qemu_run.addPrefixedFileArg("--image=", image_path);
     qemu_run.has_side_effects = true;
     qemu_run_step.dependOn(&qemu_run.step);
