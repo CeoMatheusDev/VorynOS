@@ -5,7 +5,7 @@
 | **State** | ACCEPTED |
 | **Date** | 2026-10-22 |
 | **Scope** | The interface between the user mode and the kernel |
-| **Contract version** | `syscall_abi = 5` |
+| **Contract version** | `syscall_abi = 6` |
 
 ## 1. Objective
 
@@ -24,12 +24,13 @@ and that take it back, and it **requires** the capability of the channel
 that the calls of the channel use. Version 5 adds the **kind** of the
 capability to the calls that give and take it, so that a process can
 delegate the capability of an address space as well as the capability of a
-channel.
+channel. Version 6 adds the call that waits for a message with a timeout.
 
 The calls of the earlier versions **do not change their number**. Their
 behavior changes in the points that the sections 9 and 10 describe: the
 calls that touch a channel need the capability of the channel, and the
-calls 9 and 10 carry the kind of the capability.
+calls 9 and 10 carry the kind of the capability. The version 6 is
+additive: it adds a call and an error, and no existing call changes.
 
 ## 2. The mechanism
 
@@ -121,7 +122,7 @@ Ends the user task. The kernel marks the task as terminated and the
 scheduler does not choose it again; the processor leaves the task on the
 next interrupt. The exit code is registered in the task.
 
-## 5. The calls of the versions 2, 4 and 5
+## 5. The calls of the versions 2 to 6
 
 | Number | Call | Arguments | Result |
 |--------|---------|-----------|-----------|
@@ -131,6 +132,7 @@ next interrupt. The exit code is registered in the task.
 | 8 | `receive_blocking` | `RDI` channel, `RSI` side | the kind of the message, and the value in the `RDX` |
 | 9 | `grant` | `RDI` process, `RSI` kind, `RDX` subject, `R8` rights | zero, when the capability was given |
 | 10 | `revoke` | `RDI` process, `RSI` kind, `RDX` subject | zero, when the capability was taken back |
+| 11 | `receive_timeout` | `RDI` channel, `RSI` side, `RDX` timeout | the kind of the message, and the value in the `RDX` |
 
 ### 5.1 `send`
 
@@ -275,6 +277,48 @@ The call answers with the error 6 when the channel does not exist, with the
 error 8 when the process does not exist, and with the error 10 when the
 caller does not hold the capability with the right of delegation.
 
+### 5.6 `receive_timeout`
+
+Takes a message of a channel, waiting **at most** the given number of
+ticks. The arguments are the identifier of the channel, the side that
+holds the message and the timeout, in ticks of the timer. The result is
+the kind of the message, and the value of the message comes back in the
+`RDX`.
+
+The call is the blocking receive with a deadline:
+
+| | `receive_blocking` | `receive_timeout` |
+|---|---|---|
+| the queue has a message | the message is taken | the message is taken |
+| the queue is empty | the task **waits** | the task waits until the deadline |
+| the deadline passes | it does not exist | the call answers with the error 13 |
+| timeout zero | the task waits forever | the task waits forever |
+
+When the queue already has a message, the call answers at once and the
+timeout has no effect. When the queue is empty, the task is marked as
+blocked and the scheduler chooses another one, exactly as in the blocking
+receive.
+
+When the deadline passes before the message arrives, the kernel removes
+the wait from the queue and wakes the task with the error 13, `timeout`.
+The message that arrives later **stays in the queue**, for the next call:
+the expiry of the wait takes the waiter, and not the message.
+
+The timeout is counted in the ticks of the timer that the scheduler
+already counts. The deadline is `now + timeout`, and the kernel expires
+the waits **before** it chooses the next task, so a task whose deadline
+arrives is ready in the same tick. The granularity of the timeout is
+therefore one tick. A timeout of zero means that the deadline does not
+exist, and the call is the same as `receive_blocking`.
+
+The call returns the error 9 when there is no other task to run: a wait
+that would be the only task of the system is a busy loop, and not a wait.
+The check of the impossible wait happens before the deadline of the
+timeout is considered, and the error 9 is what the call answers.
+
+The call needs the capability of the channel, with the right of receiving,
+in the same way as the calls 6 and 8.
+
 ## 6. The result and the errors
 
 The result of the call comes back in `RAX`. A **negative** result means
@@ -295,6 +339,7 @@ the code of the error:
 | 10 | not authorized | the process does not hold the capability of the subject |
 | 11 | unknown kind | the kind of the capability does not exist |
 | 12 | invalid rights | the rights are empty, or they do not apply to the kind |
+| 13 | timeout | the wait expired before the message arrived |
 
 The limit of the length is **64 KiB** per call, and it exists so that the
 kernel does not spend an undetermined time inside a call.
@@ -330,7 +375,7 @@ knowing the error codes.
 12. A change to the arguments of an existing call is a break of the
     contract, and it increments the version, as a new call does.
 
-## 8. What version 5 does not have
+## 8. What version 6 does not have
 
 - **The capability that carries a memory range.** A capability is about a
   subject of the kernel, and a range of memory is not one of them.
@@ -343,10 +388,9 @@ knowing the error codes.
   message of the channel carries a kind and a value.
 - **Several processes per call.** The `copy_to` call knows the destination
   process by the identifier, and not by a file name nor by a path.
-- **Wait with a timeout.** The call that blocks waits forever, and there is
-  no timeout of the wait.
 - **Several waits per task.** A task waits for one channel and one side,
-  and not for a set of channels.
+  and not for a set of channels. The timeout of the call 11 bounds the
+  wait of one channel, and it does not select among several ones.
 
 ## 9. The break of the version 4
 
@@ -389,3 +433,15 @@ keeps working.
 
 The rule of the VVS-0001 asks for a bigger version of the contract for a
 change of this kind, and the version 5 is that bigger version.
+
+## 11. The version 6
+
+The version 6 is **additive**. It adds the call 11, `receive_timeout`, and
+the error 13, `timeout`, and it does not change the number nor the meaning
+of any existing call. A program that was compiled against the version 5
+keeps working without a change.
+
+The call is the blocking receive with a deadline, and it exists because a
+service that waits for a client that died would otherwise wait forever.
+The decision, with the alternatives that were discarded, is in the
+ADR-0010.

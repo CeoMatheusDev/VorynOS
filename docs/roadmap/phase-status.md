@@ -110,7 +110,7 @@ capabilities.
 | Floating point state per task | COMPLETED | the state is saved at the entry of the interruption and of the call, and restored by the switch |
 | Kernel stack separated from the code stack | COMPLETED | the processor frame is never in a page of the user |
 | System call | COMPLETED | the `syscall` instruction, with the handler in Zig |
-| Contract of the system call | COMPLETED | ten calls, with the contract in `docs/specs/syscall-abi.md`, version 5 |
+| Contract of the system call | COMPLETED | eleven calls, with the contract in `docs/specs/syscall-abi.md`, version 6 |
 | Checking of the user ranges | COMPLETED | a call with an address of the kernel is refused |
 | User mode | COMPLETED | the task writes in its page and the answer of the call comes back |
 | Task segment of the 64 bit mode | COMPLETED | the layout is verified at compile time |
@@ -123,6 +123,7 @@ capabilities.
 | VNX channel | COMPLETED | the message leaves one process and arrives at the other, and the answer comes back |
 | Latency of the delivery | COMPLETED | the interval between the message leaving and the message arriving, measured in the clock of the processor |
 | Wait that does not occupy the processor | COMPLETED | the task stays blocked, the scheduler chooses another one, and the message wakes it up |
+| Wait with a timeout | COMPLETED | the call 11 waits at most the given number of ticks, the timer expires the wait, and the call answers with the error 13; ADR-0010 |
 | Direct delivery to the context of the task | COMPLETED | the message does not stay in the queue, and the task continues after the call |
 | Frame of the call with the format of the interrupt frame | COMPLETED | the same switch serves the blocking and the preemption |
 | Processor frame with one single shape | COMPLETED | the stub normalizes the frame, and the handler and the switch read the same shape |
@@ -204,6 +205,14 @@ Acceptance criteria of the rest of the milestone:
    carry the right of delegation stops the chain. The diagnosis is in
    ADR-0009.
 
+7. A wait has a **bound**. **Fulfilled:** the call 11 waits for a message
+   at most the given number of ticks of the timer, the handler of the
+   timer expires the wait before it chooses the next task, the wait is
+   removed from the queue, the message that arrives later stays in the
+   queue, and the call answers with the error 13. The unit tests of the
+   queue verify the expiry, and the boot test verifies the call end to
+   end. The decision is in ADR-0010.
+
 What is still missing in the milestone:
 
 1. **The capability of the devices.** The model covers the channels and
@@ -215,8 +224,9 @@ What is still missing in the milestone:
    them that talk: the third exists to prove that a process that fails does
    not bring the others down. The number of address spaces is limited by a
    constant of the paging module.
-3. **The wait with a timeout.** The call that blocks waits forever, and
-   there is no timeout of the wait.
+3. **The wait on several channels.** A task waits for one channel and one
+   side; the timeout bounds one wait, and it does not select among several
+   ones.
 4. **The dynamic heap** with the VNM, the **signal in the process**, with a
    handler in the user space, and the **policy by type of exception**,
    which today is the same for every exception of the user mode.

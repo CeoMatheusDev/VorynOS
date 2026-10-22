@@ -79,6 +79,11 @@ pub const Waiter = struct {
     task: *anyopaque,
     /// The routine that makes the task ready again.
     wake: *const fn (task: *anyopaque) void,
+    /// The deadline of the wait, in ticks of the timer.
+    ///
+    /// Zero means that the wait does not expire: the task waits until the
+    /// message arrives, or until the wait is cancelled.
+    deadline: u64 = 0,
 };
 
 /// The number of tasks that can wait in the same queue.
@@ -116,6 +121,8 @@ pub const Queue = struct {
     /// latency: the
     /// interval between the message leaving and the message arriving.
     delivered_at: u64 = 0,
+    /// The number of waits of this queue that expired without a message.
+    expired: u64 = 0,
 
     /// Puts a message in the queue.
     ///
@@ -193,6 +200,40 @@ pub const Queue = struct {
         return false;
     }
 
+    /// Expires the waits whose deadline has passed.
+    ///
+    /// The wait is removed from the queue, the result of the call is
+    /// written in the context of the task — the value is zero, because no
+    /// message arrived — and the task is woken. The message that arrives
+    /// later stays in the queue, for the next call.
+    ///
+    /// A wait without a deadline never expires. The function returns the
+    /// number of waits that expired.
+    pub fn expire(self: *Queue, now: u64, result: u64) u32 {
+        var expired_waits: u32 = 0;
+
+        for (&self.waiters) |*entry| {
+            const waiter = entry.* orelse continue;
+            if (waiter.deadline == 0) continue;
+            if (now < waiter.deadline) continue;
+
+            waiter.kind.* = result;
+            waiter.value.* = 0;
+            entry.* = null;
+
+            self.expired += 1;
+            expired_waits += 1;
+            waiter.wake(waiter.task);
+        }
+
+        return expired_waits;
+    }
+
+    /// The number of waits of this queue that expired.
+    pub fn expirations(self: *const Queue) u64 {
+        return self.expired;
+    }
+
     /// Takes a message from the queue.
     ///
     /// The function returns null when the queue is empty.
@@ -255,6 +296,18 @@ pub const Channel = struct {
     pub fn deliver(self: *Channel, side: u64, message: Message) bool {
         if (side >= self.queues.len) return false;
         return self.queues[side].deliver(message);
+    }
+
+    /// Expires the waits of one side whose deadline has passed.
+    pub fn expire(self: *Channel, side: u64, now: u64, result: u64) u32 {
+        if (side >= self.queues.len) return 0;
+        return self.queues[side].expire(now, result);
+    }
+
+    /// The number of waits of one side that expired.
+    pub fn expirations(self: *const Channel, side: u64) u64 {
+        if (side >= self.queues.len) return 0;
+        return self.queues[side].expirations();
     }
 
     /// Delivers a message to a task that waits, or puts it in the queue.
@@ -341,4 +394,146 @@ pub fn init() void {
     for (&channels, 0..) |*channel, index| {
         channel.* = .{ .id = @intCast(index) };
     }
+}
+
+/// Expires the waits of every channel whose deadline has passed.
+///
+/// The function is called by the timer, before the scheduler chooses the
+/// next task, and it returns the number of waits that expired.
+pub fn expireAll(now: u64, result: u64) u32 {
+    var expired_waits: u32 = 0;
+
+    for (&channels) |*channel| {
+        for (0..channel.queues.len) |side| {
+            expired_waits += channel.expire(@intCast(side), now, result);
+        }
+    }
+
+    return expired_waits;
+}
+
+/// The number of waits of a channel that expired.
+pub fn expirations(id: u64, side: u64) u64 {
+    const channel = get(id) orelse return 0;
+    return channel.expirations(side);
+}
+
+fn wakeForTest(task: *anyopaque) void {
+    const wakes: *u32 = @ptrCast(@alignCast(task));
+    wakes.* += 1;
+}
+
+test "a wait without a deadline does not expire" {
+    var queue: Queue = .{};
+    var kind: u64 = 0;
+    var value: u64 = 7;
+    var wakes: u32 = 0;
+
+    const waiter = Waiter{
+        .kind = &kind,
+        .value = &value,
+        .task = &wakes,
+        .wake = wakeForTest,
+    };
+
+    try std.testing.expect(queue.wait(waiter));
+    try std.testing.expectEqual(@as(u32, 0), queue.expire(std.math.maxInt(u64), 1));
+    try std.testing.expectEqual(@as(u32, 0), wakes);
+    try std.testing.expectEqual(@as(u64, 0), kind);
+    try std.testing.expectEqual(@as(u64, 7), value);
+}
+
+test "a wait expires when the deadline arrives" {
+    var queue: Queue = .{};
+    var kind: u64 = 0;
+    var value: u64 = 7;
+    var wakes: u32 = 0;
+
+    const timeout_result: u64 = 0xFFFF_FFFF_FFFF_FFF3;
+    const waiter = Waiter{
+        .kind = &kind,
+        .value = &value,
+        .task = &wakes,
+        .wake = wakeForTest,
+        .deadline = 10,
+    };
+
+    try std.testing.expect(queue.wait(waiter));
+
+    // Before the deadline the wait is kept.
+    try std.testing.expectEqual(@as(u32, 0), queue.expire(9, timeout_result));
+    try std.testing.expectEqual(@as(u32, 0), wakes);
+
+    // The deadline is inclusive: the tick that reaches it expires the wait.
+    try std.testing.expectEqual(@as(u32, 1), queue.expire(10, timeout_result));
+    try std.testing.expectEqual(@as(u32, 1), wakes);
+    try std.testing.expectEqual(timeout_result, kind);
+    try std.testing.expectEqual(@as(u64, 0), value);
+    try std.testing.expectEqual(@as(u64, 1), queue.expirations());
+
+    // The wait was removed, and a second expiry does not wake the task
+    // again.
+    try std.testing.expectEqual(@as(u32, 0), queue.expire(11, timeout_result));
+    try std.testing.expectEqual(@as(u32, 1), wakes);
+}
+
+test "the expiry takes only the waits that are due" {
+    var queue: Queue = .{};
+    var first_kind: u64 = 0;
+    var second_kind: u64 = 0;
+    var first_value: u64 = 1;
+    var second_value: u64 = 2;
+    var first_wakes: u32 = 0;
+    var second_wakes: u32 = 0;
+
+    try std.testing.expect(queue.wait(.{
+        .kind = &first_kind,
+        .value = &first_value,
+        .task = &first_wakes,
+        .wake = wakeForTest,
+        .deadline = 5,
+    }));
+    try std.testing.expect(queue.wait(.{
+        .kind = &second_kind,
+        .value = &second_value,
+        .task = &second_wakes,
+        .wake = wakeForTest,
+        .deadline = 10,
+    }));
+
+    try std.testing.expectEqual(@as(u32, 1), queue.expire(5, 0xA));
+    try std.testing.expectEqual(@as(u32, 1), first_wakes);
+    try std.testing.expectEqual(@as(u32, 0), second_wakes);
+    try std.testing.expectEqual(@as(u64, 0xA), first_kind);
+    try std.testing.expectEqual(@as(u64, 0), second_kind);
+
+    try std.testing.expectEqual(@as(u32, 1), queue.expire(10, 0xB));
+    try std.testing.expectEqual(@as(u32, 1), second_wakes);
+    try std.testing.expectEqual(@as(u64, 0xB), second_kind);
+}
+
+test "a wait that was delivered does not expire" {
+    var queue: Queue = .{};
+    var kind: u64 = 0;
+    var value: u64 = 7;
+    var wakes: u32 = 0;
+
+    const waiter = Waiter{
+        .kind = &kind,
+        .value = &value,
+        .task = &wakes,
+        .wake = wakeForTest,
+        .deadline = 10,
+    };
+
+    try std.testing.expect(queue.wait(waiter));
+    try std.testing.expect(queue.deliver(.{ .kind = 3, .value = 9 }));
+    try std.testing.expectEqual(@as(u64, 3), kind);
+    try std.testing.expectEqual(@as(u64, 9), value);
+    try std.testing.expectEqual(@as(u32, 1), wakes);
+
+    try std.testing.expectEqual(@as(u32, 0), queue.expire(10, 0xF));
+    try std.testing.expectEqual(@as(u32, 1), wakes);
+    try std.testing.expectEqual(@as(u64, 3), kind);
+    try std.testing.expectEqual(@as(u64, 9), value);
 }

@@ -92,6 +92,8 @@ pub const data_process_revoked: u64 = 0x90;
 pub const data_kind_refused: u64 = 0x98;
 /// The result of the grant with a right of another kind.
 pub const data_rights_refused: u64 = 0xA0;
+/// The result of the wait with a timeout.
+pub const data_timeout: u64 = 0xA8;
 
 /// The block that the program of the user mode writes for the copy with the
 /// overlapping ranges.
@@ -128,6 +130,7 @@ test "the words of the page of the data do not overlap" {
         data_process_revoked,
         data_kind_refused,
         data_rights_refused,
+        data_timeout,
     };
 
     for (words, 0..) |word, index| {

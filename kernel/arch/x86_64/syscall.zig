@@ -201,6 +201,18 @@ pub const Number = struct {
     /// the owner of the capability takes it back from the process it gave it
     /// to.
     pub const revoke: u64 = 10;
+    /// The call that waits for a message **at most** the given number of
+    /// ticks.
+    ///
+    /// The arguments are the identifier of the channel, the side of the
+    /// channel that holds the message and the timeout, in ticks of the
+    /// timer. A timeout of zero means that the wait does not expire, and
+    /// the call is then the same as the blocking receive.
+    ///
+    /// When the deadline passes before the message arrives, the wait is
+    /// removed from the queue and the call answers with the error of the
+    /// timeout. The message that arrives later stays in the queue.
+    pub const receive_timeout: u64 = 11;
 };
 
 /// The result that the kernel answers to the call of the probe.
@@ -244,6 +256,11 @@ pub const Error = struct {
     /// The rights are empty, or they do not apply to the kind of the
     /// capability.
     pub const invalid_rights: u64 = 12;
+    /// The wait expired before the message arrived.
+    ///
+    /// The wait was removed from the queue, and the message that arrives
+    /// later stays in the queue for the next call.
+    pub const timeout: u64 = 13;
 };
 
 /// The largest block that a call copies in one go.
@@ -323,6 +340,11 @@ pub fn channelDeliveryLatency(channel_id: u64, side: u64) u64 {
 pub fn channelDeliveries(channel_id: u64, side: u64) u64 {
     const channel = channel_module.get(channel_id) orelse return 0;
     return channel.deliveries(side);
+}
+
+/// The number of waits of a channel that expired.
+pub fn channelExpirations(channel_id: u64, side: u64) u64 {
+    return channel_module.expirations(channel_id, side);
 }
 
 // The selectors of the user mode are written in the entry point of the
@@ -459,6 +481,19 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
                 number,
                 caller,
                 frame.rax,
+            });
+        },
+        Number.receive_timeout => {
+            // The timeout is saved before the call: when a message is
+            // already in the queue, the call writes the value of the
+            // message in the same register.
+            const timeout = frame.rdx;
+            frame.rax = receiveTimeout(frame, frame.rdi, frame.rsi, timeout, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} received 0x{x} with the timeout of {d} ticks", .{
+                number,
+                caller,
+                frame.rax,
+                timeout,
             });
         },
         Number.grant => {
@@ -660,6 +695,36 @@ fn receive(frame: *SyscallFrame, channel_id: u64, side: u64, privilege: u64) u64
 /// one, and zero when the caller was left waiting: the result really
 /// arrives later, in the context saved of the task.
 fn receiveBlocking(frame: *SyscallFrame, channel_id: u64, side: u64, privilege: u64) u64 {
+    return waitForMessage(frame, channel_id, side, 0, privilege);
+}
+
+/// Takes a message from a channel, waiting at most `timeout` ticks.
+///
+/// The call is the blocking receive with a deadline. The timeout is
+/// counted in the ticks of the timer, and zero means that the wait does
+/// not expire: the call is then the same as the blocking receive.
+///
+/// When the deadline passes before the message arrives, the kernel removes
+/// the wait from the queue and answers with the error of the timeout. The
+/// message that arrives later stays in the queue, for the next call.
+fn receiveTimeout(frame: *SyscallFrame, channel_id: u64, side: u64, timeout: u64, privilege: u64) u64 {
+    return waitForMessage(frame, channel_id, side, timeout, privilege);
+}
+
+/// The common path of the calls that wait for a message.
+///
+/// The function checks the privilege level, the capability of the channel
+/// and the queue. When the queue already has a message, the call takes it
+/// and answers at once. When the queue is empty, the wait is registered
+/// with the deadline, and the result arrives later, in the context saved
+/// of the task.
+fn waitForMessage(
+    frame: *SyscallFrame,
+    channel_id: u64,
+    side: u64,
+    timeout: u64,
+    privilege: u64,
+) u64 {
     if (privilege != Privilege.user) return failure(Error.not_allowed);
 
     // The process that does not hold the capability of the channel does
@@ -679,9 +744,10 @@ fn receiveBlocking(frame: *SyscallFrame, channel_id: u64, side: u64, privilege: 
         return message.kind;
     }
 
-    // The queue is empty: the task waits for the message.
+    // The queue is empty: the task waits for the message. The deadline
+    // zero means that the wait does not expire.
     const scheduler = @import("../../task/scheduler.zig");
-    if (!scheduler.scheduler.blockCurrent(channel, side)) {
+    if (!scheduler.scheduler.blockCurrent(channel, side, timeout)) {
         return failure(Error.wait_impossible);
     }
 

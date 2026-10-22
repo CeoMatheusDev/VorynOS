@@ -193,6 +193,6 @@ The test runs in `zig build qemu-test`, and the full suite runs in
 | Direct delivery into the task context | IMPLEMENTED — LOCALLY TESTED |
 | Call frame with the format of the interrupt frame | IMPLEMENTED — LOCALLY TESTED |
 | Delivery latency measured | IMPLEMENTED — LOCALLY TESTED |
-| Wait with timeout | PROPOSED |
+| Wait with timeout | IMPLEMENTED — LOCALLY TESTED (ADR-0010) |
 | Multiple waits per task | PROPOSED |
 | VNC capability transfer | PROPOSED |

@@ -294,6 +294,12 @@ fn userRightsRefusedAddress() u64 {
     return userDataAddress() + usermode.data_rights_refused;
 }
 
+/// The address of the word that holds the result of the wait with a
+/// timeout.
+fn userTimeoutAddress() u64 {
+    return userDataAddress() + usermode.data_timeout;
+}
+
 /// The address of the thirteenth word of the page of data of the user mode.
 ///
 /// The copy to the other process writes there the block that it copied.
@@ -742,6 +748,20 @@ fn installCapabilities() void {
         port.haltForever();
     }
 
+    // The channel of the wait with a timeout. The process that answers
+    // waits for a message that nobody sends, and the timer expires the
+    // wait. The process holds the use of the channel, and not the right of
+    // delegation.
+    const timeout_handle = capability.create(.channel, 1, capability.Rights.use) orelse {
+        serial.printLine("[VNK] FATAL: the table of capabilities is full", .{});
+        port.haltForever();
+    };
+
+    if (!capability.give(answerer.id, timeout_handle, capability.Rights.use)) {
+        serial.printLine("[VNK] FATAL: the capability of the channel of the timeout could not be given", .{});
+        port.haltForever();
+    }
+
     // The capability of the address space of the process that answers.
     // The process of role zero starts the others and is the only one that
     // may write in their spaces: it receives the right to write in the
@@ -760,6 +780,7 @@ fn installCapabilities() void {
     }
 
     serial.printLine("[VNK] capabilities: the channel 0 belongs to the process {d}", .{owner.id});
+    serial.printLine("[VNK] capabilities: the channel 1 belongs to the process {d}", .{answerer.id});
     serial.printLine("[VNK] capabilities: the address space of the process {d} belongs to the process {d}", .{
         answerer.id,
         owner.id,
@@ -1152,6 +1173,33 @@ fn reportCapabilities() void {
             rights_refused,
         });
     }
+
+    // The wait with a timeout. The process that answers waits for a
+    // message of the channel 1 that nobody sends, and the timer expires
+    // the wait. The result proves that the call answered with the error of
+    // the timeout, and the counter of the queue proves that the wait was
+    // removed from the queue by the timer.
+    attempts = 0;
+    var timed_out: u64 = 0;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        timed_out = userWord(answerer, userTimeoutAddress());
+        if (timed_out != 0) break;
+        cpu.halt();
+    }
+
+    if (timed_out == syscall.failure(syscall.Error.timeout)) {
+        serial.printLine("[VNK] user: the wait with a timeout expired with the error {d}", .{
+            syscall.Error.timeout,
+        });
+    } else {
+        serial.printLine("[VNK] user: the wait with a timeout answered 0x{x}, expected 0x{x}", .{
+            timed_out,
+            syscall.failure(syscall.Error.timeout),
+        });
+    }
+
+    const expired = syscall.channelExpirations(1, syscall.Side.user);
+    serial.printLine("[VNK] channel: {d} waits expired with the timeout", .{expired});
 }
 
 /// Waits for the task of the user mode and reports what it wrote.

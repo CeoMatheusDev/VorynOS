@@ -240,12 +240,20 @@ pub const Scheduler = struct {
         return task;
     }
 
-    /// Decides whether the processor has to run another task.
+    /// Counts a tick of the timer and decides whether the processor has to
+    /// run another task.
+    ///
+    /// The waits whose deadline has passed expire **before** the next task
+    /// is chosen, so that a task that timed out is ready in the same tick.
+    /// `timeout_result` is the result of the call that timed out: the
+    /// scheduler does not know the code of the error, because the contract
+    /// of the calls is what owns it.
     ///
     /// The function is called by the handler of the timer. When it returns
     /// true, the entry point of the interrupt switches to the next task.
-    pub fn tick(self: *Scheduler) bool {
+    pub fn tick(self: *Scheduler, timeout_result: u64) bool {
         self.statistics.ticks += 1;
+        _ = channel.expireAll(self.statistics.ticks, timeout_result);
         return self.prepareNext();
     }
 
@@ -311,17 +319,31 @@ pub const Scheduler = struct {
     /// the message arrives, and the task continues after the call, as if the
     /// call had answered at once.
     ///
+    /// `timeout` is the number of ticks that the wait may last, counted
+    /// from the current tick of the scheduler. Zero means that the wait
+    /// does not expire. A timeout that would overflow the counter saturates,
+    /// and the wait therefore expires at the end of the counter and not
+    /// before.
+    ///
     /// The function returns false when there is no other task to choose,
     /// and in that case the task is **not** blocked: the call returns the
-    /// error of the empty queue, and the task continues.
-    pub fn blockCurrent(self: *Scheduler, target: *channel.Channel, side: u64) bool {
+    /// error of the wait that cannot happen, and the task continues.
+    pub fn blockCurrent(self: *Scheduler, target: *channel.Channel, side: u64, timeout: u64) bool {
         const task = self.current orelse return false;
+
+        // The deadline is in the ticks of the scheduler, which is the
+        // counter that the timer moves and the one that the expiry reads.
+        const deadline = if (timeout == 0)
+            0
+        else
+            self.statistics.ticks +| timeout;
 
         const waiter = channel.Waiter{
             .kind = &task.context.rax,
             .value = &task.context.rdx,
             .task = task,
             .wake = wakeTask,
+            .deadline = deadline,
         };
 
         if (!target.wait(side, waiter)) return false;

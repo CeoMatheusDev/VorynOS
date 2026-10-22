@@ -511,6 +511,19 @@ voryn_user_program:
     movq %rax, (%rdi)
 9:
 
+    /* The wait with a timeout. The process that answers waits for a
+     * message of the channel one that nobody sends, and the timer expires
+     * the wait. The result is the negative value of the error of the
+     * timeout, and it proves that the wait was removed from the queue and
+     * that the task was woken by the timer, and not by a message. */
+    movq $1, %rdi             /* the channel */
+    movq $0, %rsi             /* the side of the user mode */
+    movq $2, %rdx             /* the timeout, in ticks of the timer */
+    movq $11, %rax            /* the number of the system call */
+    syscall
+    leaq 0x10A8(%rbx), %rdi   /* the place of the result */
+    movq %rax, (%rdi)
+
     /* The process that answers. The call **blocks**: the task stays
      * waiting, the scheduler chooses another task, and the message wakes
      * the task up when it arrives. The call returns as if it had answered

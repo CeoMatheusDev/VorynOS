@@ -396,11 +396,13 @@ export fn voryn_interrupt_handler(vector: u64, frame: *const Registers) callconv
         if (vector == first_hardware_vector) {
             timer.onTick();
 
-            // The scheduler decides whether another task has to run. The
-            // value that is returned tells the entry point of the interrupt
-            // to switch.
+            // The waits whose deadline has passed expire before the
+            // scheduler chooses the next task, so that a task that timed
+            // out is ready in this tick. The result of the expired call is
+            // the error of the timeout of the contract of the calls.
+            const syscall = @import("syscall.zig");
             const scheduler = @import("../../task/scheduler.zig");
-            const must_switch = scheduler.scheduler.tick();
+            const must_switch = scheduler.scheduler.tick(syscall.failure(syscall.Error.timeout));
             timer.acknowledge(@intCast(vector));
             return if (must_switch) 1 else 0;
         }

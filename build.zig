@@ -192,6 +192,21 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(arch_tests).step);
 
+    // The IPC modules of the kernel are free of architecture specific code
+    // and are tested on the host as well. The root lives at the top of the
+    // kernel tree because the channel uses the context of the tasks.
+    const ipc_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ipc_test_module.addImport("voryn_shared", shared);
+    const ipc_tests = b.addTest(.{
+        .name = "ipc-tests",
+        .root_module = ipc_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(ipc_tests).step);
+
     // The steps that use the image depend on the step that builds it: the
     // test has to run against the image of the tree, and not against the
     // image that a previous run left in the installation directory.

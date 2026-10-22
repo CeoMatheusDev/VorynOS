@@ -104,7 +104,7 @@ system.
 | Memory map | array of `MemoryDescriptor` (40 bytes) | `shared/handoff.zig` |
 | Kernel image | relocatable ELF64 (`ET_DYN`) | `shared/elf64.zig` |
 | User mode window | offset constants, shared with the assembly | `shared/usermode.zig` |
-| System call contract | version `syscall_abi = 5`, ten calls | `docs/specs/syscall-abi.md` |
+| System call contract | version `syscall_abi = 6`, eleven calls | `docs/specs/syscall-abi.md` |
 | Task context | `extern struct` with the fifteen registers | `kernel/task/context.zig` |
 | Console | `std.Io.Writer` writer over the UART | `shared/arch/x86_64/serial.zig` |
 
@@ -174,8 +174,9 @@ an explicit and documented layout.
    exist yet.
 9. The number of address spaces is a constant of the paging module, and
    the number of processes is fixed in the kernel.
-10. The call that blocks waits forever, and there is no timeout of the
-    wait.
+10. The timeout of the wait is counted in ticks of the timer, and a wait
+    on **several** channels does not exist: a task waits for one channel
+    and one side.
 11. The kernel is loaded from a FAT volume through the simple file system
     protocol of the firmware; there is no block driver of its own.
 12. The capability of the model of the VNC covers the channels of the VNX

@@ -218,9 +218,9 @@ The following limitations are known and documented:
 | Processes | Three processes; the address-space limit is a constant defined in the paging module |
 | TSS | 64-bit mode structure with a layout verified at compile time |
 | Exceptions | A user-mode exception kills the process; an exception in the kernel is fatal |
-| Syscalls | Ten system calls, with verified return to user mode |
+| Syscalls | Eleven system calls, with verified return to user mode |
 | IPC | Message delivery and waiting between two processes are verified; ordering, guaranteed delivery, and synchronization are not provided |
-| Waiting | No timeout support; a task waits on one channel and one endpoint |
+| Waiting | A wait has a timeout, in ticks of the timer; a task still waits on one channel and one endpoint, and a wait on several channels is not provided |
 | Capabilities | The model covers the channels of the VNX; the process still accesses its entire address space |
 | Storage | No operational kernel file system |
 | Drivers | No general-purpose driver infrastructure |
@@ -536,7 +536,7 @@ These include:
 
 Boot execution is tested in an x86_64 virtual machine using OVMF firmware.
 
-The automated test checks **33 progress markers** emitted by the bootloader and kernel, identifying failure conditions during initialization.
+The automated test checks **51 progress markers** emitted by the bootloader and kernel, identifying failure conditions during initialization.
 
 Kernel markers verify **actual data content**, not merely execution progress.
 
@@ -614,6 +614,7 @@ VorynOS maintains technical documentation alongside its source code.
 | [ADR-0007](docs/adr/ADR-0007-blocking-receive.md) | Blocking message reception syscall |
 | [ADR-0008](docs/adr/ADR-0008-exception-recovery.md) | A process exception kills the process, and not the machine |
 | [ADR-0009](docs/adr/ADR-0009-capability-model.md) | The capability fabric of the VNC |
+| [ADR-0010](docs/adr/ADR-0010-wait-timeout.md) | The wait with a timeout |
 | [Boot Handoff](docs/specs/boot-handoff-spec.md) | Boot handoff contract specification |
 | [Syscall ABI](docs/specs/syscall-abi.md) | System call contract |
 | [v0.1.0-dev.2 Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2) | Process fault recovery, kernel reliability fixes, and validation results |

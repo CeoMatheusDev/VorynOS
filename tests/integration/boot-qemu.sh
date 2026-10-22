@@ -260,6 +260,10 @@ require_marker "[VNK] syscall 10 from user took the capability of the process 1 
 require_marker "[VNK] capabilities: the calls delegated the address space of the process 1 to the process 2 and took it back"
 require_marker "[VNK] user: the grant with an unknown kind was refused with the error 11"
 require_marker "[VNK] user: the grant with the rights of another kind was refused with the error 12"
+require_pattern '\[VNK\] capabilities: the channel 1 belongs to the process [0-9]+' 'the capability of the channel of the timeout'
+require_marker "[VNK] syscall 11 from user"
+require_marker "[VNK] user: the wait with a timeout expired with the error 13"
+require_pattern '\[VNK\] channel: [0-9]+ waits expired with the timeout' 'the expiry of the wait with a timeout'
 require_marker "[VNK] user: the second process wrote 0x5a5a1235 in its own page"
 require_marker "[VNK] user: the copy between the two processes moved 8 bytes"
 require_marker "VORYN-KERNEL-READY"
