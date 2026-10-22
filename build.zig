@@ -192,16 +192,21 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(arch_tests).step);
 
+    // The steps that use the image depend on the step that builds it: the
+    // test has to run against the image of the tree, and not against the
+    // image that a previous run left in the installation directory.
     const qemu_test_step = b.step("qemu-test", "Run the automated boot test in QEMU");
     const qemu_test = b.addSystemCommand(&.{ "bash", "tests/integration/boot-qemu.sh" });
     qemu_test.addPrefixedFileArg("--image=", image_path);
     qemu_test.has_side_effects = true;
+    qemu_test_step.dependOn(&image_step.step);
     qemu_test_step.dependOn(&qemu_test.step);
 
     const qemu_run_step = b.step("qemu", "Boot the image in QEMU");
     const qemu_run = b.addSystemCommand(&.{ "bash", "scripts/qemu-run.sh" });
     qemu_run.addPrefixedFileArg("--image=", image_path);
     qemu_run.has_side_effects = true;
+    qemu_run_step.dependOn(&image_step.step);
     qemu_run_step.dependOn(&qemu_run.step);
 
     const check_step = b.step("check", "Run the unit tests and the automated boot test");

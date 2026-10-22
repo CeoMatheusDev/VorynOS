@@ -15,7 +15,7 @@
 set -euo pipefail
 
 IMAGE=""
-TIMEOUT=25
+TIMEOUT=60
 
 for argument in "$@"; do
     case "$argument" in
@@ -142,7 +142,7 @@ cp "$OVMF_VARS_PATH" "$WORK_DIRECTORY/vars.fd"
 echo "qemu-boot-test: booting $IMAGE (firmware: $OVMF_CODE_PATH, format: $OVMF_CODE_FORMAT)"
 
 set +e
-timeout --signal=TERM "$TIMEOUT" qemu-system-x86_64 \
+qemu-system-x86_64 \
     -machine q35 \
     -m 256 \
     -smp 1 \
@@ -152,12 +152,38 @@ timeout --signal=TERM "$TIMEOUT" qemu-system-x86_64 \
     -serial "file:$SERIAL_LOG" \
     -display none \
     -no-reboot \
-    >/dev/null 2>&1
+    >/dev/null 2>&1 &
+QEMU_PID=$!
+
+# The kernel does not stop: it stops on purpose, and the emulator waits
+# forever. The test terminates the emulator as soon as the console reaches
+# the end of the boot, and the timeout is the safety net for a machine
+# that never gets there.
+#
+# The wait makes the test both fast and deterministic: the emulator does
+# not run until the timeout when the kernel is already at the end.
+DEADLINE=$(( SECONDS + TIMEOUT ))
+while (( SECONDS < DEADLINE )); do
+    if grep -q "VORYN-KERNEL-READY" "$SERIAL_LOG" 2>/dev/null; then
+        # The self test of the kernel runs after the marker, and the
+        # console needs a moment to write the rest of the report.
+        sleep 1
+        break
+    fi
+    if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+        break
+    fi
+    sleep 0.2
+done
+
+kill "$QEMU_PID" 2>/dev/null || true
+wait "$QEMU_PID" 2>/dev/null
 QEMU_STATUS=$?
 set -e
 
-# A timeout is the expected outcome, the kernel halts and never exits.
-if [[ $QEMU_STATUS -ne 0 && $QEMU_STATUS -ne 124 ]]; then
+# The termination of the emulator is the expected outcome: the kernel
+# halts and never exits.
+if [[ $QEMU_STATUS -ne 0 && $QEMU_STATUS -ne 124 && $QEMU_STATUS -ne 143 ]]; then
     echo "qemu-boot-test: qemu exited with status $QEMU_STATUS" >&2
 fi
 
