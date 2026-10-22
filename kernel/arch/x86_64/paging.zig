@@ -548,15 +548,6 @@ pub fn describe(virtual: u64) void {
     });
 }
 
-/// The number of entries of the root table that are in use.
-pub fn mappedEntries() u32 {
-    var count: u32 = 0;
-    for (level4.entries) |entry| {
-        if (entry & Flags.present != 0) count += 1;
-    }
-    return count;
-}
-
 /// Checks whether a range of virtual addresses belongs to the user mode.
 ///
 /// The function walks the hierarchy of the tables and verifies that every

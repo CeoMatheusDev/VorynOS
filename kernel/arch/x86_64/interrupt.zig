@@ -322,6 +322,13 @@ export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv
     serial.printLine("[VNK] EXCEPTION {d}: {s}", .{ vector, vectorName(vector) });
     serial.printLine("[VNK]   error code: 0x{x}", .{processor.error_code});
     serial.printLine("[VNK]   faulting address: 0x{x}", .{cpu.readCr2()});
+
+    // A falta de página é o defeito que mais precisa de contexto: o
+    // relatório mostra como a página que causou a falta está mapeada.
+    if (vector == 14) {
+        const paging = @import("paging.zig");
+        paging.describe(cpu.readCr2());
+    }
     serial.printLine("[VNK]   rip=0x{x} cs=0x{x} rflags=0x{x}", .{
         processor.rip,
         processor.cs,
@@ -377,7 +384,7 @@ fn readWord(address: usize) u64 {
 }
 
 /// Loads the interrupt descriptor table.
-extern fn voryn_load_idt(pointer: *const align(8) IdtPointer) callconv(.c) void;
+extern fn voryn_load_idt(pointer: *align(8) const IdtPointer) callconv(.c) void;
 
 /// Stores the interrupt descriptor table.
 extern fn voryn_store_idt(pointer: *align(8) IdtPointer) callconv(.c) void;
