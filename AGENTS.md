@@ -160,3 +160,18 @@ real por simulação, copiar código proprietário, apresentar código ilustrati
 como funcional, fazer mudança arquitetural incompatível em silêncio, sacrificar
 segurança por otimização especulativa, criar arquivo vazio para aparentar
 progresso.
+
+## 14. Cabeçalho obrigatório de código-fonte
+
+Todo arquivo novo de código-fonte do VorynOS (Zig, C, headers e Assembly)
+deve começar com o cabeçalho visual padronizado: nome real do arquivo,
+identidade **VorynOS**, endereço do repositório, copyright
+`Copyright (C) 2026 VorynOS contributors.` e
+`SPDX-License-Identifier: GPL-3.0-only`.
+
+Preserve a documentação técnica existente: em Zig, comentários `//!` devem
+permanecer após o cabeçalho; em Assembly, mantenha as descrições técnicas em
+comentários separados. Não duplique o SPDX nem altere instruções, imports ou
+código executável ao atualizar cabeçalhos. A licença completa está em
+`LICENSE`. Não sobrescreva avisos legais de terceiros: arquivos importados
+com licenças distintas exigem análise específica antes da padronização.
