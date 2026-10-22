@@ -1,7 +1,16 @@
+/**************************************************************************/
+/*  segment.s                                                             */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                               VorynOS                                  */
+/*              https://github.com/CeoMatheusDev/VorynOS                  */
+/**************************************************************************/
+/* Copyright (C) 2026 VorynOS contributors.                               */
+/*                                                                        */
+/* SPDX-License-Identifier: GPL-3.0-only                                  */
+/**************************************************************************/
+
 /*
- * SPDX-License-Identifier: GPL-3.0-only
- * Copyright (C) 2026 VorynOS contributors
- *
  * Access to the structures of the segment subsystem: the global descriptor
  * table and the task state segment.
  *

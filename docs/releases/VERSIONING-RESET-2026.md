@@ -97,22 +97,41 @@ eles afirmavam.
 1. Registro do identificador, do commit e da data de publicação de cada um
    dos dois marcos, e transcrição do estado técnico de cada um para este
    documento.
-2. Atualização das constantes de versão do projeto — o pacote
+2. **Integração do trabalho paralelo que estava na branch `main` remota.**
+   A branch remota continha 34 commits que a cópia local não tinha: 35
+   padronizações de cabeçalho de código-fonte, uma regra nova no
+   `AGENTS.md`, e uma nota preparatória da `v0.1.0-dev.1`. O trabalho foi
+   integrado por **merge**, que preserva os dois históricos, sem
+   reescrita e sem força. A nota preparatória foi substituída pelas notas
+   oficiais desta versão, e os cabeçalhos foram preservados.
+3. **Correção do cabeçalho padronizado nos arquivos Zig.** A padronização
+   remota escrevia o cabeçalho como comentário de bloco `/* ... */`, e no
+   Zig 0.17.0 um comentário de bloco antes de um comentário de
+   documentação `//!` é um **erro de sintaxe**: o arquivo inteiro era
+   recusado pelo compilador, e `zig build` falhava em `build.zig:1:1`. O
+   cabeçalho dos arquivos Zig passou a usar comentários de linha `//`, que
+   preservam a caixa visual, a identidade, o endereço do repositório, o
+   copyright e o SPDX, e que o compilador aceita. A forma de bloco
+   permanece nos arquivos Assembly, onde não há comentário de documentação
+   de arquivo. A regra e a restrição estão registradas na seção 14 do
+   `AGENTS.md`.
+4. Atualização das constantes de versão do projeto — o pacote
    `build.zig.zon`, o carregador e o núcleo — para `0.1.0-dev.1`.
-3. Criação das notas oficiais da nova versão em
+5. Criação das notas oficiais da nova versão em
    [`v0.1.0-dev.1.md`](v0.1.0-dev.1.md).
-4. Registro da exceção extraordinária na
+6. Registro da exceção extraordinária na
    [VVS-0001](../standards/VVS-0001.md).
-5. Atualização do README, do roadmap e das referências do repositório.
-6. Verificação do código, com `zig build`, `zig build test`,
+7. Atualização do README, do roadmap e das referências do repositório.
+8. Verificação do código, com `zig build`, `zig build test`,
    `zig build qemu-test` e `zig build check`.
-7. Publicação do commit, da tag anotada `v0.1.0-dev.1` e do release
+9. Publicação do commit, da tag anotada `v0.1.0-dev.1` e do release
    correspondente, marcado como pré-lançamento.
-8. **Depois** da confirmação da existência da nova tag e do novo release,
-   exclusão dos releases `v0.1.0-dev.2` e `v0.1.0-dev.3`, e exclusão das
-   tags remotas com os mesmos dois identificadores, uma operação por vez.
-9. Verificação final do repositório e da comparação de integridade do
-   código.
+10. **Depois** da confirmação da existência da nova tag e do novo release,
+    exclusão dos releases `v0.1.0-dev.2` e `v0.1.0-dev.3`, e exclusão
+    das tags remotas com os mesmos dois identificadores, uma operação por
+    vez.
+11. Verificação final do repositório e da comparação de integridade do
+    código.
 
 ## 6. O que foi preservado
 

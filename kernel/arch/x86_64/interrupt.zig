@@ -1,5 +1,14 @@
-// SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 VorynOS contributors
+//************************************************************************//
+//  interrupt.zig                                                         //
+//************************************************************************//
+//                         This file is part of:                          //
+//                               VorynOS                                  //
+//              https://github.com/CeoMatheusDev/VorynOS                  //
+//************************************************************************//
+// Copyright (C) 2026 VorynOS contributors.                               //
+//                                                                        //
+// SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
 
 //! The interrupt descriptor table and the exception handler of the kernel.
 //!

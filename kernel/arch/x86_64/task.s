@@ -1,7 +1,16 @@
+/**************************************************************************/
+/*  task.s                                                                */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                               VorynOS                                  */
+/*              https://github.com/CeoMatheusDev/VorynOS                  */
+/**************************************************************************/
+/* Copyright (C) 2026 VorynOS contributors.                               */
+/*                                                                        */
+/* SPDX-License-Identifier: GPL-3.0-only                                  */
+/**************************************************************************/
+
 /*
- * SPDX-License-Identifier: GPL-3.0-only
- * Copyright (C) 2026 VorynOS contributors
- *
  * Switch of the execution context between two tasks.
  *
  * The routine is called from the entry point of an interrupt, with the frame

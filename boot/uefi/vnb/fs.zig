@@ -1,5 +1,14 @@
-// SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 VorynOS contributors
+//************************************************************************//
+//  fs.zig                                                                //
+//************************************************************************//
+//                         This file is part of:                          //
+//                               VorynOS                                  //
+//              https://github.com/CeoMatheusDev/VorynOS                  //
+//************************************************************************//
+// Copyright (C) 2026 VorynOS contributors.                               //
+//                                                                        //
+// SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
 
 //! Access to the boot volume through `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL`.
 //!

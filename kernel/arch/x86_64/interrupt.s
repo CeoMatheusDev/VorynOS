@@ -1,7 +1,16 @@
+/**************************************************************************/
+/*  interrupt.s                                                           */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                               VorynOS                                  */
+/*              https://github.com/CeoMatheusDev/VorynOS                  */
+/**************************************************************************/
+/* Copyright (C) 2026 VorynOS contributors.                               */
+/*                                                                        */
+/* SPDX-License-Identifier: GPL-3.0-only                                  */
+/**************************************************************************/
+
 /*
- * SPDX-License-Identifier: GPL-3.0-only
- * Copyright (C) 2026 VorynOS contributors
- *
  * Entry points of the interrupt and exception handlers.
  *
  * The stubs normalise the stack frame so that the handler in Zig always
