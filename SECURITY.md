@@ -1,40 +1,47 @@
-# Política de segurança — VorynOS
+# Security Policy — VorynOS
 
-## Estado de suporte
+## Support Status
 
-O VorynOS está em **desenvolvimento inicial**, sem versões estáveis publicadas e sem garantia de adequação a ambientes de produção.
+VorynOS is currently in **early development**, with no stable releases published and no guarantees of suitability for production environments.
 
-| Versão | Suporte de segurança |
+| Version | Security Support |
 | --- | --- |
-| Desenvolvimento (`main`) | Relatos analisados conforme disponibilidade dos mantenedores |
-| Releases estáveis | Nenhum release estável publicado |
+| Development (`main`) | Reports are reviewed based on maintainer availability |
+| Stable releases | No stable releases have been published |
 
-Esta tabela descreve uma política de triagem, não uma promessa de prazo de correção.
+This table describes a vulnerability triage policy, not a commitment to a specific remediation timeframe.
 
-## Reportando uma vulnerabilidade
+## Reporting a Vulnerability
 
-**Não divulgue detalhes de exploração, credenciais, dados pessoais ou vulnerabilidades ainda não corrigidas em issues públicas.**
+**Do not disclose exploitation details, credentials, personal information, or unpatched vulnerabilities in public issues.**
 
-Prefira o recurso privado **GitHub Security Advisories / Report a vulnerability**, **se estiver habilitado** neste repositório. Consulte a aba *Security* do projeto.
+Prefer the private **GitHub Security Advisories / Report a vulnerability** feature, **if enabled** for this repository. Check the project's *Security* tab.
 
-Se esse recurso não estiver disponível, abra uma issue pública **sem detalhes sensíveis** solicitando um canal privado de contato. Não inclua proof-of-concept explorável ou dados confidenciais nessa issue.
+If this feature is unavailable, open a public issue **without sensitive details** requesting a private communication channel. Do not include an exploitable proof of concept or confidential information in that issue.
 
-No relato privado, forneça, quando possível:
-- Componente e commit/versão afetados.
-- Ambiente e arquitetura.
-- Passos mínimos de reprodução.
-- Impacto observado e esperado.
-- Logs redigidos, sem segredos.
-- Possível mitigação.
+When submitting a private vulnerability report, provide the following information whenever possible:
 
-## Tratamento dos relatos
+- Affected component and commit/version.
+- Environment and architecture.
+- Minimal reproduction steps.
+- Observed and expected impact.
+- Redacted logs containing no secrets.
+- Potential mitigation measures.
 
-Os mantenedores procurarão confirmar o problema, avaliar gravidade, desenvolver uma correção e coordenar divulgação responsável. **Não existe SLA ou prazo garantido** nesta fase do projeto.
+## Vulnerability Handling
 
-## Escopo
+The maintainers will make reasonable efforts to confirm reported issues, assess their severity, develop appropriate fixes, and coordinate responsible disclosure.
 
-Relatos sobre bootloader, kernel, gerenciamento de memória, isolamento, drivers, formatos binários, parsers e cadeia de build são relevantes. Problemas de serviços de terceiros devem ser encaminhados aos respectivos responsáveis.
+**No service-level agreement (SLA) or guaranteed response or remediation timeframe is provided** at this stage of the project.
 
-## Boas práticas
+## Scope
 
-Nunca compartilhe tokens, chaves privadas ou dados pessoais em logs e relatórios. Testes devem ser realizados em ambientes próprios e autorizados.
+Security reports involving the bootloader, kernel, memory management, isolation mechanisms, drivers, binary formats, parsers, and build pipeline are relevant to this project.
+
+Issues affecting third-party services should be reported to their respective maintainers or service providers.
+
+## Security Best Practices
+
+Never share access tokens, private keys, or personal information in logs or vulnerability reports.
+
+Security testing must only be conducted in environments that you own or are explicitly authorized to test.
