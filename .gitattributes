@@ -2,7 +2,10 @@
 # GitHub-generated Source code downloads may ignore export-ignore.
 
 # AI development instructions are not part of source distributions.
+# The root AGENTS.md is the entry point that the programming tools
+# discover, and it points to the protocol inside internal/ai.
 /internal/ export-ignore
+/AGENTS.md export-ignore
 
 # Repository automation and administrative documentation.
 /.github/ export-ignore

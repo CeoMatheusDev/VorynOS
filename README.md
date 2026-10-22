@@ -143,7 +143,7 @@ O núcleo possui uma infraestrutura inicial funcional para gerenciamento do proc
 - Estrutura de tarefa preparada para o terceiro nível de privilégio.
 - Mapeamento de páginas de usuário nas tabelas de página próprias.
 - Chamada de sistema pela instrução `syscall`, com o tratador em Zig.
-- Contrato da chamada de sistema com sete chamadas, e conferência das
+- Contrato da chamada de sistema com oito chamadas, e conferência das
   faixas do usuário nas tabelas de página do espaço do processo antes de o
   núcleo tocar a memória do usuário.
 - Medição do custo da troca de contexto pelo contador de tempo.
@@ -505,7 +505,7 @@ VorynOS/
 │   ├── standards/
 │   └── testing/
 │
-├── AGENTS.md
+├── internal/            # documentos de desenvolvimento (não vão no pacote)
 ├── CONTRIBUTING.md
 ├── SECURITY.md
 ├── LICENSE
@@ -612,7 +612,6 @@ O VorynOS mantém documentação técnica junto ao código-fonte.
 
 | Documento | Descrição |
 |---|---|
-| [AGENTS.md](AGENTS.md) | Protocolo de engenharia e desenvolvimento |
 | [Architecture Overview](docs/architecture/overview.md) | Organização e contratos arquiteturais |
 | [ADR-0001](docs/adr/ADR-0001-voryn-fabric.md) | Modelo Voryn Fabric |
 | [ADR-0002](docs/adr/ADR-0002-boot-chain-and-uefi-abi.md) | Cadeia de inicialização e ABI UEFI |
@@ -624,7 +623,6 @@ O VorynOS mantém documentação técnica junto ao código-fonte.
 | [Boot Handoff](docs/specs/boot-handoff-spec.md) | Especificação do contrato de inicialização |
 | [Syscall ABI](docs/specs/syscall-abi.md) | Contrato da chamada de sistema |
 | [Notas da v0.1.0-dev.1](docs/releases/v0.1.0-dev.1.md) | Notas oficiais do marco inicial consolidado |
-| [VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md) | Histórico dos marcos descontinuados e procedimento da reorganização |
 | [Roadmap](docs/roadmap/phase-status.md) | Estado e planejamento dos marcos |
 | [Testing Strategy](docs/testing/testing-strategy.md) | Estratégia de validação |
 | [VVS-0001](docs/standards/VVS-0001.md) | Política de versionamento |
@@ -666,7 +664,6 @@ Contribuições são bem-vindas.
 Antes de propor alterações, consulte:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) — orientações para contribuições.
-- [AGENTS.md](AGENTS.md) — padrões e procedimentos de engenharia.
 - [SECURITY.md](SECURITY.md) — diretrizes para comunicação de vulnerabilidades.
 
 Contribuições devem respeitar a arquitetura existente, os contratos documentados e os critérios de qualidade definidos pelo projeto.

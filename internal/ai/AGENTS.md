@@ -1,5 +1,11 @@
 # AGENTS.md — Protocolo de Engenharia do VorynOS
 
+> Este é o protocolo normativo do projeto. Ele mora em `internal/ai/`
+> junto com os demais documentos de desenvolvimento, e a raiz do
+> repositório tem um `AGENTS.md` que aponta para cá, porque as ferramentas
+> de programação descobrem o arquivo automaticamente apenas na raiz.
+> O conteúdo de ambos é o mesmo, e este é o original.
+
 Este documento define o comportamento esperado de qualquer agente ou pessoa
 que desenvolva o VorynOS. Ele é normativo: quando este documento e a
 prompt-mestra divergirem, este documento prevalece por ser mais específico.
