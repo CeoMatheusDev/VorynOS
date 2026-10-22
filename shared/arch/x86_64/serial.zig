@@ -56,7 +56,14 @@ pub fn writeByte(byte: u8) void {
 }
 
 /// Writes a slice of bytes.
+///
+/// The lock keeps the bytes of two tasks apart: the kernel is preemptive,
+/// and a task that is interrupted in the middle of a message would write
+/// its text in the middle of the text of the other task.
 pub fn write(bytes: []const u8) void {
+    const lock = InterruptLock.acquire();
+    defer lock.release();
+
     for (bytes) |byte| writeByte(byte);
 }
 
@@ -128,11 +135,66 @@ fn rebase(w: *std.Io.Writer, preserve: usize, capacity: usize) std.Io.Writer.Err
     if (capacity > w.buffer.len) return error.WriteFailed;
 }
 
+/// A critical section that keeps the output of two tasks apart.
+///
+/// The writer holds a single buffer, and the kernel is preemptive: a task
+/// that is interrupted in the middle of a message leaves the buffer with
+/// half of its text, and the next task writes its own text over it. The
+/// result is a console that reports lines that no task wrote, and that
+/// loses the lines that were being written — which is worse than no
+/// diagnostic at all, because the report of the kernel stops being true.
+///
+/// The lock disables the interrupts while the message is written. The
+/// processor delivers the pending interrupt as soon as the interrupts are
+/// enabled again, therefore the message is complete before any other task
+/// runs.
+pub const InterruptLock = struct {
+    /// The flags of the processor before the lock was taken.
+    flags: u64,
+
+    /// Takes the lock, disabling the interrupts.
+    pub fn acquire() InterruptLock {
+        const flags = readFlags();
+        asm volatile ("cli" ::: .{ .memory = true });
+        return .{ .flags = flags };
+    }
+
+    /// Releases the lock, restoring the state of the interrupt flag.
+    pub fn release(self: InterruptLock) void {
+        writeFlags(self.flags);
+    }
+};
+
+/// Reads the flags of the processor.
+fn readFlags() u64 {
+    var flags: u64 = undefined;
+    asm volatile (
+        \\pushfq
+        \\popq %[flags]
+        : [flags] "=r" (flags),
+        :
+        : .{ .memory = true });
+    return flags;
+}
+
+/// Writes the flags of the processor.
+fn writeFlags(flags: u64) void {
+    asm volatile (
+        \\pushq %[flags]
+        \\popfq
+        :
+        : [flags] "r" (flags),
+        : .{ .memory = true });
+}
+
 /// Prints a formatted message to the serial port and flushes it.
 ///
 /// The writer cannot fail: the sink is a hardware register, so the error
 /// union of the writer is always empty and the errors are discarded.
 pub fn print(comptime format: []const u8, args: anytype) void {
+    const lock = InterruptLock.acquire();
+    defer lock.release();
+
     writer.print(format, args) catch {};
     writer.flush() catch {};
 }
@@ -141,6 +203,9 @@ pub fn print(comptime format: []const u8, args: anytype) void {
 ///
 /// The writer cannot fail, see `print`.
 pub fn printLine(comptime format: []const u8, args: anytype) void {
+    const lock = InterruptLock.acquire();
+    defer lock.release();
+
     writer.print(format, args) catch {};
     writer.writeAll("\r\n") catch {};
     writer.flush() catch {};

@@ -344,11 +344,11 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
         },
         Number.send => {
             frame.rax = send(frame.rdi, frame.rsi, frame.rdx, privilege);
-            serial.printLine("[VNK] syscall {d} from {s} sent 0x{x} at 0x{x}", .{
+            serial.printLine("[VNK] syscall {d} from {s} sent 0x{x} of the type {d}", .{
                 number,
                 caller,
                 frame.rax,
-                frame.rcx,
+                frame.rsi,
             });
         },
         Number.receive => {
@@ -464,11 +464,9 @@ fn receive(frame: *SyscallFrame, channel_id: u64, privilege: u64) u64 {
     const channel = channel_module.get(channel_id) orelse
         return failure(Error.unknown_channel);
 
-    const message = channel.receiveFrom(channel_module.Side.user) orelse {
-        serial.printLine("[DBG] receive: the queue of the user is empty", .{});
+    const message = channel.receiveFrom(channel_module.Side.user) orelse
         return failure(Error.empty_queue);
-    };
-    serial.printLine("[DBG] receive: the kind is {d} and the value is 0x{x}", .{ message.kind, message.value });
+
     frame.rdx = message.value;
     return message.kind;
 }

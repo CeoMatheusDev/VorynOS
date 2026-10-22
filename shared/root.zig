@@ -6,9 +6,10 @@
 //! The shared module contains the contracts and the architecture support
 //! that the bootloader (VNB) and the kernel (VNK) both depend on:
 //!
-//!   * `handoff` - the boot handoff contract;
+//!   * `handoff`  - the boot handoff contract;
 //!   * `memmap`  - helpers for the memory map;
 //!   * `elf64`   - the ELF64 reader used to load the kernel image;
+//!   * `usermode`- the layout of the window of the user mode;
 //!   * `port`    - x86_64 port I/O primitives;
 //!   * `serial`  - the 16550 serial driver used by both sides of the handoff.
 //!
@@ -19,5 +20,6 @@
 pub const handoff = @import("handoff.zig");
 pub const memmap = @import("memmap.zig");
 pub const elf64 = @import("elf64.zig");
+pub const usermode = @import("usermode.zig");
 pub const port = @import("arch/x86_64/port.zig");
 pub const serial = @import("arch/x86_64/serial.zig");

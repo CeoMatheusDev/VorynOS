@@ -88,7 +88,10 @@ pub const Queue = struct {
         self.messages[tail] = message;
         self.length += 1;
         self.sent += 1;
-        self.sent_at = 12345;
+        // The moment of the message is read from the counter of the
+        // processor, and it is what makes the latency of the delivery a
+        // measurement instead of a constant.
+        self.sent_at = context.timestamp();
         return true;
     }
 

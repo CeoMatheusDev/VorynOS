@@ -52,13 +52,16 @@ pub const Task = struct {
     id: u32 = 0,
     /// The saved context of the task.
     context: Context = .{},
-    /// The stack of the task.
+    /// The stack of the task, the one where its own code runs.
     stack: []u8 = &.{},
     /// The stack of the kernel of the task, where the handlers run.
     ///
-    /// A task that runs in the user mode has two stacks: the one of the
-    /// user, which is the one the task uses, and the one of the kernel,
-    /// which receives the frames of the interrupts and of the calls.
+    /// A task has two stacks: the one of its own code, and the one of the
+    /// kernel, which receives the frames of the interrupts and of the
+    /// calls. The two are never the same memory, for two reasons: the
+    /// frame of the interrupt is built on the stack of the kernel, and the
+    /// frame of a task that runs in the user mode would otherwise live in
+    /// a page that the user owns and can rewrite.
     kernel_rsp: u64 = 0,
     /// The state of the task.
     state: State = .ready,
@@ -108,10 +111,12 @@ pub const Scheduler = struct {
     /// Prepares the scheduler and captures the context of the task that is
     /// running, which becomes the first task.
     ///
-    /// `kernel_stack_top` is the top of the stack that the boot left. The
-    /// handlers of the calls and of the interrupts of the first task run on
-    /// it, and the segment of task state points at it.
-    pub fn init(self: *Scheduler, kernel_stack_top: u64) void {
+    /// `kernel_stack_top` is the top of the stack that the boot left, and it
+    /// is the stack where the code of the first task runs. `kernel_stack` is
+    /// the stack of the kernel of the first task, and it is a different
+    /// memory: the frame of an interrupt is built on it, and the frame
+    /// cannot live in the stack that the code of the task uses.
+    pub fn init(self: *Scheduler, kernel_stack_top: u64, kernel_stack: []u8) void {
         self.tasks = @splat(null);
         self.count = 0;
         self.current = null;
@@ -124,8 +129,10 @@ pub const Scheduler = struct {
         const task = self.allocate() orelse return;
         voryn_capture_context(&task.context);
         // The first task runs on the stack of the kernel that the boot left,
-        // and the handlers of the calls run on the same stack.
-        task.kernel_rsp = kernel_stack_top;
+        // and the handlers of the calls and of the interrupts run on the
+        // stack of the kernel of the task.
+        task.stack = @as([*]u8, @ptrFromInt(kernel_stack_top))[0..0];
+        task.kernel_rsp = stackTop(kernel_stack);
         task.state = .running;
         self.current = task;
         segment.tss.rsp0 = task.kernel_rsp;
@@ -134,10 +141,13 @@ pub const Scheduler = struct {
 
     /// Creates a task that starts at `entry` with the given stack.
     ///
-    /// The stack has to be aligned to sixteen bytes and to be large enough
-    /// for the frame of the entry function.
-    pub fn spawn(self: *Scheduler, entry: *const fn () void, stack: []u8) ?*Task {
+    /// The stack of the task has to be aligned to sixteen bytes and to be
+    /// large enough for the frame of the entry function. The stack of the
+    /// kernel of the task is a different memory, and it receives the frames
+    /// of the interrupts and of the calls.
+    pub fn spawn(self: *Scheduler, entry: *const fn () void, stack: []u8, kernel_stack: []u8) ?*Task {
         if (stack.len < 256) return null;
+        if (kernel_stack.len < 256) return null;
 
         const task = self.allocate() orelse return null;
 
@@ -155,7 +165,7 @@ pub const Scheduler = struct {
             .ss = kernel_data_selector,
         };
         task.stack = stack;
-        task.kernel_rsp = aligned;
+        task.kernel_rsp = stackTop(kernel_stack);
         task.state = .ready;
 
         return task;
@@ -166,12 +176,17 @@ pub const Scheduler = struct {
     /// The task starts at `entry` with the stack of the user mode. The stack
     /// is described by its virtual address, because the task only knows the
     /// virtual address space.
+    ///
+    /// The task receives the address of its own window in the first
+    /// register, which is the way a process learns where its memory is when
+    /// it starts.
     pub fn spawnUser(
         self: *Scheduler,
         entry: u64,
         user_stack_address: u64,
         user_stack_length: u64,
         kernel_stack: []u8,
+        window_base: u64,
     ) ?*Task {
         if (user_stack_length < 1024) return null;
 
@@ -180,6 +195,7 @@ pub const Scheduler = struct {
         const user_top = (user_stack_address + user_stack_length) & ~@as(u64, 0xF);
 
         task.context = .{
+            .rbx = window_base,
             .rsp = user_top,
             .rflags = 0x202,
             .rip = entry,
@@ -189,8 +205,7 @@ pub const Scheduler = struct {
         task.stack = @as([*]u8, @ptrFromInt(user_stack_address))[0..@intCast(user_stack_length)];
         // The handlers of the task run on the stack of the kernel that the
         // kernel gave it, and not on the stack of the user.
-        const kernel_top = (@intFromPtr(kernel_stack.ptr) + kernel_stack.len) & ~@as(u64, 0xF);
-        task.kernel_rsp = kernel_top;
+        task.kernel_rsp = stackTop(kernel_stack);
         task.state = .ready;
 
         return task;
@@ -302,6 +317,16 @@ pub const Scheduler = struct {
 
 /// The scheduler of the kernel.
 pub var scheduler: Scheduler = .{};
+
+/// The top of a stack, aligned to sixteen bytes.
+///
+/// The stack of a task grows towards the low addresses, therefore the top is
+/// the end of the region, and the first frame of the kernel is built below
+/// it.
+fn stackTop(stack: []u8) u64 {
+    const top = @intFromPtr(stack.ptr) + stack.len;
+    return top & ~@as(u64, 0xF);
+}
 
 /// The context of the task that is leaving, used by the switch.
 pub extern var voryn_current_context: *Context;

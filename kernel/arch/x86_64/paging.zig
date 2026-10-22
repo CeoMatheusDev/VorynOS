@@ -58,6 +58,11 @@ const PageTable = extern struct {
 const level2_count = 8;
 
 /// Number of level 1 tables that the kernel provides.
+///
+/// A level 1 table describes two megabytes, therefore the pool describes
+/// `level1_count` times two megabytes of identity mapping. The image of the
+/// kernel grows, and a table that cannot describe the whole image makes the
+/// kernel unable to boot, so the pool is sized with room to grow.
 const level1_count = 32;
 
 /// The level 4 table, the root of the hierarchy.
@@ -156,7 +161,82 @@ fn mapLargeRange(virtual: u64, length: u64, flags: u64) Error!void {
     const level2 = tableOf(level3.entries[level3_index]);
     var large = first;
     while (large < last) : (large += 1) {
-        level2.entries[large % 512] = (large * large_page_size) | flags | Flags.large;
+        // The entry of a large page lives in the table of the second level,
+        // and its index is the index of the page of two megabytes inside
+        // that table. The index of the page in the whole address space is
+        // not the same one, and using it writes the entry in the wrong
+        // place as soon as the range is not inside the first gigabyte of
+        // its own table.
+        const address = large * large_page_size;
+        const level2_index = (address >> 21) & 511;
+
+        if (level2.entries[level2_index] & Flags.present != 0) {
+            // The entry is already described by another mapping, and the
+            // kernel does not overwrite a mapping that it did not build.
+            if (level2.entries[level2_index] & Flags.large == 0) {
+                return error.RangeTooLarge;
+            }
+            continue;
+        }
+
+        level2.entries[level2_index] = address | flags | Flags.large;
+    }
+}
+
+/// Maps a range of the kernel by identity, with small pages.
+///
+/// A table of the first level describes two megabytes, therefore a range
+/// that is larger than that needs more than one table, and a range that
+/// crosses the boundary of two megabytes needs the table of the chunk that
+/// follows. The function walks the range and hands out a table for every
+/// chunk, so that the image of the kernel is described as a whole and not
+/// only its first two megabytes.
+///
+/// The limit of a single table was a defect: the image of the kernel grows
+/// with every increment, and a kernel that is not able to describe its own
+/// image does not boot at all.
+fn mapKernelRange(virtual: u64, length: u64) Error!void {
+    if (length == 0) return;
+
+    const end = std.math.add(u64, virtual, length) catch return error.RangeTooLarge;
+    if (end < virtual) return error.RangeTooLarge;
+
+    var address = virtual;
+    while (address < end) {
+        const level4_index = (address >> 39) & 511;
+        const level3_index = (address >> 30) & 511;
+        const level2_index = (address >> 21) & 511;
+
+        // The kernel only uses the first gigabyte of the address space for
+        // the tables of the hierarchy, which covers 512 gigabytes.
+        if (level4_index != 0) return error.RangeTooLarge;
+
+        if (level4.entries[level4_index] & Flags.present == 0) {
+            level4.entries[level4_index] = addressOf(&level3) | table_flags;
+        }
+        if (level3.entries[level3_index] & Flags.present == 0) {
+            const table = allocateLevel2() orelse return error.OutOfTables;
+            level3.entries[level3_index] = addressOf(table) | table_flags;
+        }
+
+        const level2 = tableOf(level3.entries[level3_index]);
+        if (level2.entries[level2_index] & Flags.present == 0) {
+            const table = allocateLevel1() orelse return error.OutOfTables;
+            level2.entries[level2_index] = addressOf(table) | table_flags;
+        }
+
+        const level1 = tableOf(level2.entries[level2_index]);
+
+        // The table of the first level covers the chunk of two megabytes
+        // that holds the address, and the walk stops at the end of the
+        // chunk or at the end of the range.
+        const chunk_start = (address >> 21) << 21;
+        const chunk_end = @min(end, chunk_start + large_page_size);
+
+        while (address < chunk_end) : (address += page_size) {
+            const index = (address >> 12) & 511;
+            level1.entries[index] = (address & ~@as(u64, 0xFFF)) | Flags.present | Flags.writable;
+        }
     }
 }
 
@@ -178,22 +258,12 @@ pub fn setup(
     level1_used = 0;
 
     // The kernel image, by identity, with small pages.
-    const first_page = kernel_base / page_size;
-    const last_page = (kernel_end + page_size - 1) / page_size;
-    if (last_page - first_page > 512) return error.RangeTooLarge;
-
-    const level2_index = (kernel_base >> 21) & 511;
-    const level1 = allocateLevel1() orelse return error.OutOfTables;
-    const level2 = allocateLevel2() orelse return error.OutOfTables;
-
-    level4.entries[0] = addressOf(&level3) | table_flags;
-    level3.entries[0] = addressOf(level2) | table_flags;
-    level2.entries[level2_index] = addressOf(level1) | table_flags;
-
-    var page = first_page;
-    while (page < last_page) : (page += 1) {
-        level1.entries[page % 512] = (page * page_size) | Flags.present | Flags.writable;
-    }
+    //
+    // The image is described as a whole: the range can be larger than the
+    // two megabytes of a single table of the first level, and the function
+    // hands out a table for every chunk that the range covers.
+    if (kernel_end < kernel_base) return error.RangeTooLarge;
+    try mapKernelRange(kernel_base, kernel_end - kernel_base);
 
     // The framebuffer, by identity, with large pages and without the cache.
     if (framebuffer_base != 0 and framebuffer_size != 0) {

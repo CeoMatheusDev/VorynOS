@@ -25,6 +25,7 @@ const handoff = voryn.handoff;
 const memmap = voryn.memmap;
 const port = voryn.port;
 const serial = voryn.serial;
+const usermode = voryn.usermode;
 
 const cpu = @import("arch/x86_64/cpu.zig");
 const interrupt = @import("arch/x86_64/interrupt.zig");
@@ -77,20 +78,45 @@ const task_count = 3;
 /// stay mapped after the replacement of the page tables.
 var task_stacks: [task_count][task_stack_size]u8 align(16) = undefined;
 
+/// The stacks of the kernel of the tasks of the kernel.
+///
+/// Every task has two stacks: the one where its own code runs, and the one
+/// of the kernel, which receives the frames of the interrupts and of the
+/// calls. The two are never the same memory, because the frame of the
+/// interrupt is built on the stack of the kernel, and the frame of a task
+/// that runs in the user mode would otherwise live in a page that the user
+/// owns.
+var kernel_stacks: [task_count][task_stack_size]u8 align(16) = undefined;
+
 /// The stack of the kernel of the task of the user mode.
 ///
 /// The handlers of the calls and of the interrupts of the task run on it,
 /// and not on the stack of the user, which the user could rewrite.
 var user_task_stack: [task_stack_size]u8 align(16) = undefined;
 
+/// The base of the window of the user mode.
+///
+/// The window has no fixed address. The image of the kernel is mapped by
+/// identity, and a window inside the image would overwrite the code and the
+/// data of the kernel with the pages of the user. The window is therefore
+/// placed right below the image, and the address is handed to the task in
+/// the first register when the task starts.
+var user_window_base: u64 = 0;
+
 /// The virtual address of the program of the task that runs in user mode.
-const user_code_address: u64 = 0x40_0000;
+fn userCodeAddress() u64 {
+    return user_window_base + usermode.code_offset;
+}
 
 /// The virtual address of the data of the task that runs in user mode.
-const user_data_address: u64 = 0x40_1000;
+fn userDataAddress() u64 {
+    return user_window_base + usermode.data_offset;
+}
 
 /// The virtual address of the stack of the task that runs in user mode.
-const user_stack_address: u64 = 0x40_2000;
+fn userStackAddress() u64 {
+    return user_window_base + usermode.stack_offset;
+}
 
 /// The value that the program of the user mode writes in its page of data.
 ///
@@ -103,47 +129,87 @@ const user_program_value: u64 = 0x5A5A_1234;
 /// The program of the user mode writes there the result of the system call,
 /// and the value proves that the call reached the handler of the kernel and
 /// that the answer came back.
-const user_result_address: u64 = user_data_address + 8;
+fn userResultAddress() u64 {
+    return userDataAddress() + usermode.data_result;
+}
 
 /// The address of the third word of the page of data of the user mode.
 ///
 /// The program of the user mode writes there the result of the call that
 /// writes in the console.
-const user_write_address: u64 = user_data_address + 16;
+fn userWriteAddress() u64 {
+    return userDataAddress() + usermode.data_write;
+}
 
 /// The address of the fourth word of the page of data of the user mode.
 ///
 /// The program of the user mode writes there the result of the call that
 /// copies a block of memory.
-const user_copy_address: u64 = user_data_address + 24;
+fn userCopyAddress() u64 {
+    return userDataAddress() + usermode.data_copy;
+}
 
 /// The address of the fifth word of the page of data of the user mode.
 ///
 /// The kernel compares the content with the page of code, and the equality
 /// proves that the copy happened.
-const user_copy_content_address: u64 = user_data_address + 32;
+fn userCopyContentAddress() u64 {
+    return userDataAddress() + usermode.data_content;
+}
 
 /// The address of the seventh word of the page of data of the user mode.
 ///
 /// The program of the user mode writes there the answer of a call with an
 /// address that is not of the user, and the value proves that the kernel
 /// refused the call.
-const user_refused_address: u64 = user_data_address + 48;
+fn userRefusedAddress() u64 {
+    return userDataAddress() + usermode.data_refused;
+}
+
+/// The address of the eighth word of the page of data of the user mode.
+///
+/// The program of the user mode writes there the value of the answer of the
+/// channel, e o valor prova que a mensagem do núcleo chegou ao usuário.
+fn userAnswerAddress() u64 {
+    return userDataAddress() + usermode.data_answer;
+}
 
 /// The address of the ninth word of the page of data of the user mode.
 ///
 /// The program of the user mode writes there the answer of the call that
 /// copies a block whose ranges overlap. The value proves that the kernel
-/// copied the block, e que a tarefa do usuário mode não derrubou a
-/// máquina.
-const user_overlap_address: u64 = user_data_address + 80;
+/// copied the block, e que a tarefa do usuário mode não derrubou a máquina.
+fn userOverlapAddress() u64 {
+    return userDataAddress() + usermode.data_overlap_result;
+}
 
-/// The address of the eighth word of the page of data of the user mode.
+/// The address of the tenth word of the page of data of the user mode.
 ///
-/// The program of the user mode writes there the value of the answer of
-/// the channel, and o valor prova que a mensagem do núcleo chegou ao
-/// usuário.
-const user_answer_address: u64 = user_data_address + 56;
+/// The program of the user mode writes there the block that the copy with
+/// the overlapping ranges takes as its origin. The value proves that the
+/// copy did not destroy the origin.
+fn userOverlapOriginAddress() u64 {
+    return userDataAddress() + usermode.data_overlap_origin;
+}
+
+/// The address of the eleventh word of the page of data of the user mode.
+///
+/// The program of the user mode writes there the block that the copy with
+/// the overlapping ranges writes in the destination. The value proves that
+/// the copy moved the block in the right direction.
+fn userOverlapDestinationAddress() u64 {
+    return userDataAddress() + usermode.data_overlap_destination;
+}
+
+/// The block that the program of the user mode writes for the copy with
+/// the overlapping ranges.
+const user_overlap_pattern: u64 = usermode.overlap_pattern;
+
+/// The bytes of the block that the program of the user mode writes.
+///
+/// The block is compared byte by byte, because the destination of the copy
+/// is four bytes above the origin.
+const pattern_bytes: [8]u8 = @bitCast(user_overlap_pattern);
 
 /// The value that the kernel answers to the message of the user mode.
 ///
@@ -532,25 +598,36 @@ fn installTimer() void {
 /// pages that the kernel maps with the bit that allows the access from the
 /// user mode. The pages of the kernel are not accessible from there.
 fn installUserTask() void {
+    // The window of the user mode is placed right below the image of the
+    // kernel. The image is mapped by identity, and a window inside the
+    // image would replace the pages of the kernel with the pages of the
+    // user.
+    const window = boot_info.kernel_base - usermode.window_size;
+    if (window < handoff.page_size) {
+        serial.printLine("[VNK] FATAL: there is no room for the window of the user mode", .{});
+        port.haltForever();
+    }
+    user_window_base = window;
+
     const code_page = physical.manager.allocate() orelse return reportOutOfMemory();
     const data_page = physical.manager.allocate() orelse return reportOutOfMemory();
     const user_stack_low = physical.manager.allocate() orelse return reportOutOfMemory();
     const user_stack_high = physical.manager.allocate() orelse return reportOutOfMemory();
     // The pages of the user mode. The pages are mapped before the program is
     // copied, because the tables are already the active ones.
-    paging.mapUserPage(user_code_address, code_page) catch |err| {
+    paging.mapUserPage(userCodeAddress(), code_page) catch |err| {
         serial.printLine("[VNK] FATAL: the page of the program could not be mapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
-    paging.mapUserPage(user_data_address, data_page) catch |err| {
+    paging.mapUserPage(userDataAddress(), data_page) catch |err| {
         serial.printLine("[VNK] FATAL: the page of data could not be mapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
-    paging.mapUserPage(user_stack_address, user_stack_low) catch |err| {
+    paging.mapUserPage(userStackAddress(), user_stack_low) catch |err| {
         serial.printLine("[VNK] FATAL: the stack could not be mapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
-    paging.mapUserPage(user_stack_address + handoff.page_size, user_stack_high) catch |err| {
+    paging.mapUserPage(userStackAddress() + handoff.page_size, user_stack_high) catch |err| {
         serial.printLine("[VNK] FATAL: the stack could not be mapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
@@ -559,13 +636,13 @@ fn installUserTask() void {
     const program_start = @intFromPtr(&voryn_user_program);
     const program_end = @intFromPtr(&voryn_user_program_end);
     const program_length = program_end - program_start;
-    const destination: [*]u8 = @ptrFromInt(user_code_address);
+    const destination: [*]u8 = @ptrFromInt(userCodeAddress());
     @memcpy(destination[0..program_length], @as([*]const u8, @ptrFromInt(program_start))[0..program_length]);
 
     serial.printLine("[VNK] user: program at 0x{x}, data at 0x{x}, stack at 0x{x}", .{
-        user_code_address,
-        user_data_address,
-        user_stack_address,
+        userCodeAddress(),
+        userDataAddress(),
+        userStackAddress(),
     });
 }
 
@@ -592,19 +669,20 @@ fn installSystemCall() void {
 
 /// Creates the tasks of the kernel.
 fn installScheduler() void {
-    scheduler.scheduler.init(@intFromPtr(&voryn_boot_stack_end));
+    scheduler.scheduler.init(@intFromPtr(&voryn_boot_stack_end), &kernel_stacks[0]);
 
-    _ = scheduler.scheduler.spawn(&workerOne, &task_stacks[1]);
-    _ = scheduler.scheduler.spawn(&workerTwo, &task_stacks[2]);
+    _ = scheduler.scheduler.spawn(&workerOne, &task_stacks[1], &kernel_stacks[1]);
+    _ = scheduler.scheduler.spawn(&workerTwo, &task_stacks[2], &kernel_stacks[2]);
 
     // The task of the user mode has a stack of its own for the user and
     // another for the kernel, where the handlers run.
     if (enable_user_task) {
         const user_task = scheduler.scheduler.spawnUser(
-            user_code_address,
-            user_stack_address,
-            2 * handoff.page_size,
+            userCodeAddress(),
+            userStackAddress(),
+            usermode.stack_pages * handoff.page_size,
             &user_task_stack,
+            user_window_base,
         ) orelse return reportOutOfMemory();
         serial.printLine("[VNK] user: task {d} cs=0x{x} ss=0x{x} rip=0x{x} rsp=0x{x}", .{
             user_task.id,
@@ -626,12 +704,12 @@ fn installScheduler() void {
 /// the call reached the handler of the kernel and that the answer came
 /// back to the user mode.
 fn reportUserTask() void {
-    const marker: *volatile u64 = @ptrFromInt(user_data_address);
-    const result: *volatile u64 = @ptrFromInt(user_result_address);
-    const written: *volatile u64 = @ptrFromInt(user_write_address);
-    const copied: *volatile u64 = @ptrFromInt(user_copy_address);
-    const content: *volatile u64 = @ptrFromInt(user_copy_content_address);
-    const code: *volatile u64 = @ptrFromInt(user_code_address);
+    const marker: *volatile u64 = @ptrFromInt(userDataAddress());
+    const result: *volatile u64 = @ptrFromInt(userResultAddress());
+    const written: *volatile u64 = @ptrFromInt(userWriteAddress());
+    const copied: *volatile u64 = @ptrFromInt(userCopyAddress());
+    const content: *volatile u64 = @ptrFromInt(userCopyContentAddress());
+    const code: *volatile u64 = @ptrFromInt(userCodeAddress());
 
     // The task of the user mode is scheduled by the timer, therefore the
     // kernel waits for it instead of assuming that it already ran.
@@ -671,7 +749,7 @@ fn reportUserTask() void {
 
     // A call with an address that is not of the user has to be refused,
     // and the answer is the negative value of the error.
-    const refused: *volatile u64 = @ptrFromInt(user_refused_address);
+    const refused: *volatile u64 = @ptrFromInt(userRefusedAddress());
     if (refused.* != syscall.failure(syscall.Error.invalid_address)) {
         serial.printLine("[VNK] user: the refused call answered 0x{x}, expected 0x{x}", .{
             refused.*,
@@ -714,7 +792,7 @@ fn reportUserTask() void {
 
     // A resposta do núcleo tem de chegar ao usuário, e o valor na
     // página de dados prova que a mensagem voltou pelo canal.
-    const answer: *volatile u64 = @ptrFromInt(user_answer_address);
+    const answer: *volatile u64 = @ptrFromInt(userAnswerAddress());
     attempts = 0;
     while (answer.* != user_answer_value and attempts < 10_000_000) : (attempts += 1) {
         cpu.halt();
@@ -744,18 +822,43 @@ fn reportUserTask() void {
 
     // A copy whose ranges overlap has to be answered with the length of the
     // block. The answer proves that a task of the user mode cannot stop
-    // the machine with two arguments.
-    const overlap: *volatile u64 = @ptrFromInt(user_overlap_address);
+    // the machine with two arguments. The content proves that the copy
+    // happened in the right direction: the destination holds the whole
+    // block, and the origin keeps its first half, because a copy whose
+    // ranges overlap necessarily writes over the tail of the origin.
+    //
+    // The two blocks are compared byte by byte, because the destination is
+    // four bytes above the origin and a word of eight bytes would not be
+    // aligned there.
+    const overlap: *volatile u64 = @ptrFromInt(userOverlapAddress());
+    const origin = readUserBytes(userOverlapOriginAddress());
+    const destination = readUserBytes(userOverlapDestinationAddress());
     if (overlap.* != user_copy_length) {
         serial.printLine("[VNK] user: the copy that overlaps copied 0x{x} bytes, expected {d}", .{
             overlap.*,
             user_copy_length,
+        });
+    } else if (!std.mem.eql(u8, &destination, &pattern_bytes) or
+        !std.mem.eql(u8, origin[0..4], pattern_bytes[0..4]))
+    {
+        serial.printLine("[VNK] user: the copy that overlaps moved {x} and {x}, expected {x}", .{
+            origin,
+            destination,
+            pattern_bytes,
         });
     } else {
         serial.printLine("[VNK] user: the copy of the user mode with overlapping ranges moved {d} bytes", .{
             overlap.*,
         });
     }
+}
+
+/// Reads eight bytes of the page of data of the user mode.
+fn readUserBytes(address: u64) [8]u8 {
+    var bytes: [8]u8 = undefined;
+    const source: [*]const u8 = @ptrFromInt(address);
+    @memcpy(&bytes, source[0..8]);
+    return bytes;
 }
 
 /// Reports the state of the scheduler and the cost of the switches.

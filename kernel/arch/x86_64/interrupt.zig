@@ -19,6 +19,8 @@ const voryn = @import("voryn_shared");
 const serial = voryn.serial;
 const port = voryn.port;
 
+const cpu = @import("cpu.zig");
+
 /// Number of entries of the table.
 pub const entry_count = 256;
 
@@ -310,6 +312,7 @@ export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv
 
     serial.printLine("[VNK] EXCEPTION {d}: {s}", .{ vector, vectorName(vector) });
     serial.printLine("[VNK]   error code: 0x{x}", .{processor.error_code});
+    serial.printLine("[VNK]   faulting address: 0x{x}", .{cpu.readCr2()});
     serial.printLine("[VNK]   rip=0x{x} cs=0x{x} rflags=0x{x}", .{
         processor.rip,
         processor.cs,

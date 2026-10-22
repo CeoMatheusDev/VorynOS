@@ -22,10 +22,18 @@
  * segment and the instruction pointer, so the order of the addresses is the
  * reverse of the order of the pushes.
  *
- * A task that is suspended inside an interrupt handler cannot be resumed
- * with a return: the context of a task therefore holds the whole frame of
- * the processor, and the switch returns to the entering task with an
- * interrupt return.
+ * The context of a task holds EVERY register of the processor, and not only
+ * the ones that the architecture saves between calls. A task that is
+ * suspended in the middle of a system call has to come back with the same
+ * value in every register, otherwise the result of the call is lost and the
+ * task computes with values that belong to another task.
+ *
+ * The frame that the switch builds for the entering task is built on the
+ * stack of the kernel of the task, and not on the stack of the interrupted
+ * code: the stack of the user mode belongs to the user, and a frame that
+ * the user can rewrite is a frame that the user controls. The frame has the
+ * same shape as the frame of the stub, therefore a task that is suspended
+ * again finds the same layout under its feet.
  *
  * ABI: none, the routine never returns to its caller.
  * Registers: the registers of the entering task are restored.
@@ -46,52 +54,108 @@ voryn_task_switch:
     /* The context of the task that is leaving. */
     movq voryn_current_context(%rip), %rdi
 
-    movq 64(%rsp), %rax          /* rbx */
+    movq 0(%rsp), %rax          /* r15 */
     movq %rax, 0(%rdi)
-    movq 72(%rsp), %rax          /* rbp */
+    movq 8(%rsp), %rax          /* r14 */
     movq %rax, 8(%rdi)
-    movq 24(%rsp), %rax          /* r12 */
+    movq 16(%rsp), %rax         /* r13 */
     movq %rax, 16(%rdi)
-    movq 16(%rsp), %rax          /* r13 */
+    movq 24(%rsp), %rax         /* r12 */
     movq %rax, 24(%rdi)
-    movq 8(%rsp), %rax           /* r14 */
+    movq 32(%rsp), %rax         /* r11 */
     movq %rax, 32(%rdi)
-    movq (%rsp), %rax            /* r15 */
+    movq 40(%rsp), %rax         /* r10 */
     movq %rax, 40(%rdi)
-    movq 160(%rsp), %rax         /* the stack pointer of the interrupted code */
+    movq 48(%rsp), %rax         /* r9 */
     movq %rax, 48(%rdi)
-    movq 152(%rsp), %rax         /* the flags */
+    movq 56(%rsp), %rax         /* r8 */
     movq %rax, 56(%rdi)
-    movq 136(%rsp), %rax         /* the instruction pointer */
+    movq 64(%rsp), %rax         /* rbx */
     movq %rax, 64(%rdi)
-    movq 144(%rsp), %rax         /* the code segment */
+    movq 72(%rsp), %rax         /* rbp */
     movq %rax, 72(%rdi)
-    movq 168(%rsp), %rax         /* the stack segment */
+    movq 80(%rsp), %rax         /* rdi */
     movq %rax, 80(%rdi)
+    movq 88(%rsp), %rax         /* rsi */
+    movq %rax, 88(%rdi)
+    movq 96(%rsp), %rax         /* rdx */
+    movq %rax, 96(%rdi)
+    movq 104(%rsp), %rax        /* rcx */
+    movq %rax, 104(%rdi)
+    movq 112(%rsp), %rax        /* rax */
+    movq %rax, 112(%rdi)
+    movq 120(%rsp), %rax        /* the vector */
+    movq %rax, 120(%rdi)
+    movq 160(%rsp), %rax        /* the stack pointer of the interrupted code */
+    movq %rax, 128(%rdi)
+    movq 152(%rsp), %rax        /* the flags */
+    movq %rax, 136(%rdi)
+    movq 136(%rsp), %rax        /* the instruction pointer */
+    movq %rax, 144(%rdi)
+    movq 144(%rsp), %rax        /* the code segment */
+    movq %rax, 152(%rdi)
+    movq 168(%rsp), %rax        /* the stack segment */
+    movq %rax, 160(%rdi)
 
     /* The context of the task that is entering. */
     movq voryn_next_context(%rip), %rsi
-    movq 0(%rsi), %rbx
-    movq 8(%rsi), %rbp
-    movq 16(%rsi), %r12
-    movq 24(%rsi), %r13
-    movq 32(%rsi), %r14
-    movq 40(%rsi), %r15
 
-    /* The frame of the processor is built on the stack of the entering task,
-     * below its stack pointer, and the task returns to it. */
-    movq 48(%rsi), %rsp
-    subq $40, %rsp
-    movq 64(%rsi), %rax          /* the instruction pointer */
-    movq %rax, (%rsp)
-    movq 72(%rsi), %rax          /* the code segment */
+    /* The frame of the entering task is built on the stack of the kernel of
+     * the task. The scheduler points the segment of task state at it, and
+     * the stack of the interrupted code belongs to the task that is
+     * leaving. */
+    movq voryn_kernel_stack_pointer(%rip), %rsp
+    subq $176, %rsp
+
+    /* The general purpose registers, in the order of the addresses. */
+    movq 0(%rsi), %rax
+    movq %rax, 0(%rsp)
+    movq 8(%rsi), %rax
     movq %rax, 8(%rsp)
-    movq 56(%rsi), %rax          /* the flags */
+    movq 16(%rsi), %rax
     movq %rax, 16(%rsp)
-    movq 48(%rsi), %rax          /* the stack pointer */
+    movq 24(%rsi), %rax
     movq %rax, 24(%rsp)
-    movq 80(%rsi), %rax          /* the stack segment */
+    movq 32(%rsi), %rax
     movq %rax, 32(%rsp)
+    movq 40(%rsi), %rax
+    movq %rax, 40(%rsp)
+    movq 48(%rsi), %rax
+    movq %rax, 48(%rsp)
+    movq 56(%rsi), %rax
+    movq %rax, 56(%rsp)
+    movq 64(%rsi), %rax
+    movq %rax, 64(%rsp)
+    movq 72(%rsi), %rax
+    movq %rax, 72(%rsp)
+    movq 80(%rsi), %rax
+    movq %rax, 80(%rsp)
+    movq 88(%rsi), %rax
+    movq %rax, 88(%rsp)
+    movq 96(%rsi), %rax
+    movq %rax, 96(%rsp)
+    movq 104(%rsi), %rax
+    movq %rax, 104(%rsp)
+    movq 112(%rsi), %rax
+    movq %rax, 112(%rsp)
+
+    /* The vector and the word of the error code: the frame has the same
+     * shape as the frame of the stub. */
+    movq 120(%rsi), %rax
+    movq %rax, 120(%rsp)
+    movq $0, 128(%rsp)
+
+    /* The frame of the return of the processor. */
+    movq 144(%rsi), %rax        /* the instruction pointer */
+    movq %rax, 136(%rsp)
+    movq 152(%rsi), %rax        /* the code segment */
+    movq %rax, 144(%rsp)
+    movq 136(%rsi), %rax        /* the flags */
+    movq %rax, 152(%rsp)
+    movq 128(%rsi), %rax        /* the stack pointer of the interrupted code */
+    movq %rax, 160(%rsp)
+    movq 160(%rsi), %rax        /* the stack segment */
+    movq %rax, 168(%rsp)
 
     /* The cost of the switch, in cycles of the time stamp counter. */
     rdtsc
@@ -109,6 +173,33 @@ voryn_task_switch:
     movq %rax, voryn_switch_minimum(%rip)
 1:
 
+    /* The registers of the entering task, in the order of the pops.
+     *
+     * The frame holds the registers from the lowest address to the highest
+     * one, with the register that was saved last at the lowest address, and
+     * the stack grows towards the low addresses: the first pop therefore
+     * takes the register that was saved last. */
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbx
+    popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
+    popq %rax
+
+    /* The word of the vector and the word of the error code sit between the
+     * registers and the frame of the return of the processor. The stub of
+     * the interrupt skips them in the same way before it returns. */
+    addq $16, %rsp
+
     /* Return to the point where the entering task was suspended. */
     iretq
 .size voryn_task_switch, . - voryn_task_switch
@@ -120,29 +211,42 @@ voryn_task_switch:
  * instruction after the call of this routine, and the state of the processor
  * at that point.
  *
+ * The routine saves every register before it uses any of them, because the
+ * registers of the caller are the state that the task has to come back
+ * with.
+ *
  * ABI:
  *   RDI - address of the context that receives the state
  */
 .global voryn_capture_context
 .type voryn_capture_context, @function
 voryn_capture_context:
-    movq %rbx, 0(%rdi)
-    movq %rbp, 8(%rdi)
-    movq %r12, 16(%rdi)
-    movq %r13, 24(%rdi)
-    movq %r14, 32(%rdi)
-    movq %r15, 40(%rdi)
+    movq %rax, 112(%rdi)        /* rax */
+    movq %rcx, 104(%rdi)        /* rcx */
+    movq %rdx, 96(%rdi)         /* rdx */
+    movq %rsi, 88(%rdi)         /* rsi */
+    movq %r8, 56(%rdi)          /* r8 */
+    movq %r9, 48(%rdi)          /* r9 */
+    movq %r10, 40(%rdi)         /* r10 */
+    movq %r11, 32(%rdi)         /* r11 */
+    movq %rbx, 64(%rdi)         /* rbx */
+    movq %rbp, 72(%rdi)         /* rbp */
+    movq %r12, 24(%rdi)         /* r12 */
+    movq %r13, 16(%rdi)         /* r13 */
+    movq %r14, 8(%rdi)          /* r14 */
+    movq %r15, 0(%rdi)          /* r15 */
     leaq 8(%rsp), %rax          /* the stack pointer of the caller */
-    movq %rax, 48(%rdi)
+    movq %rax, 128(%rdi)        /* rsp */
     pushfq
     popq %rax
-    movq %rax, 56(%rdi)          /* the flags */
+    movq %rax, 136(%rdi)        /* the flags */
     movq (%rsp), %rax           /* the return address of the call */
-    movq %rax, 64(%rdi)          /* the instruction to continue at */
+    movq %rax, 144(%rdi)        /* the instruction to continue at */
     movw %cs, %ax
-    movq %rax, 72(%rdi)          /* the code segment */
+    movq %rax, 152(%rdi)        /* the code segment */
     movw %ss, %ax
-    movq %rax, 80(%rdi)          /* the stack segment */
+    movq %rax, 160(%rdi)        /* the stack segment */
+    movq $0, 120(%rdi)          /* the vector */
     ret
 .size voryn_capture_context, . - voryn_capture_context
 
@@ -164,35 +268,36 @@ voryn_capture_context:
  *   - the result of the copy proves that the kernel copied a block of
  *     memory of the user.
  *
+ * The window of the user mode has no fixed address: the kernel chooses an
+ * address that does not collide with the image of the kernel and hands it to
+ * the task in the register RBX when the task starts. The program therefore
+ * reaches every address through that register.
+ *
  * The page of data of the user:
  *
- *   0x401000  the marker
- *   0x401008  the result of the probe
- *   0x401010  the result of the write
- *   0x401018  the result of the copy
- *   0x401020  the code copied from the page of code
- *   0x401028  the message that the program writes in the console
- *   0x401030  the answer of the call that the kernel refused
- *   0x401038  the value of the answer of the channel
- *   0x401040  the block of the copy with the overlapping ranges
- *   0x401030  the answer of the call that the kernel refused
- *   0x401038  the value of the answer of the channel
- *   0x401030  the answer of the call that the kernel refused
- *   0x401040  the data of the copy whose ranges overlap
- *   0x401050  the result of the copy whose ranges overlap
+ *   0x00  the marker
+ *   0x08  the result of the probe
+ *   0x10  the result of the write
+ *   0x18  the result of the copy
+ *   0x20  the code copied from the page of code
+ *   0x28  the message that the program writes in the console
+ *   0x30  the answer of the call that the kernel refused
+ *   0x38  the value of the answer of the channel
+ *   0x40  the block of the copy with the overlapping ranges
+ *   0x44  the destination of the copy with the overlapping ranges
+ *   0x50  the result of the copy with the overlapping ranges
  */
 .global voryn_user_program
 .type voryn_user_program, @function
 voryn_user_program:
-    /* The program lives at a fixed virtual address, so the page of data is
-     * reached with an absolute address. */
+    /* The marker of the page of data. */
     movabsq $0x5A5A1234, %rax
-    movabsq $0x401000, %rdi
+    leaq 0x1000(%rbx), %rdi
     movq %rax, (%rdi)
 
     /* The message that the program writes in the console. */
-    movabsq $0x401028, %rdi
     movabsq $0x0A534F6E79726F56, %rax   /* "VorynOS" and a new line */
+    leaq 0x1028(%rbx), %rdi
     movq %rax, (%rdi)
 
     /* The call of the probe: the number of the call is in the first
@@ -203,29 +308,29 @@ voryn_user_program:
 
     /* The result of the call comes back in the first register, and it is
      * written in the second word of the page of data. */
-    movabsq $0x401008, %rdi
+    leaq 0x1008(%rbx), %rdi
     movq %rax, (%rdi)
 
     /* The call that writes in the console: the buffer is in the first
      * register, the length in the second, and the file in the third. */
-    movabsq $0x401028, %rdi   /* the buffer */
+    leaq 0x1028(%rbx), %rdi   /* the buffer */
     movq $8, %rsi             /* the length */
     movq $1, %rdx             /* the console */
     movq $2, %rax             /* the number of the system call */
     syscall
-    movabsq $0x401010, %rdi
+    leaq 0x1010(%rbx), %rdi
     movq %rax, (%rdi)
 
     /* The call that copies a block: the destination in the first
      * register, the origin in the second, and the length in the third.
      * The origin is the page of code, and the destination is the page of
      * data. */
-    movabsq $0x401020, %rdi   /* the destination */
-    movabsq $0x400000, %rsi   /* the origin */
+    leaq 0x1020(%rbx), %rdi   /* the destination */
+    leaq 0x0000(%rbx), %rsi   /* the origin */
     movq $8, %rdx             /* the length */
     movq $3, %rax             /* the number of the system call */
     syscall
-    movabsq $0x401018, %rdi
+    leaq 0x1018(%rbx), %rdi
     movq %rax, (%rdi)
 
     /* A call with an address that is not of the user: the kernel has to
@@ -236,24 +341,28 @@ voryn_user_program:
     movq $1, %rdx             /* the console */
     movq $2, %rax             /* the number of the system call */
     syscall
-    movabsq $0x401030, %rdi
+    leaq 0x1030(%rbx), %rdi
     movq %rax, (%rdi)
 
     /* A copy whose ranges overlap. The user chooses the two addresses, and
      * a copy that refused the overlap would deny a call that is
      * legitimate. The copy that requires the ranges not to overlap lifts
      * a panic in the kernel, and a task of the user mode would be able to
-     * stop the machine with two arguments. */
-    movabsq $0x401040, %rdi
+     * stop the machine with two arguments.
+     *
+     * The call takes the destination in the first register and the origin
+     * in the second one, and the destination is four bytes above the
+     * origin, so the two ranges share the four bytes in the middle. */
+    leaq 0x1040(%rbx), %rdi
     movabsq $0x1122334455667788, %rax
     movq %rax, (%rdi)
 
-    movabsq $0x401040, %rdi   /* the origin */
-    movabsq $0x401044, %rsi   /* the destination, four bytes above */
+    leaq 0x1044(%rbx), %rdi   /* the destination, four bytes above */
+    leaq 0x1040(%rbx), %rsi   /* the origin */
     movq $8, %rdx             /* the length */
     movq $3, %rax             /* the number of the system call */
     syscall
-    movabsq $0x401050, %rdi
+    leaq 0x1050(%rbx), %rdi
     movq %rax, (%rdi)
 
     /* The message for the channel: the type of the message is one and
@@ -275,7 +384,7 @@ voryn_user_program:
 
     /* The value of the answer is the second result of the call, and it
      * is written in the eighth word of the page of data. */
-    movabsq $0x401038, %rdi
+    leaq 0x1038(%rbx), %rdi
     movq %rdx, (%rdi)
 
     /* The call that ends the task. The kernel marks the task as
