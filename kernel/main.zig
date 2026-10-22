@@ -264,6 +264,12 @@ fn userCapabilityGrantedAddress() u64 {
     return userDataAddress() + usermode.data_capability_granted;
 }
 
+/// The address of the word that holds the result of the copy that a process
+/// without the capability of the address space made.
+fn userCopyRefusedAddress() u64 {
+    return userDataAddress() + usermode.data_copy_refused;
+}
+
 /// The address of the thirteenth word of the page of data of the user mode.
 ///
 /// The copy to the other process writes there the block that it copied.
@@ -711,7 +717,28 @@ fn installCapabilities() void {
         port.haltForever();
     }
 
+    // The capability of the address space of the process that answers.
+    // The process of role zero starts the others and is the only one that
+    // may write in their spaces: it receives the right to write in the
+    // space of the process that answers, and the right to delegate it. The
+    // kernel is the root authority, and the capability of the space is
+    // created here, when the processes already exist.
+    const process_rights = capability.Rights.write | capability.Rights.delegate;
+    const process_handle = capability.create(.process, answerer.id, process_rights) orelse {
+        serial.printLine("[VNK] FATAL: the table of capabilities is full", .{});
+        port.haltForever();
+    };
+
+    if (!capability.give(owner.id, process_handle, process_rights)) {
+        serial.printLine("[VNK] FATAL: the capability of the address space could not be given", .{});
+        port.haltForever();
+    }
+
     serial.printLine("[VNK] capabilities: the channel 0 belongs to the process {d}", .{owner.id});
+    serial.printLine("[VNK] capabilities: the address space of the process {d} belongs to the process {d}", .{
+        answerer.id,
+        owner.id,
+    });
 }
 
 /// Creates the task that runs in the third level of privilege.
@@ -920,16 +947,15 @@ fn installScheduler() void {
 ///
 /// The two values of the page of data of the user mode prove two different
 /// things. The first one proves that the task ran in the third level of
-/// privilege with access to its own pages, and the second one proves that
-/// the call reached the handler of the kernel and that the answer came
-/// back to the user mode.
 /// Reports the state of the capabilities of the VNC.
 ///
-/// The report verifies three properties of the model, and the three are
+/// The report verifies four properties of the model, and the four are
 /// read from the processes that use the channel:
 ///
 ///   * the process that holds **no** capability is refused when it uses a
 ///     channel, and the refusal is the error of the missing capability;
+///   * the process without the capability of an address space is refused
+///     when it copies a block into that space;
 ///   * the delegation of the owner reaches the process that the owner
 ///     chose, and the process holds the capability of the channel after
 ///     it;
@@ -960,6 +986,26 @@ fn reportCapabilities() void {
     } else {
         serial.printLine("[VNK] user: the process without the capability was not refused, the result is 0x{x}", .{
             refused,
+        });
+    }
+
+    // The refusal of the copy into the space of a process without the
+    // capability of that space.
+    attempts = 0;
+    var copy_refused: u64 = 0;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        copy_refused = userWord(stranger, userCopyRefusedAddress());
+        if (copy_refused != 0) break;
+        cpu.halt();
+    }
+
+    if (copy_refused == expected) {
+        serial.printLine("[VNK] user: the copy without the capability of the address space was refused with the error {d}", .{
+            syscall.Error.not_authorized,
+        });
+    } else {
+        serial.printLine("[VNK] user: the copy without the capability was not refused, the result is 0x{x}", .{
+            copy_refused,
         });
     }
 
@@ -1011,6 +1057,12 @@ fn reportCapabilities() void {
     }
 }
 
+/// Waits for the task of the user mode and reports what it wrote.
+///
+/// The values of the page of data of the user mode prove, among other
+/// things, that the task ran in the third level of privilege with access
+/// to its own pages, and that the call reached the handler of the kernel
+/// and the answer came back to the user mode.
 fn reportUserTask() void {
     const space = user_space orelse return;
 

@@ -79,6 +79,9 @@ pub const data_capability_refused: u64 = 0x68;
 pub const data_capability_revoked: u64 = 0x70;
 /// The result of the delegation of a capability.
 pub const data_capability_granted: u64 = 0x78;
+/// The result of the copy that a process without the capability of the
+/// address space made.
+pub const data_copy_refused: u64 = 0x80;
 
 /// The block that the program of the user mode writes for the copy with the
 /// overlapping ranges.

@@ -37,8 +37,8 @@
 //! The table is **not** exposed to the user mode. The handle of a
 //! capability is an index of the table, and it means nothing outside the
 //! kernel. The calls of the user mode name the **subject** of the
-//! capability — the channel — and the kernel finds the capability that the
-//! caller holds over it.
+//! capability — the channel or the process — and the kernel finds the
+//! capability that the caller holds over it.
 
 const std = @import("std");
 
@@ -48,6 +48,13 @@ pub const Kind = enum {
     ///
     /// The subject of the capability is the identifier of the channel.
     channel,
+    /// The capability of a process.
+    ///
+    /// The subject of the capability is the identifier of the process, and
+    /// the right that it carries is the right to write in the address
+    /// space of the process. The capability is what authorizes the copy of
+    /// a block into the space of another process.
+    process,
 };
 
 /// The rights of a capability.
@@ -61,8 +68,11 @@ pub const Rights = struct {
     pub const receive: u64 = 1 << 1;
     /// The right to give the capability to another process.
     pub const delegate: u64 = 1 << 2;
+    /// The right to write in the address space of the process that the
+    /// capability names.
+    pub const write: u64 = 1 << 3;
     /// Every right of a capability.
-    pub const all: u64 = send | receive | delegate;
+    pub const all: u64 = send | receive | delegate | write;
     /// The rights of a holder that can use the subject, but that cannot
     /// give it away.
     pub const use: u64 = send | receive;
@@ -236,8 +246,8 @@ pub fn rightsOf(process: u64, handle: u64) ?u64 {
 /// with the right.
 ///
 /// The function is the check that the calls of the user mode do: the
-/// process that does not hold the capability of the channel does not use
-/// the channel.
+/// process that does not hold the capability of the subject does not use
+/// it.
 pub fn holdsSubject(process: u64, kind: Kind, subject: u64, right: u64) bool {
     if (process >= max_processes) return false;
 
@@ -426,6 +436,36 @@ test "the set of a process does not grow without a limit" {
     // The set holds what it can, and the rest is refused.
     try testing.expectEqual(@as(u32, max_held), given);
     try testing.expectEqual(@as(u64, max_held), count(0));
+}
+
+test "the capability of a process authorizes the write in its space" {
+    init();
+
+    const handle = create(.process, 1, Rights.write).?;
+    try testing.expect(give(0, handle, Rights.write));
+
+    try testing.expect(holdsSubject(0, .process, 1, Rights.write));
+    try testing.expect(!holdsSubject(0, .process, 2, Rights.write));
+
+    // The capability of a process does not answer for a channel with the
+    // same number, and the right of the process is not the right of the
+    // channel.
+    try testing.expect(!holdsSubject(0, .channel, 1, Rights.write));
+    try testing.expect(!holdsSubject(0, .process, 1, Rights.send));
+}
+
+test "the process that holds no capability of the process cannot write" {
+    init();
+
+    const handle = create(.process, 1, Rights.all).?;
+    try testing.expect(give(0, handle, Rights.all));
+
+    // The holder that received the write without the right of delegation
+    // cannot lend the space of the process to a third one.
+    try testing.expect(transfer(0, 1, handle, Rights.write));
+    try testing.expect(!holds(1, handle, Rights.delegate));
+    try testing.expect(!transfer(1, 2, handle, Rights.write));
+    try testing.expect(!holdsSubject(2, .process, 1, Rights.write));
 }
 
 test "the handle of a capability is found by its subject" {

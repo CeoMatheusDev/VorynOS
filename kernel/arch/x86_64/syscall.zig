@@ -711,6 +711,15 @@ fn copyTo(process: u64, destination: u64, source: u64, length: u64, privilege: u
 
     const target = paging.spaceById(process) orelse return failure(Error.unknown_process);
 
+    // The copy writes in the space of another process, and the capability
+    // of the target process is what authorizes the write. The check comes
+    // before the check of the ranges, so that a caller without the
+    // capability learns nothing about the addresses of the target.
+    const caller_id = callerProcess() orelse return failure(Error.not_authorized);
+    if (!capability.holdsSubject(caller_id, .process, target.id, capability.Rights.write)) {
+        return failure(Error.not_authorized);
+    }
+
     // The origin belongs to the space of the caller, and the destination
     // belongs to the space of the target.
     const caller = paging.activeSpace() orelse return failure(Error.not_allowed);

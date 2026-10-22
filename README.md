@@ -587,7 +587,7 @@ All three have been implemented and verified. Interprocess communication support
 
 The remaining objectives for this milestone are:
 
-1. **Capabilities of the address space and of the devices** — the capability fabric covers the channels of the VNX, and the resources of a process are not part of it yet.
+1. **Capabilities of the devices** — the capability fabric covers the channels of the VNX and the address space of a process; the devices are not part of it yet.
 2. **Timed waiting** and waiting on multiple channels simultaneously.
 3. **Dynamic heap management** through VNM, the **signal in the process**, with a handler in the user space, and the **policy by exception type**, which today is the same for every user-mode exception.
 4. Measuring context-switch overhead under **representative workloads**, with more tasks and processes.

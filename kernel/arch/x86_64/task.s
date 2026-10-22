@@ -466,6 +466,20 @@ voryn_user_program:
     leaq 0x1068(%rbx), %rdi   /* the place of the refusal */
     movq %rax, (%rdi)
 
+    /* The process of role two does not hold the capability of the address
+     * space of another process either, and the copy into the space of the
+     * process one is refused. The origin is a page of the process itself,
+     * and the destination is a page of the target: the kernel checks the
+     * capability before it checks the ranges. */
+    movq $1, %rdi             /* the process of the destination */
+    leaq 0x1060(%rbx), %rsi   /* the destination in the space of the target */
+    leaq 0x1000(%rbx), %rdx   /* the origin, the marker of the process */
+    movq $8, %r8              /* the length */
+    movq $7, %rax             /* the number of the system call */
+    syscall
+    leaq 0x1080(%rbx), %rdi   /* the place of the refusal */
+    movq %rax, (%rdi)
+
     movabsq $0x0, %rdi
     movq %rax, (%rdi)
 9:

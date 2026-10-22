@@ -170,6 +170,11 @@ the destination with the space of the destination active. The buffer lives
 in the kernel image, and the image is mapped in every space, and therefore
 the buffer is reachable in both directions of the switch.
 
+The caller has to hold the capability of the address space of the target,
+with the right of writing. The check of the capability comes before the
+check of the ranges, and the call answers with the error 10,
+`not_authorized`, when the capability is missing.
+
 The two ranges are checked in the tables of the space of each one, and the
 space of the caller is restored at the end, whatever the result of the copy
 is.

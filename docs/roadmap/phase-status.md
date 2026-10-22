@@ -130,7 +130,8 @@ capabilities.
 | Recovery of the process that failed | COMPLETED | the process dies, the others continue, and the machine reaches the end of the boot |
 | Capability fabric of the VNC | COMPLETED | the kernel holds the table, the process holds the set, and the chain of delegation stops |
 | Capabilities of the channels of the VNX | COMPLETED | a process without the capability of the channel is refused, and the owner delegates and revokes it |
-| VNC capabilities | PROPOSED | the capability of the address space and of the devices is not implemented yet |
+| Capability of the address space of a process | COMPLETED | the copy into the space of a process without the capability is refused |
+| VNC capabilities | PROPOSED | the capability of the devices is not implemented yet |
 
 The user mode is **implemented and verified**. The user task runs in the
 third privilege level, writes in its own page of data, calls the kernel with
