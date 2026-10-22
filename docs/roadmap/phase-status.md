@@ -87,7 +87,10 @@ Limitações conhecidas do marco:
 - O modo de usuário existe: os segmentos de usuário estão na tabela, as
   páginas do usuário têm o bit de usuário, e a tarefa de usuário executa,
   chama o núcleo e recebe a resposta.
-- O tratador de exceções é fatal: a execução para no primeiro erro.
+- O tratador de exceções é fatal **no núcleo**: a execução para no primeiro
+  erro do núcleo, porque o estado do núcleo depois do erro é desconhecido.
+  A exceção que veio do modo de usuário mata o processo, e o núcleo
+  continua.
 
 ### F3 — Execução — EM DESENVOLVIMENTO
 
@@ -120,6 +123,9 @@ capacidades.
 | Espera que não ocupa o processador | CONCLUÍDO | a tarefa fica bloqueada, o escalonador escolhe outra, e a mensagem a acorda |
 | Entrega direta ao contexto da tarefa | CONCLUÍDO | a mensagem não fica na fila, e a tarefa continua depois da chamada |
 | Quadro da chamada com o formato do quadro da interrupção | CONCLUÍDO | o mesmo switch serve ao bloqueio e à preempção |
+| Quadro do processador com uma forma só | CONCLUÍDO | o stub normaliza o quadro, e o tratador e o switch leem a mesma forma |
+| Tratamento das exceções por tipo | CONCLUÍDO | a exceção do modo de usuário mata o processo, e a do núcleo para a máquina |
+| Recuperação do processo que falhou | CONCLUÍDO | o processo morre, os outros continuam, e a máquina chega ao fim do boot |
 | Capacidades do VNC | PROPOSTO | — |
 
 O modo de usuário está **implementado e verificado**. A tarefa de usuário
@@ -172,19 +178,30 @@ Critérios de aceite do restante do marco:
    chamada, como se ela tivesse respondido de imediato. A entrega é
    direta, e por isso a latência relatada é a da entrega. O diagnóstico e
    a medição estão em ADR-0007.
+5. Uma exceção do modo de usuário **mata o processo**, e não a máquina.
+   **Cumprido:** um terceiro processo escreve em um endereço que não está
+   mapeado, e a falta de página é tratada: o processo é morto, o console
+   diz que o núcleo continua, o temporizador continua contando, a
+   conversa entre os outros dois processos completa o ida e volta, e a
+   máquina chega à marca `VORYN-KERNEL-READY`. O incremento também
+   corrigiu um defeito que já existia: o quadro do processador tem duas
+   formas, e a que tem código de erro é oito bytes maior. O diagnóstico
+   está em ADR-0008.
 
 O que ainda falta no marco:
 
 1. **As capacidades do VNC.** A pergunta aberta do ADR-0001 continua
    aberta: a chamada não carrega capacidades, e o processo tem acesso ao
    espaço inteiro do modo de usuário.
-2. **Mais de dois processos.** O núcleo cria dois processos, e o número de
-   espaços de endereço é limitado por uma constante do módulo de
-   paginação.
+2. **Mais processos.** O núcleo cria três processos, e dois deles é que
+   conversam: o terceiro existe para provar que um processo que falha não
+   derruba os outros. O número de espaços de endereço é limitado por uma
+   constante do módulo de paginação.
 3. **A espera com prazo.** A chamada que bloqueia espera para sempre, e
    não existe um prazo de espera.
-4. **O tratamento por tipo das exceções**, com um teste de recuperação, e
-   o heap dinâmico com o VNM.
+4. **O heap dinâmico** com o VNM, o **sinal no processo**, com um
+   tratador no espaço do usuário, e a **política por tipo de exceção**,
+   que hoje é a mesma para todas as exceções do modo de usuário.
 5. **A medição do custo de troca de contexto** sob carga representativa,
    com mais tarefas e mais processos.
 
@@ -213,6 +230,6 @@ primeiro turno. O diagnóstico e a regra estão em ADR-0005.
 |-------|---------|------------|
 | Ausência de capacidades | Alto | O modelo de capacidade do ADR-0001 continua aberto |
 | Heap fixo na imagem do núcleo | Médio | Heap dinâmico com o VNM no F3 |
-| Exceções fatais | Médio | Tratamento por tipo no F3, com teste de recuperação |
+| Exceções fatais | Médio | Resolvido no F3: a exceção do usuário mata o processo, e a do núcleo continua fatal |
 | Número fixo de processos | Médio | O limite de espaços de endereço é uma constante do módulo de paginação |
 | Ausência de teste de hardware | Médio | Marcado como não verificado até existir máquina de referência |

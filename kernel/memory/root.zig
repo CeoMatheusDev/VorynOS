@@ -17,3 +17,14 @@
 
 pub const physical = @import("physical.zig");
 pub const heap = @import("heap.zig");
+
+// The unit tests of the modules live in the modules themselves, and this
+// block is what os traz para o binário de testes.
+//
+// Without this reference, the test binary is built with **zero** tests,
+// and it passes no matter what: um teste que verde sem correr não é
+// evidência de nada.
+test {
+    _ = @import("physical.zig");
+    _ = @import("heap.zig");
+}

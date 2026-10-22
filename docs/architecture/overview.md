@@ -135,14 +135,25 @@ explícito e documentado.
 10. A tarefa que espera por uma mensagem **não é executada**, e o quadro
     que ela deixa é o mesmo quadro do processador que a preempção deixa,
     e por isso o mesmo switch serve aos dois casos.
+11. O quadro do processador tem **uma forma só**: o stub de uma exceção
+    que tem código de erro salva o código e move as cinco palavras do
+    retorno para baixo, e o tratador, o switch e a volta do processador
+    leem as mesmas posições.
+12. A exceção que vem do **modo de usuário** mata o processo, e não a
+    máquina: o processo é marcado como terminado, o quadro do processador
+    é reescrito para um laço do núcleo, e o escalonador não o escolhe de
+    novo. A exceção que vem do **núcleo** é fatal, porque o estado do
+    núcleo depois do erro é desconhecido.
 
 ## 5. Limitações conhecidas
 
 1. O heap do núcleo é uma região fixa de 256 KiB dentro da imagem, porque
    a região precisa continuar mapeada depois da troca das tabelas de página.
 2. O bitmap do gerenciador de memória física cobre 4 GiB do espaço físico.
-3. O tratador de exceções é fatal: a execução para no primeiro erro, sem
-   tentativa de recuperação.
+3. O tratador de exceções é fatal **quando o erro acontece no núcleo**: a
+   execução para, porque o estado do núcleo depois do erro é desconhecido.
+   A exceção que vem do modo de usuário mata o processo, e o núcleo
+   continua.
 4. O índice de pilha de interrupção do segmento de tarefa está preparado,
    mas as portas da tabela de interrupções ainda não o usam.
 5. O loader não localiza o RSDP do ACPI; o campo existe no contrato mas

@@ -146,10 +146,14 @@ test "findLoadRegion respects the alignment and the region size" {
     try std.testing.expect(findLoadRegion(&map, 0x1000000, 0x1000, 0) == null);
     try std.testing.expect(findLoadRegion(&map, 0, 0x1000, 0) == null);
 
-    // The lower bound keeps the loader out of the first megabyte.
-    try std.testing.expect(findLoadRegion(&map, 0x1000, 0x1000, 0x200000) == null);
+    // The lower bound keeps the loader out of the first megabyte: a region
+    // that starts **below** the bound is refused, and the first region that
+    // starts at or above it is the one that is used.
+    try std.testing.expect(findLoadRegion(&map, 0x1000, 0x1000, 0x200001) == null);
+    const at = findLoadRegion(&map, 0x1000, 0x1000, 0x200000).?;
+    try std.testing.expectEqual(@as(u64, 0x200000), at);
     const above = findLoadRegion(&map, 0x1000, 0x1000, 0x100000).?;
-    try std.testing.expectEqual(@as(u64, 0x100000), above);
+    try std.testing.expectEqual(@as(u64, 0x200000), above);
 }
 
 test "findRegion locates the containing descriptor" {
@@ -173,8 +177,13 @@ test "isUsableRange rejects non RAM and overflowing ranges" {
 
     try std.testing.expect(isUsableRange(&map, 0x1000, 0x1000));
     try std.testing.expect(isUsableRange(&map, 0x1000, 0x2000));
+    try std.testing.expect(isUsableRange(&map, 0x2000, 0x1000));
+
+    // A range that starts in the ordinary memory and ends in the region of
+    // the device is refused.
     try std.testing.expect(!isUsableRange(&map, 0x1000, 0x2001));
-    try std.testing.expect(!isUsableRange(&map, 0x2000, 0x1000));
+    try std.testing.expect(!isUsableRange(&map, 0x2000, 0x1001));
+    try std.testing.expect(!isUsableRange(&map, 0x3000, 0x1000));
     try std.testing.expect(!isUsableRange(&map, 0x1000, 0));
     try std.testing.expect(!isUsableRange(&map, std.math.maxInt(u64) - 0x10, 0x100));
 }

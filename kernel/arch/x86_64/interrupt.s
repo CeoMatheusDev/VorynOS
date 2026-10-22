@@ -87,6 +87,10 @@ voryn_exception_\number:
     pushq $0
     pushq $\number
     PUSH_REGISTERS
+    /* An exception without an error code leaves no code behind, and the
+     * global is cleared so that a previous exception does not show up in
+     * the report of this one. */
+    movq $0, voryn_exception_error_code(%rip)
     movq $\number, %rdi
     movq %rsp, %rsi
     call voryn_exception_handler
@@ -108,11 +112,33 @@ voryn_exception_\number:
     pushq $0
     pushq $\number
     PUSH_REGISTERS
+    /* The processor pushes the error code between the word of the vector
+     * and the frame of the return, and the frame of an exception **with**
+     * an error code has a shape that is different from the shape of the
+     * frame of an interruption.
+     *
+     * The frame is normalized here: the error code is saved in a global,
+     * and the five words of the return of the processor are moved down by
+     * eight bytes. The handler, the switch of the context and the return of
+     * the processor read the same offsets in the two cases, and the shape of
+     * the frame stops being uma preocupação de cada chamada. */
+    movq 136(%rsp), %rax
+    movq %rax, voryn_exception_error_code(%rip)
+    movq 144(%rsp), %rax
+    movq %rax, 136(%rsp)
+    movq 152(%rsp), %rax
+    movq %rax, 144(%rsp)
+    movq 160(%rsp), %rax
+    movq %rax, 152(%rsp)
+    movq 168(%rsp), %rax
+    movq %rax, 160(%rsp)
+    movq 176(%rsp), %rax
+    movq %rax, 168(%rsp)
     movq $\number, %rdi
     movq %rsp, %rsi
     call voryn_exception_handler
     POP_REGISTERS
-    addq $24, %rsp
+    addq $16, %rsp
     iretq
 .endm
 
@@ -241,6 +267,17 @@ voryn_store_idt:
     sidt (%rdi)
     ret
 .size voryn_store_idt, . - voryn_store_idt
+
+/* The error code of the last exception that pushed one.
+ *
+ * The stub of an exception with an error code saves the code here before it
+ * normalizes the frame, and the handler reads the code from here. */
+.section .bss
+.align 8
+.global voryn_exception_error_code
+.type voryn_exception_error_code, @object
+voryn_exception_error_code:
+    .quad 0
 
 /* The kernel does not use an executable stack. */
 .section .note.GNU-stack,"",@progbits

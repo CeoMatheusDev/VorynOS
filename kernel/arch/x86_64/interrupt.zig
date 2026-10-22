@@ -29,6 +29,7 @@ const serial = voryn.serial;
 const port = voryn.port;
 
 const cpu = @import("cpu.zig");
+const frame_layout = @import("frame.zig");
 
 /// Number of entries of the table.
 pub const entry_count = 256;
@@ -71,25 +72,10 @@ const IdtPointer = packed struct {
 const gate_type: u8 = 0x8E;
 
 /// The register frame that the stubs build.
-pub const Registers = extern struct {
-    r15: u64 = 0,
-    r14: u64 = 0,
-    r13: u64 = 0,
-    r12: u64 = 0,
-    r11: u64 = 0,
-    r10: u64 = 0,
-    r9: u64 = 0,
-    r8: u64 = 0,
-    rbx: u64 = 0,
-    rbp: u64 = 0,
-    rdi: u64 = 0,
-    rsi: u64 = 0,
-    rdx: u64 = 0,
-    rcx: u64 = 0,
-    rax: u64 = 0,
-    /// The vector that caused the exception.
-    vector: u64 = 0,
-};
+///
+/// The contract do quadro está em `frame.zig`, que é o módulo que o
+/// tratador, o switch e a volta do processador leem.
+pub const Registers = frame_layout.Registers;
 
 /// The table itself.
 var table: [entry_count]Gate align(16) = @splat(.{});
@@ -100,17 +86,23 @@ var table_pointer: IdtPointer align(8) = .{ .limit = 0, .base = 0 };
 /// The selector of the kernel code segment, used by the gates.
 const kernel_code_selector: u16 = 0x08;
 
-/// Exceptions that push an error code.
+/// The selector of the kernel data segment.
+const kernel_data_selector: u64 = 0x10;
+
+/// The selector of the user code segment.
 ///
-/// The table is the one of the long mode: the exception of stack segment is
-/// the vector 13 and the lack of page is the vector 14, the opposite of the
-/// table of the protected mode.
-pub fn hasErrorCode(vector: u64) bool {
-    return switch (vector) {
-        8, 11, 12, 13, 14, 17, 21, 29, 30 => true,
-        else => false,
-    };
-}
+/// The exception that happened with this selector came from a process, and
+/// not from the kernel.
+const user_code_selector: u64 = 0x1b;
+
+/// The place where a task that was killed waits, in the kernel.
+extern var voryn_killed_task_loop: u8;
+
+/// The error code of the last exception that pushed one.
+///
+/// The stub of an exception with an error code saves the code here before it
+/// normalizes the frame, and the handler reads the code from here.
+pub extern var voryn_exception_error_code: u64;
 
 /// Name of a vector, for the diagnostic output.
 pub fn vectorName(vector: u64) []const u8 {
@@ -273,51 +265,14 @@ pub fn verify() bool {
 }
 
 /// The frame of the processor that the stub built.
-///
-/// The stub pushes a word for the error code and the vector, and the
-/// processor frame is above them. The order of the addresses is the reverse
-/// of the order of the pushes of the processor.
-pub const ProcessorFrame = struct {
-    /// The error code, zero when the exception does not push one.
-    error_code: u64 = 0,
-    /// The instruction that was being executed.
-    rip: u64 = 0,
-    /// The code segment.
-    cs: u64 = 0,
-    /// The flags.
-    rflags: u64 = 0,
-    /// The stack pointer.
-    rsp: u64 = 0,
-    /// The stack segment.
-    ss: u64 = 0,
-};
-
-/// Reads the frame of the processor from the frame of the registers.
-pub fn processorFrame(vector: u64, frame: *const Registers) ProcessorFrame {
-    const base = @intFromPtr(frame) + @sizeOf(Registers);
-
-    // The stub pushes a word for the error code, the processor pushes the
-    // real one right above it.
-    const has_error = hasErrorCode(vector);
-    const error_code: u64 = if (has_error) readWord(base + 8) else 0;
-    const pointer = base + 8 + (if (has_error) @as(usize, 8) else 0);
-
-    return .{
-        .error_code = error_code,
-        .rip = readWord(pointer),
-        .cs = readWord(pointer + 8),
-        .rflags = readWord(pointer + 16),
-        .rsp = readWord(pointer + 24),
-        .ss = readWord(pointer + 32),
-    };
-}
+pub const ProcessorFrame = frame_layout.ProcessorFrame;
 
 /// Handler of the exceptions of the processor.
 ///
 /// The handler prints the state of the processor and stops the kernel: an
 /// exception that is not handled explicitly is fatal.
 export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv(.c) void {
-    const processor = processorFrame(vector, frame);
+    const processor = frame_layout.processorFrame(voryn_exception_error_code, frame);
 
     serial.printLine("[VNK] EXCEPTION {d}: {s}", .{ vector, vectorName(vector) });
     serial.printLine("[VNK]   error code: 0x{x}", .{processor.error_code});
@@ -347,7 +302,59 @@ export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv
         frame.rbp,
     });
 
+    // A exceção que veio do modo de usuário é um defeito do processo, e
+    // não um defeito do núcleo: o processo é morto, e o núcleo continua.
+    // Uma exceção no núcleo é fatal, porque o estado do núcleo é
+    // desconhecido, e continuar a partir dele é pior do que parar.
+    if (processor.cs == user_code_selector) {
+        const scheduler = @import("../../task/scheduler.zig");
+
+        // Uma exceção do modo de usuário sem tarefa corrente é um estado
+        // que o núcleo não sabe tratar: sem a tarefa não há a pilha do
+        // núcleo para onde reescrever o quadro, e a máquina para.
+        const task = scheduler.scheduler.current orelse {
+            serial.printLine("[VNK] FATAL: an exception of the user mode without a current task", .{});
+            port.haltForever();
+        };
+
+        scheduler.scheduler.killCurrent();
+
+        serial.printLine("[VNK]   the process {d} was killed, and the kernel continues", .{task.id});
+
+        // A tarefa morta não volta para o código que falhou: o quadro do
+        // processador é reescrito para o laço do núcleo, e a tarefa fica
+        // lá até o temporizador a tirar de lá. O escalonador não a
+        // escolhe de novo, porque ela está terminada.
+        rewriteFrame(frame, task.kernel_rsp);
+
+        return;
+    }
+
     port.haltForever();
+}
+
+/// Reescreve o quadro do processador para o laço da tarefa morta.
+///
+/// O quadro do processador está dentro do quadro do tratador, e o tratador
+/// escreve nele o endereço de retorno, o segmento de código, o ponteiro de
+/// pilha e o segmento de pilha.
+///
+/// A tarefa morta entra no laço do núcleo, no nível 0, com a pilha do
+/// núcleo da tarefa. As flags não são tocadas: o laço espera por uma
+/// interrupção com o `hlt`, e o temporizador é o que tira a tarefa de lá.
+fn rewriteFrame(frame: *const Registers, kernel_stack: u64) void {
+    const base = @intFromPtr(frame) + @sizeOf(Registers);
+    const pointer = base + 8;
+
+    const rip: *u64 = @ptrFromInt(pointer);
+    const cs: *u64 = @ptrFromInt(pointer + 8);
+    const rsp: *u64 = @ptrFromInt(pointer + 24);
+    const ss: *u64 = @ptrFromInt(pointer + 32);
+
+    rip.* = @intFromPtr(&voryn_killed_task_loop);
+    cs.* = kernel_code_selector;
+    rsp.* = kernel_stack;
+    ss.* = kernel_data_selector;
 }
 
 /// Handler of the hardware interrupts.
@@ -375,12 +382,6 @@ export fn voryn_interrupt_handler(vector: u64, frame: *const Registers) callconv
     }
 
     return 0;
-}
-
-/// Reads a word of the frame.
-fn readWord(address: usize) u64 {
-    const value: *const u64 = @ptrFromInt(address);
-    return value.*;
 }
 
 /// Loads the interrupt descriptor table.

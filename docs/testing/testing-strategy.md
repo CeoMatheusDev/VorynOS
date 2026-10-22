@@ -85,10 +85,16 @@ O núcleo provoca uma `#DE` no fim do boot e imprime o vetor, o código de
 erro, o endereço que causou a falta e o quadro do processador. O teste
 verifica a presença do relatório.
 
-A **recuperação** de uma exceção ainda não existe, e o tratador é fatal:
-o teste verifica o relatório, e não a continuação da execução. A
-implementação do tratamento por tipo, com o teste de recuperação, é um
-item pendente do marco F3.
+A **recuperação** existe e é verificada. Um terceiro processo escreve em
+um endereço que não está mapeado, e a falta de página é tratada: o
+processo é morto, o console diz que o núcleo continua, e o teste verifica
+que o temporizador continua contando, que a conversa entre os outros dois
+processos **completa** o ida e volta, e que a máquina chega à marca
+`VORYN-KERNEL-READY`.
+
+A exceção no núcleo continua fatal, e o teste do fim do boot verifica
+que o relatório da `#DE` aparece: parar a máquina com uma exceção
+provocada é o que o teste pede.
 
 A medição de desempenho é feita com o contador de tempo do processador, e
 o custo da troca de contexto e a latência da entrega de uma mensagem são

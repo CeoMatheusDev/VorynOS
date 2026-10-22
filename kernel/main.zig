@@ -113,7 +113,7 @@ var user_task_stack: [task_stack_size]u8 align(16) = undefined;
 var user_window_base: u64 = 0;
 
 /// The number of processes that the kernel creates.
-const process_count = 2;
+const process_count = 3;
 
 /// The address space of the process of the usuário mode.
 var user_space: ?*paging.AddressSpace = null;
@@ -121,8 +121,17 @@ var user_space: ?*paging.AddressSpace = null;
 /// The address space of the segundo processo.
 var second_space: ?*paging.AddressSpace = null;
 
+/// The address space of the third process.
+///
+/// O terceiro processo provoca uma falta de página, e ele existe para
+/// provar que uma exceção de um processo não derruba o núcleo.
+var third_space: ?*paging.AddressSpace = null;
+
 /// The stack of the kernel do segundo processo.
 var second_task_stack: [task_stack_size]u8 align(16) = undefined;
+
+/// The stack of the kernel of the third process.
+var third_task_stack: [task_stack_size]u8 align(16) = undefined;
 
 /// The virtual address of the program of the task that runs in user mode.
 fn userCodeAddress() u64 {
@@ -647,8 +656,10 @@ fn installUserTask() void {
 
         if (role == 0) {
             user_space = space;
-        } else {
+        } else if (role == 1) {
             second_space = space;
+        } else {
+            third_space = space;
         }
     }
 }
@@ -789,6 +800,26 @@ fn installScheduler() void {
             second_task.context.ss,
             second_task.context.rip,
             second_task.context.rsp,
+        });
+
+        // O terceiro processo é o que provoca a falta de página, e ele
+        // existe para provar que uma exceção de um processo não derruba o
+        // núcleo.
+        const third_task = scheduler.scheduler.spawnUser(
+            userCodeAddress(),
+            userStackAddress(),
+            usermode.stack_pages * handoff.page_size,
+            &third_task_stack,
+            user_window_base,
+            third_space,
+            2,
+        ) orelse return reportOutOfMemory();
+        serial.printLine("[VNK] user: task {d} cs=0x{x} ss=0x{x} rip=0x{x} rsp=0x{x}", .{
+            third_task.id,
+            third_task.context.cs,
+            third_task.context.ss,
+            third_task.context.rip,
+            third_task.context.rsp,
         });
     }
 
@@ -1040,8 +1071,9 @@ fn reportScheduler() void {
         statistics.ticks,
         statistics.switches,
     });
-    serial.printLine("[VNK] tasks: {d} blocks, switch cost {d} cycles average, {d} minimum, {d} last", .{
+    serial.printLine("[VNK] tasks: {d} blocks, {d} killed, switch cost {d} cycles average, {d} minimum, {d} last", .{
         statistics.blocks,
+        statistics.killed,
         average,
         statistics.minimum_switch_cycles,
         statistics.last_switch_cycles,

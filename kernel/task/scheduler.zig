@@ -107,6 +107,8 @@ pub const Statistics = struct {
     switches: u64 = 0,
     /// Number of times a task blocked waiting for a message.
     blocks: u64 = 0,
+    /// Number of tasks that were killed by an exception.
+    killed: u64 = 0,
     /// Total cost of the switches, in cycles.
     switch_cycles: u64 = 0,
     /// Cost of the last switch, in cycles.
@@ -341,6 +343,19 @@ pub const Scheduler = struct {
         voryn_syscall_blocked = 1;
 
         return true;
+    }
+
+    /// Mata a tarefa corrente.
+    ///
+    /// A tarefa é marcada como terminada, e o escalonador não a escolhe de
+    /// novo. É o destino de uma exceção que veio do modo de usuário: o
+    /// processo tem um defeito, e o defeito de um processo não derruba a
+    /// máquina.
+    pub fn killCurrent(self: *Scheduler) void {
+        const task = self.current orelse return;
+        task.state = .terminated;
+        task.exit_code = 1;
+        self.statistics.killed += 1;
     }
 
     /// Acorda a tarefa que espera por uma mensagem.

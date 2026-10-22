@@ -47,6 +47,13 @@ const BlockHeader = extern struct {
     previous: u64,
     /// The magic of the block.
     magic: u64,
+    /// Padding that keeps the payload of the block aligned.
+    ///
+    /// The three fields above are twenty four bytes, and the payload of the
+    /// block starts right after the header: without the padding, the
+    /// payload would be eight bytes out of the alignment, and the contract
+    /// of the heap says that the memory it hands out is aligned.
+    padding: u64 = 0,
 };
 
 /// Size of the header of a block.
@@ -247,10 +254,12 @@ test "the heap merges a freed block with its neighbours" {
     try testing.expectEqual(@as(u32, 2), test_heap.statistics().allocations);
 
     // The freed block in the middle is merged with the block that follows
-    // it, the allocation of the same size succeeds again.
+    // it, and the allocation of the same size succeeds again **in the
+    // merged block**: the memory that was freed is the memory that is
+    // handed out.
     test_heap.free(third);
     const merged = test_heap.alloc(1024).?;
-    try testing.expect(merged != second);
+    try testing.expect(merged == second);
 
     test_heap.free(first);
     try testing.expectEqual(@as(u32, 1), test_heap.statistics().allocations);

@@ -295,12 +295,14 @@ voryn_capture_context:
  * the task in the register RBX when the task starts. The program therefore
  * reaches every address through that register.
  *
- * The same program serves the two processes of the kernel. The role of the
+ * The same program serves the three processes of the kernel. The role of the
  * process arrives in the first register of the entry point: the process of
- * role zero starts the conversation on the channel, and the process of role
- * one answers it. The marker of the page of data carries the role, and two
- * processes that write different markers in the same virtual address prove
- * that their pages are not the same pages.
+ * role zero starts the conversation on the channel, the process of role one
+ * answers it, and the process of role two writes in an address that is not
+ * mapped, para provar que uma exceção de um processo não derruba o núcleo.
+ * The marker of the page of data carries the role, and two processes that
+ * write different markers in the same virtual address prove that their
+ * pages are not the same pages.
  *
  * The page of data of the user:
  *
@@ -407,6 +409,16 @@ voryn_user_program:
     testq %r12, %r12
     jz 5f
 
+    /* The process of role two is the one that provokes a page fault: it
+     * writes in an address that is not mapped. The kernel has to kill the
+     * process and to continue, and the other processes have to be
+     * unaffected. */
+    cmpq $2, %r12
+    jne 9f
+    movabsq $0x0, %rdi
+    movq %rax, (%rdi)
+9:
+
     /* The process that answers. The call **blocks**: the task stays
      * waiting, the scheduler chooses another task, and the message wakes
      * the task up when it arrives. The call returns as if it had answered
@@ -483,6 +495,26 @@ voryn_user_program:
 .size voryn_user_program, . - voryn_user_program
 .global voryn_user_program_end
 voryn_user_program_end:
+
+/*
+ * The place where a task that was killed by an exception waits.
+ *
+ * A task that is killed does not return to the code that failed: the frame
+ * of the processor is rewritten to point at this loop, and the task stays
+ * here. The scheduler does not choose it again, because the task was marked
+ * as terminated, and the next task runs.
+ *
+ * The loop waits for an interruption with the `hlt`, and the flags are not
+ * touched: the timer is what takes the task out of here. The `cli` is
+ * deliberately absent, because a task that waits with the interrupts
+ * disabled would stop the whole machine.
+ */
+.global voryn_killed_task_loop
+.type voryn_killed_task_loop, @function
+voryn_killed_task_loop:
+    hlt
+    jmp voryn_killed_task_loop
+.size voryn_killed_task_loop, . - voryn_killed_task_loop
 
 /* The contexts of the tasks that are leaving and that are entering, and the
  * measurements of the switches. */

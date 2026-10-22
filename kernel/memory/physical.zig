@@ -73,33 +73,62 @@ pub const Manager = struct {
     /// The regions that are not ordinary memory are marked as used, the
     /// ordinary memory is marked as free.
     pub fn init(self: *Manager, map: []const handoff.MemoryDescriptor) void {
-        self.bitmap = @splat(0);
+        // Everything starts as **used**: the only pages that the manager
+        // hands out are the pages that the firmware described as ordinary
+        // memory. The pages that the firmware did not describe are not
+        // memory that anyone knows about, and handing them out is a bug
+        // waiting to happen.
+        self.bitmap = @splat(0xFF);
         self.statistics = .{};
         self.hint = 0;
 
+        // The ordinary memory is freed first...
         for (map) |region| {
+            if (!region.isUsableRam()) continue;
+
             const first_page = @as(u32, @intCast(region.physical_start / page_size));
             const last_page = @as(u32, @intCast((region.endAddress() + page_size - 1) / page_size));
 
-            if (region.isUsableRam()) {
-                self.statistics.total_pages += last_page - first_page;
-                if (region.endAddress() > self.statistics.highest_address) {
-                    self.statistics.highest_address = region.endAddress();
-                }
-            } else {
-                // Everything that is not ordinary memory is reserved.
-                self.markRange(first_page, last_page, true);
+            self.statistics.total_pages += last_page - first_page;
+            self.markRange(first_page, last_page, false);
+
+            if (region.endAddress() > self.statistics.highest_address) {
+                self.statistics.highest_address = region.endAddress();
             }
         }
 
-        // The first megabyte is never handed out.
-        self.reserve(0, minimum_address);
+        // ...and the regions that are not ordinary memory are used again,
+        // for the maps that describe the same address two times.
+        for (map) |region| {
+            if (region.isUsableRam()) continue;
 
-        self.statistics.used_pages = 0;
+            const first_page = @as(u32, @intCast(region.physical_start / page_size));
+            const last_page = @as(u32, @intCast((region.endAddress() + page_size - 1) / page_size));
+
+            self.markRange(first_page, last_page, true);
+        }
+
+        // Every page of ordinary memory starts free, and the reservation
+        // of the first megabyte is what takes the first ones out of the
+        // count.
         self.statistics.free_pages = self.statistics.total_pages;
+
+        // The first megabyte is never handed out.
+        //
+        // A reserva **conta** as páginas que ela marca, e a contagem é o
+        // que faz a conta fechar: `total = used + free` é uma verdade em
+        // todo momento, porque só uma página que estava **livre** é
+        // contada, e a única página livre é a de memória comum que
+        // ninguém está usando.
+        self.reserve(0, minimum_address);
     }
 
     /// Marks a range of pages as used.
+    ///
+    /// A página que já estava em uso não é contada de novo, e uma página
+    /// que **não** é de memória comum também não é contada: a contagem é
+    /// a das páginas de memória comum que estavam livres e passaram a estar
+    /// em uso.
     pub fn reserve(self: *Manager, address: u64, length: u64) void {
         if (length == 0) return;
         const first_page = @as(u32, @intCast(address / page_size));
@@ -110,10 +139,9 @@ pub const Manager = struct {
             if (!self.isPageUsed(page)) {
                 self.setUsed(page, true);
                 self.statistics.used_pages += 1;
+                self.statistics.free_pages -= 1;
             }
         }
-
-        self.statistics.free_pages = self.statistics.total_pages - self.statistics.used_pages;
     }
 
     /// Hands out a page, or returns null when there is no free page.
@@ -189,6 +217,8 @@ const testing = std.testing;
 test "the bitmap marks the reserved regions and frees the ordinary memory" {
     var test_manager: Manager = .{};
 
+    // O mapa é o de uma máquina real: a memória comum começa **acima** do
+    // primeiro megabyte, que o firmware nunca entrega ao núcleo.
     const map = [_]handoff.MemoryDescriptor{
         .{
             .memory_type = .reserved,
@@ -197,12 +227,12 @@ test "the bitmap marks the reserved regions and frees the ordinary memory" {
         },
         .{
             .memory_type = .conventional,
-            .physical_start = 0x10000,
+            .physical_start = 0x100000,
             .page_count = 16,
         },
         .{
             .memory_type = .memory_mapped_io,
-            .physical_start = 0x20000,
+            .physical_start = 0x200000,
             .page_count = 4,
         },
     };
@@ -212,15 +242,98 @@ test "the bitmap marks the reserved regions and frees the ordinary memory" {
     // The reserved and the device region are in use, the ordinary memory is
     // free.
     try testing.expect(test_manager.isUsed(0));
-    try testing.expect(test_manager.isUsed(0x20000));
-    try testing.expect(!test_manager.isUsed(0x10000));
+    try testing.expect(test_manager.isUsed(0x200000));
+    try testing.expect(!test_manager.isUsed(0x100000));
 
     const page = test_manager.allocate().?;
-    try testing.expectEqual(@as(u64, 0x10000), page);
-    try testing.expect(test_manager.isUsed(0x10000));
+    try testing.expectEqual(@as(u64, 0x100000), page);
+    try testing.expect(test_manager.isUsed(0x100000));
 
     test_manager.free(page);
-    try testing.expect(!test_manager.isUsed(0x10000));
+    try testing.expect(!test_manager.isUsed(0x100000));
+}
+
+test "the first megabyte is never handed out" {
+    var test_manager: Manager = .{};
+
+    // O firmware descreve a memória comum do primeiro megabyte, e o
+    // gerenciador recusa essa parte.
+    const map = [_]handoff.MemoryDescriptor{.{
+        .memory_type = .conventional,
+        .physical_start = 0,
+        .page_count = 512,
+    }};
+    test_manager.init(&map);
+
+    try testing.expect(test_manager.isUsed(0));
+    try testing.expect(test_manager.isUsed(0xFFFFF));
+    try testing.expect(!test_manager.isUsed(0x100000));
+
+    // A primeira página entregue está **acima** do primeiro megabyte.
+    const page = test_manager.allocate().?;
+    try testing.expectEqual(@as(u64, 0x100000), page);
+}
+
+test "the pages that the firmware did not describe are never handed out" {
+    var test_manager: Manager = .{};
+
+    // O mapa descreve a memória comum, e o espaço acima dela não é
+    // descrito: ninguém sabe o que existe lá, e o gerenciador não entrega
+    // uma página que ninguém descreveu.
+    const map = [_]handoff.MemoryDescriptor{.{
+        .memory_type = .conventional,
+        .physical_start = 0x100000,
+        .page_count = 16,
+    }};
+    test_manager.init(&map);
+
+    var pages: [16]u64 = undefined;
+    for (&pages) |*page| {
+        page.* = test_manager.allocate().?;
+    }
+
+    for (pages) |page| {
+        try testing.expect(page >= 0x100000);
+        try testing.expect(page < 0x110000);
+    }
+
+    // Não há mais nenhuma página livre, e o gerenciador não inventa uma.
+    try testing.expect(test_manager.allocate() == null);
+}
+
+test "the count of the pages always closes" {
+    var test_manager: Manager = .{};
+
+    const map = [_]handoff.MemoryDescriptor{.{
+        .memory_type = .conventional,
+        .physical_start = 0x100000,
+        .page_count = 64,
+    }};
+    test_manager.init(&map);
+
+    // `total = used + free` é uma verdade em todo momento.
+    try testing.expectEqual(
+        test_manager.statistics.total_pages,
+        test_manager.statistics.used_pages + test_manager.statistics.free_pages,
+    );
+
+    const page = test_manager.allocate().?;
+    try testing.expectEqual(
+        test_manager.statistics.total_pages,
+        test_manager.statistics.used_pages + test_manager.statistics.free_pages,
+    );
+
+    test_manager.reserve(0x200000, 0x4000);
+    try testing.expectEqual(
+        test_manager.statistics.total_pages,
+        test_manager.statistics.used_pages + test_manager.statistics.free_pages,
+    );
+
+    test_manager.free(page);
+    try testing.expectEqual(
+        test_manager.statistics.total_pages,
+        test_manager.statistics.used_pages + test_manager.statistics.free_pages,
+    );
 }
 
 test "reserving a range marks every page of the range" {
@@ -228,16 +341,16 @@ test "reserving a range marks every page of the range" {
 
     const map = [_]handoff.MemoryDescriptor{.{
         .memory_type = .conventional,
-        .physical_start = 0,
+        .physical_start = 0x100000,
         .page_count = 64,
     }};
     test_manager.init(&map);
 
-    test_manager.reserve(0x4000, 0x4000);
-    try testing.expect(test_manager.isUsed(0x4000));
-    try testing.expect(test_manager.isUsed(0x7000));
-    try testing.expect(!test_manager.isUsed(0x8000));
-    try testing.expect(!test_manager.isUsed(0x3000));
+    test_manager.reserve(0x104000, 0x4000);
+    try testing.expect(test_manager.isUsed(0x104000));
+    try testing.expect(test_manager.isUsed(0x107000));
+    try testing.expect(!test_manager.isUsed(0x108000));
+    try testing.expect(!test_manager.isUsed(0x103000));
 }
 
 test "the manager hands out every free page exactly once" {
@@ -245,7 +358,7 @@ test "the manager hands out every free page exactly once" {
 
     const map = [_]handoff.MemoryDescriptor{.{
         .memory_type = .conventional,
-        .physical_start = 0,
+        .physical_start = 0x100000,
         .page_count = 8,
     }};
     test_manager.init(&map);

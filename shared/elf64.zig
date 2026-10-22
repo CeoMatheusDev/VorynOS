@@ -444,8 +444,24 @@ fn buildTestImage(buffer: []u8, entry: u64, segment_address: u64) ![]const u8 {
     @memset(buffer, 0);
 
     const header: Ehdr = .{
-        .ident = .{ 0x7f, 'E', 'L', 'F', class_64, data_lsb, version_current } ++
-            [_]u8{0}**9,
+        .ident = .{
+            0x7f,
+            'E',
+            'L',
+            'F',
+            class_64,
+            data_lsb,
+            version_current,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        },
         .type = type_exec,
         .machine = machine_x86_64,
         .version = 1,
@@ -469,19 +485,19 @@ fn buildTestImage(buffer: []u8, entry: u64, segment_address: u64) ![]const u8 {
     };
     @memcpy(buffer[@sizeOf(Ehdr)..][0..@sizeOf(Phdr)], std.mem.asBytes(&phdr));
 
-    @memset(buffer[0x1000..0x1000 + 16], 0xCC);
-    return buffer[0..0x1000 + 16];
+    @memset(buffer[0x1000 .. 0x1000 + 16], 0xCC);
+    return buffer[0 .. 0x1000 + 16];
 }
 
 test "parse accepts a well formed image" {
-    var buffer: [4096]u8 = undefined;
-    const bytes = try buildTestImage(&buffer, 0x1000000 + 0x1000, 0x1000000);
+    var buffer: [0x2000]u8 = undefined;
+    const bytes = try buildTestImage(&buffer, 0x1000000 + 0x8, 0x1000000);
 
     var segments: [8]Segment = undefined;
     var relocations: [8]Relocation = undefined;
     const image = try parse(bytes, &segments, &relocations);
 
-    try testing.expectEqual(@as(u64, 0x1000000 + 0x1000), image.entry);
+    try testing.expectEqual(@as(u64, 0x1000000 + 0x8), image.entry);
     try testing.expectEqual(@as(u64, 0x1000000), image.base);
     try testing.expectEqual(@as(u64, 0x1000000 + 4096), image.end);
     try testing.expectEqual(@as(usize, 1), image.segments.len);
@@ -490,40 +506,40 @@ test "parse accepts a well formed image" {
 }
 
 test "readHeader rejects malformed images" {
-    var buffer: [4096]u8 = undefined;
-    const bytes = try buildTestImage(&buffer, 0x1000000 + 0x1000, 0x1000000);
+    var buffer: [0x2000]u8 = undefined;
+    const bytes = try buildTestImage(&buffer, 0x1000000 + 0x8, 0x1000000);
 
-    var copy: [4096]u8 = undefined;
-    @memcpy(&copy, bytes);
+    var copy: [0x2000]u8 = undefined;
+    @memcpy(copy[0..bytes.len], bytes);
 
     try testing.expectError(error.TruncatedHeader, readHeader(copy[0..32]));
 
     copy[1] = 'X';
     try testing.expectError(error.BadMagic, readHeader(&copy));
 
-    @memcpy(&copy, bytes);
+    @memcpy(copy[0..bytes.len], bytes);
     copy[4] = 1;
     try testing.expectError(error.Not64Bit, readHeader(&copy));
 
-    @memcpy(&copy, bytes);
+    @memcpy(copy[0..bytes.len], bytes);
     copy[5] = 2;
     try testing.expectError(error.NotLittleEndian, readHeader(&copy));
 
-    @memcpy(&copy, bytes);
+    @memcpy(copy[0..bytes.len], bytes);
     copy[18] = 0; // e_machine low byte
     try testing.expectError(error.WrongMachine, readHeader(&copy));
 
-    @memcpy(&copy, bytes);
+    @memcpy(copy[0..bytes.len], bytes);
     copy[16] = 1; // e_type low byte
     try testing.expectError(error.WrongType, readHeader(&copy));
 }
 
 test "parse rejects a segment that escapes the file" {
-    var buffer: [4096]u8 = undefined;
-    const bytes = try buildTestImage(&buffer, 0x1000000 + 0x1000, 0x1000000);
+    var buffer: [0x2000]u8 = undefined;
+    const bytes = try buildTestImage(&buffer, 0x1000000 + 0x8, 0x1000000);
 
-    var copy: [4096]u8 = undefined;
-    @memcpy(&copy, bytes);
+    var copy: [0x2000]u8 = undefined;
+    @memcpy(copy[0..bytes.len], bytes);
 
     var segments: [8]Segment = undefined;
     var relocations: [8]Relocation = undefined;
@@ -535,11 +551,11 @@ test "parse rejects a segment that escapes the file" {
 }
 
 test "parse rejects an entry point outside the loadable segments" {
-    var buffer: [4096]u8 = undefined;
-    const bytes = try buildTestImage(&buffer, 0x1000000 + 0x1000, 0x1000000);
+    var buffer: [0x2000]u8 = undefined;
+    const bytes = try buildTestImage(&buffer, 0x1000000 + 0x8, 0x1000000);
 
-    var copy: [4096]u8 = undefined;
-    @memcpy(&copy, bytes);
+    var copy: [0x2000]u8 = undefined;
+    @memcpy(copy[0..bytes.len], bytes);
     std.mem.writeInt(u64, copy[24..32], 0x9000000, .little);
 
     var segments: [8]Segment = undefined;
@@ -548,8 +564,8 @@ test "parse rejects an entry point outside the loadable segments" {
 }
 
 test "parse reports more segments than the buffer can hold" {
-    var buffer: [4096]u8 = undefined;
-    const bytes = try buildTestImage(&buffer, 0x1000000 + 0x1000, 0x1000000);
+    var buffer: [0x2000]u8 = undefined;
+    const bytes = try buildTestImage(&buffer, 0x1000000 + 0x8, 0x1000000);
 
     var segments: [0]Segment = undefined;
     var relocations: [8]Relocation = undefined;
@@ -557,8 +573,8 @@ test "parse reports more segments than the buffer can hold" {
 }
 
 test "planLoad requires the segments to be backed by RAM" {
-    var buffer: [4096]u8 = undefined;
-    const bytes = try buildTestImage(&buffer, 0x1000000 + 0x1000, 0x1000000);
+    var buffer: [0x2000]u8 = undefined;
+    const bytes = try buildTestImage(&buffer, 0x1000000 + 0x8, 0x1000000);
 
     const map = [_]memmap.MemoryDescriptor{
         .{

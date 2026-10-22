@@ -125,7 +125,8 @@ O núcleo possui uma infraestrutura inicial funcional para gerenciamento do proc
 - Configuração da Global Descriptor Table (GDT).
 - Configuração da Task State Segment (TSS).
 - Configuração da Interrupt Descriptor Table (IDT).
-- Tratamento de exceções com diagnóstico dos registradores.
+- Tratamento de exceções com diagnóstico dos registradores: a exceção que
+  vem do modo de usuário mata o processo, e o núcleo continua.
 - Configuração inicial das interrupções de hardware.
 - Remapeamento dos controladores 8259.
 - Programação do temporizador 8254 a 100 Hz.
@@ -147,6 +148,9 @@ O núcleo possui uma infraestrutura inicial funcional para gerenciamento do proc
   faixas do usuário nas tabelas de página do espaço do processo antes de o
   núcleo tocar a memória do usuário.
 - Medição do custo da troca de contexto pelo contador de tempo.
+- Exceção do modo de usuário que **mata o processo**, e não a máquina: o
+  processo é marcado como terminado, o quadro do processador é reescrito
+  para um laço do núcleo, e o escalonador escolhe outra tarefa.
 
 **Processos**
 
@@ -225,9 +229,9 @@ As seguintes limitações são conhecidas e documentadas:
 | Memória física | Bitmap com cobertura de até 4 GiB |
 | Heap | Região fixa de 256 KiB |
 | Memória virtual | Imagem do núcleo e framebuffer mapeados, com a janela de cada processo |
-| Processos | Dois processos, e o limite de espaços de endereço é uma constante do módulo de paginação |
+| Processos | Três processos, e o limite de espaços de endereço é uma constante do módulo de paginação |
 | TSS | Estrutura do modo de 64 bits, com o layout verificado em tempo de compilação |
-| Exceções | Tratamento fatal, sem recuperação |
+| Exceções | A exceção do modo de usuário mata o processo, e a do núcleo é fatal |
 | Syscalls | Oito chamadas, e a volta ao usuário é verificada |
 | IPC | A entrega e a espera entre dois processos são verificadas, e não há ordenação, nem entrega garantida, nem sincronização |
 | Espera | A espera não tem prazo, e uma tarefa espera por um canal e por um lado |
@@ -595,8 +599,9 @@ Os objetivos que faltam no marco são:
 1. O modelo de **capacidades** do VNC, que decide o que um processo pode
    alcançar, e que a pergunta aberta do ADR-0001 deixou em suspenso.
 2. A **espera com prazo**, e a espera por mais de um canal ao mesmo tempo.
-3. O **tratamento por tipo** das exceções, com um teste de recuperação, e
-   o **heap dinâmico** com o VNM.
+3. O **heap dinâmico** com o VNM, o **sinal no processo**, com um tratador
+   no espaço do usuário, e a **política por tipo de exceção**, que hoje é
+   a mesma para todas as exceções do modo de usuário.
 4. A medição do custo de troca de contexto sob **carga representativa**,
    com mais tarefas e mais processos.
 
@@ -620,6 +625,7 @@ O VorynOS mantém documentação técnica junto ao código-fonte.
 | [ADR-0005](docs/adr/ADR-0005-task-model-and-user-mode.md) | Modelo de tarefa e modo de usuário |
 | [ADR-0006](docs/adr/ADR-0006-address-spaces-and-processes.md) | Espaços de endereço por processo e o quadro do processador |
 | [ADR-0007](docs/adr/ADR-0007-blocking-receive.md) | A chamada que bloqueia à espera de uma mensagem |
+| [ADR-0008](docs/adr/ADR-0008-exception-recovery.md) | A exceção de um processo mata o processo, e não a máquina |
 | [Boot Handoff](docs/specs/boot-handoff-spec.md) | Especificação do contrato de inicialização |
 | [Syscall ABI](docs/specs/syscall-abi.md) | Contrato da chamada de sistema |
 | [Notas da v0.1.0-dev.1](docs/releases/v0.1.0-dev.1.md) | Notas oficiais do marco inicial consolidado |
