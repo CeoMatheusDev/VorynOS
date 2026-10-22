@@ -36,7 +36,7 @@ archive="$output_dir/VorynOS-${label}-source.tar.gz"
 git archive --format=tar --prefix="VorynOS-${label}/" "$ref" | gzip -n -9 > "$archive"
 
 # Guard against accidental disclosure of internal prompts.
-if tar -tzf "$archive" | grep -E '/(INSTRUÇÕES[^/]*|PROMPT[^/]*|AGENTS\.md|\.github/)' ; then
+if tar -tzf "$archive" | grep -E '/(internal/|\.github/|CONTRIBUTING\.md$|SECURITY\.md$|Logos_VorynOS(_2)?\.png$|INSTRUÇÕES[^/]*|PROMPT[^/]*|AGENTS\.md$)' ; then
     echo 'Archive contains internal development files; refusing to publish' >&2
     exit 1
 fi
