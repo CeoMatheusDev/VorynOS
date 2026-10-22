@@ -1,5 +1,14 @@
-// SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 VorynOS contributors
+/**************************************************************************/
+/*  syscall.zig                                                           */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                               VorynOS                                  */
+/*              https://github.com/CeoMatheusDev/VorynOS                  */
+/**************************************************************************/
+/* Copyright (C) 2026 VorynOS contributors.                               */
+/*                                                                        */
+/* SPDX-License-Identifier: GPL-3.0-only                                  */
+/**************************************************************************/
 
 //! The system call of the user mode.
 //!
