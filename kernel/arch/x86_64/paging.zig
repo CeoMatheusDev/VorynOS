@@ -105,6 +105,8 @@ pub fn mapUserPage(virtual: u64, physical: u64) Error!void {
 /// allowed. The pages of the kernel do not have the bit, therefore they
 /// stay inaccessible from the user mode.
 fn mapPage(virtual: u64, physical: u64, flags: u64) Error!void {
+    // Reject unaligned mappings instead of silently rounding the frame down.
+    if (virtual % page_size != 0 or physical % page_size != 0) return error.RangeTooLarge;
     const level4_index = (virtual >> 39) & 511;
     const level3_index = (virtual >> 30) & 511;
     const level2_index = (virtual >> 21) & 511;
