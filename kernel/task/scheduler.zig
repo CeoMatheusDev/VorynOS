@@ -28,6 +28,7 @@ const voryn = @import("voryn_shared");
 const context = @import("context.zig");
 const paging = @import("../arch/x86_64/paging.zig");
 const segment = @import("../arch/x86_64/segment.zig");
+const channel = @import("../ipc/channel.zig");
 
 /// The context of a task.
 pub const Context = context.Context;
@@ -51,6 +52,9 @@ pub const State = enum {
     /// The task is running.
     running,
     /// The task is waiting for an event.
+    ///
+    /// A tarefa bloqueada espera por uma mensagem, e ela não é escolhida
+    /// pelo escalonador até que a mensagem chegue.
     blocked,
     /// The task finished.
     terminated,
@@ -95,10 +99,14 @@ pub const Statistics = struct {
     tasks: u32 = 0,
     /// Number of tasks that are ready.
     ready: u32 = 0,
+    /// Number of tasks that are blocked waiting for a message.
+    blocked: u32 = 0,
     /// Number of ticks of the timer.
     ticks: u64 = 0,
     /// Number of switches between tasks.
     switches: u64 = 0,
+    /// Number of times a task blocked waiting for a message.
+    blocks: u64 = 0,
     /// Total cost of the switches, in cycles.
     switch_cycles: u64 = 0,
     /// Cost of the last switch, in cycles.
@@ -236,12 +244,26 @@ pub const Scheduler = struct {
     /// true, the entry point of the interrupt switches to the next task.
     pub fn tick(self: *Scheduler) bool {
         self.statistics.ticks += 1;
+        return self.prepareNext();
+    }
 
+    /// Prepara a troca para a próxima tarefa que pode ser escolhida.
+    ///
+    /// A função é usada pelo temporizador e pelo bloqueio de uma tarefa: nos
+    /// dois casos a tarefa que sai é salva, e a próxima tarefa é escolhida
+    /// e preparada. A diferença é que o bloqueio não é um tique do
+    /// temporizador, e por isso o contador de tiques não anda.
+    fn prepareNext(self: *Scheduler) bool {
         const current = self.current orelse return false;
 
         const next = self.findNextReady(current) orelse return false;
 
-        current.state = .ready;
+        // A tarefa que sai fica pronta para ser escolhida de novo, e
+        // **não** fica quando ela está bloqueada: uma tarefa que espera por
+        // uma mensagem só é escolhida de novo quando a mensagem chega.
+        if (current.state == .running) {
+            current.state = .ready;
+        }
         next.state = .running;
         self.current = next;
         next.schedules += 1;
@@ -278,6 +300,58 @@ pub const Scheduler = struct {
         return true;
     }
 
+    /// Bloqueia a tarefa corrente à espera de uma mensagem.
+    ///
+    /// A função registra a espera na fila do canal, marca a tarefa como
+    /// bloqueada e prepara a troca para outra tarefa. O resultado da
+    /// chamada é escrito no contexto salvo da tarefa quando a mensagem
+    /// chega, e a tarefa continua depois da chamada, como se a chamada
+    /// tivesse respondido.
+    ///
+    /// A função devolve falso quando não há outra tarefa para escolher, e
+    /// nesse caso a tarefa **não** é bloqueada: a chamada devolve o erro
+    /// da fila vazia, e a tarefa continua.
+    pub fn blockCurrent(self: *Scheduler, target: *channel.Channel, side: u64) bool {
+        const task = self.current orelse return false;
+
+        const waiter = channel.Waiter{
+            .kind = &task.context.rax,
+            .value = &task.context.rdx,
+            .task = task,
+            .wake = wakeTask,
+        };
+
+        if (!target.wait(side, waiter)) return false;
+
+        // A tarefa fica bloqueada, e o escalonador não a escolhe até que a
+        // mensagem chegue.
+        task.state = .blocked;
+        self.statistics.blocks += 1;
+
+        // Sem outra tarefa para executar, o bloqueio não faz sentido: a
+        // tarefa seria a única, e a espera seria um laço occupado.
+        if (!self.prepareNext()) {
+            task.state = .running;
+            _ = target.cancelWait(side, waiter);
+            return false;
+        }
+
+        // A entrada da chamada sabe que a tarefa não pode voltar para o
+        // modo de usuário, e entrega o controle ao escalonador.
+        voryn_syscall_blocked = 1;
+
+        return true;
+    }
+
+    /// Acorda a tarefa que espera por uma mensagem.
+    ///
+    /// A tarefa fica pronta, e o escalonador a escolhe no próximo tique.
+    fn wakeTask(task: *anyopaque) void {
+        const value: *Task = @ptrCast(@alignCast(task));
+        if (value.state == .terminated) return;
+        value.state = .ready;
+    }
+
     /// Ends the task that is running.
     ///
     /// The task is marked as terminated, and the scheduler does not choose
@@ -299,11 +373,14 @@ pub const Scheduler = struct {
         statistics.tasks = self.count;
 
         var ready: u32 = 0;
+        var blocked: u32 = 0;
         for (self.tasks) |task| {
             const value = task orelse continue;
             if (value.state == .ready) ready += 1;
+            if (value.state == .blocked) blocked += 1;
         }
         statistics.ready = ready;
+        statistics.blocked = blocked;
 
         return statistics;
     }
@@ -391,6 +468,13 @@ pub extern var voryn_kernel_stack_pointer: u64;
 /// The value is zero when the address space does not change, and the switch
 /// reads it to know whether it has to write the register of the tables.
 pub extern var voryn_next_cr3: u64;
+
+/// The flag that tells the entry of the system call that the task blocked.
+///
+/// O valor é um quando a tarefa corrente ficou esperando por uma mensagem,
+/// e a entrada da chamada entrega o controle ao escalonador em vez de
+/// voltar para o modo de usuário.
+pub extern var voryn_syscall_blocked: u64;
 
 /// Captures the context of the task that is running.
 extern fn voryn_capture_context(task_context: *Context) callconv(.c) void;

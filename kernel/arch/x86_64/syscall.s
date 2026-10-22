@@ -63,6 +63,14 @@ voryn_user_stack_pointer:
 voryn_kernel_stack_pointer:
     .quad 0
 
+/* The flag that tells the entry that the task blocked. The scheduler sets
+ * it when a task waits for a message, and the entry clears it before it
+ * hands the control to the switch. */
+.global voryn_syscall_blocked
+.type voryn_syscall_blocked, @object
+voryn_syscall_blocked:
+    .quad 0
+
 .global voryn_syscall_instruction_entry
 .type voryn_syscall_instruction_entry, @function
 voryn_syscall_instruction_entry:
@@ -86,6 +94,14 @@ voryn_syscall_instruction_entry:
     pushq $0x1b                             /* the code segment of the user */
     pushq %rcx                              /* the address of return of the user */
 
+    /* The word of the error code and the vector, as the stub of the
+     * interruption does, so that the frame has the same shape in the two
+     * cases: the switch of the interruption reads the frame with the same
+     * offsets, e o quadro da chamada é lido do mesmo jeito. The values are
+     * not used by the call, and they exist for the shape of the frame. */
+    pushq $0                                /* the word of the error code */
+    pushq $0                                /* the vector */
+
     /* The state of the user. The order of the pushes is the reverse of the
      * order of the fields of the frame. */
     pushq %rax
@@ -108,6 +124,17 @@ voryn_syscall_instruction_entry:
     movq $3, %rsi                   /* the privilege level of the caller */
     call voryn_syscall_handler
 
+    /* The task may have blocked, waiting for a message. The frame is
+     * still whole, and the switch of the interruption reads it with the
+     * same offsets, so the control goes to the scheduler in the same way
+     * as when the timer decides to change the task. */
+    movq voryn_syscall_blocked(%rip), %rax
+    testq %rax, %rax
+    jz 1f
+    movq $0, voryn_syscall_blocked(%rip)
+    jmp voryn_task_switch
+1:
+
     /* The result of the call is in the frame: the handler changed the
      * value of RAX there. */
     popq %r15
@@ -125,6 +152,11 @@ voryn_syscall_instruction_entry:
     popq %rdx
     popq %rcx
     popq %rax
+
+    /* The word of the vector and the word of the error code sit between
+     * the registers and the frame of the return, and the stub of the
+     * interruption skips them in the same way. */
+    addq $16, %rsp
 
     /* The frame of the interrupt return is at the top of the stack. */
     iretq

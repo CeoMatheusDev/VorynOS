@@ -407,15 +407,14 @@ voryn_user_program:
     testq %r12, %r12
     jz 5f
 
-    /* The process that answers. It waits for the message of the other
-     * process, and the call that takes a message does not block: the call
-     * is repeated until the queue has a message. */
+    /* The process that answers. The call **blocks**: the task stays
+     * waiting, the scheduler chooses another task, and the message wakes
+     * the task up when it arrives. The call returns as if it had answered
+     * at once. */
 6:  movq $0, %rdi             /* the channel */
     movq $1, %rsi             /* the side of the process that started */
-    movq $6, %rax             /* the number of the system call */
+    movq $8, %rax             /* the number of the system call */
     syscall
-    testq %rax, %rax
-    js 6b                     /* negative: the queue is empty */
 
     /* The answer is the value of the message with the bytes inverted, and
      * it waits in the queue of the side of the process that started. */
@@ -449,14 +448,12 @@ voryn_user_program:
     syscall
 
     /* The answer of the other process may not have arrived yet, and the
-     * call that takes a message does not block: the call is repeated until
-     * the queue has a message. */
+     * call that takes a message **blocks** until it arrives: the task
+     * stays waiting, and o escalonador escolhe outra tarefa. */
 2:  movq $0, %rdi             /* the channel */
     movq $0, %rsi             /* the side of the process that answers */
-    movq $6, %rax             /* the number of the system call */
+    movq $8, %rax             /* the number of the system call */
     syscall
-    testq %rax, %rax
-    js 2b                     /* negative: the queue is empty */
 
     /* The value of the answer is the second result of the call, and it
      * is written in the eighth word of the page of data. */

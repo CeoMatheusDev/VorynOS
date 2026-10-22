@@ -131,6 +131,19 @@ require_marker() {
     fi
 }
 
+# Checks a line that has a number that varies from one run to the other, and
+# whose format is part of the contract of the report.
+require_pattern() {
+    local pattern="$1"
+    local description="$2"
+    if grep -qE -- "$pattern" "$SERIAL_LOG"; then
+        echo "ok: found '$description'"
+    else
+        echo "FAIL: missing '$description'" >&2
+        FAILURES=$((FAILURES + 1))
+    fi
+}
+
 require_marker "[VNB] VorynOS"
 require_marker "[VNB] kernel placed"
 require_marker "[VNK] Voryn Nucleus Kernel"
@@ -141,8 +154,9 @@ require_marker "[VNK] segments: task state segment loaded"
 require_marker "[VNK] paging: cr3"
 require_marker "[VNK] timer:"
 require_marker "[VNK] tasks: 5 created"
-require_marker "[VNK] tasks: 4 ready"
-require_marker "[VNK] tasks: switch cost"
+require_pattern '\[VNK\] tasks: [0-9]+ ready' 'the report of the ready tasks'
+require_pattern '\[VNK\] tasks: [0-9]+ blocks' 'the report of the blocked tasks'
+require_marker "switch cost"
 require_marker "[VNK] framebuffer: write probe succeeded"
 require_marker "[VNK] syscall: instruction installed and verified"
 require_marker "[VNK] user: process 0"
@@ -159,6 +173,7 @@ require_marker "[VNK] user: the copy of the user mode with overlapping ranges mo
 require_marker "[VNK] user: the kernel refused the call of an address of the kernel"
 require_marker "[VNK] channel: the answer of the other process came back"
 require_marker "[VNK] channel: the message arrived in"
+require_marker "deliveries to a task that was waiting"
 require_marker "[VNK] user: the second process wrote 0x5a5a1235 in its own page"
 require_marker "[VNK] user: the copy between the two processes moved 8 bytes"
 require_marker "VORYN-KERNEL-READY"

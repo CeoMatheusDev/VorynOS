@@ -78,7 +78,7 @@ O modelo de componentes e seus custos estão em
 | `memory/heap.zig` | Heap do núcleo com etiquetas de limite e verificação de corrupção |
 | `task/context.zig` | Contexto completo de uma tarefa: todos os registradores do processador |
 | `task/scheduler.zig` | Escalonador preemptivo, criação de tarefas e de processos, troca de espaço |
-| `ipc/channel.zig` | Canal de mensagens do VNX: duas filas por canal e a latência da entrega |
+| `ipc/channel.zig` | Canal de mensagens do VNX: duas filas por canal, a espera e a latência da entrega |
 
 ### `tools/` — ferramentas de desenvolvimento
 
@@ -132,6 +132,9 @@ explícito e documentado.
    que o núcleo confere são as do espaço do processo que chamou.
 9. A janela do modo de usuário fica fora da imagem do núcleo, e o seu
    endereço é entregue à tarefa no momento da criação.
+10. A tarefa que espera por uma mensagem **não é executada**, e o quadro
+    que ela deixa é o mesmo quadro do processador que a preempção deixa,
+    e por isso o mesmo switch serve aos dois casos.
 
 ## 5. Limitações conhecidas
 
@@ -149,8 +152,8 @@ explícito e documentado.
 8. Não há detecção de hardware além do framebuffer: VNH ainda não existe.
 9. O número de espaços de endereço é uma constante do módulo de paginação,
    e o número de processos é fixo no núcleo.
-10. A chamada que toma uma mensagem não bloqueia: o programa repete a
-    chamada até a mensagem chegar.
+11. A chamada que bloqueia espera para sempre, e não existe um prazo de
+    espera.
 9. O kernel é carregado a partir de um volume FAT através do protocolo de
    sistema de arquivos simples do firmware; não há driver de bloco próprio.
 

@@ -162,7 +162,9 @@ O núcleo possui uma infraestrutura inicial funcional para gerenciamento do proc
   origem e a escrita do destino feitas no espaço de cada um.
 - Canal de mensagens do VNX com a entrega entre dois processos, e a
   latência da entrega medida no relógio do processador.
-
+- Chamada de sistema que **bloqueia** à espera de uma mensagem: a tarefa
+  que espera não é executada, o escalonador escolhe outra, e a mensagem
+  acorda a tarefa com o resultado no contexto salvo dela.
 **Gerenciamento de memória**
 
 - Gerenciador de memória física baseado em bitmap.
@@ -226,8 +228,9 @@ As seguintes limitações são conhecidas e documentadas:
 | Processos | Dois processos, e o limite de espaços de endereço é uma constante do módulo de paginação |
 | TSS | Estrutura do modo de 64 bits, com o layout verificado em tempo de compilação |
 | Exceções | Tratamento fatal, sem recuperação |
-| Syscalls | Sete chamadas, e a volta ao usuário é verificada |
-| IPC | Canal de mensagens do VNX verificado entre dois processos, sem chamada que bloqueie |
+| Syscalls | Oito chamadas, e a volta ao usuário é verificada |
+| IPC | A entrega e a espera entre dois processos são verificadas, e não há ordenação, nem entrega garantida, nem sincronização |
+| Espera | A espera não tem prazo, e uma tarefa espera por um canal e por um lado |
 | Capacidades | Não implementadas, e o processo tem acesso a todo o seu espaço |
 | Armazenamento | Sem sistema de arquivos operacional no kernel |
 | Drivers | Sem infraestrutura geral de drivers |
@@ -236,8 +239,8 @@ As seguintes limitações são conhecidas e documentadas:
 
 O processo de usuário executa no terceiro nível de privilégio, escreve na sua própria página de dados, chama o núcleo pela instrução `syscall` e recebe a resposta de volta no mesmo registrador. Cada processo tem um espaço de endereço próprio, e dois processos que usam o mesmo endereço virtual não veem as mesmas páginas. O canal de mensagens do VNX entrega uma mensagem de um processo para outro, e a resposta volta pelo mesmo canal. A cópia de memória entre os dois processos é uma cópia de verdade: o espaço de quem chamou não muda.
 
-O que ainda não existe são as threads, a chamada que bloqueia à espera de uma
-mensagem, o modelo de capacidades do VNC, e a validação em hardware físico.
+O que ainda não existe são as threads, a espera com prazo, o modelo de
+capacidades do VNC, e a validação em hardware físico.
 
 Esses recursos pertencem aos próximos incrementos de desenvolvimento.
 
@@ -584,15 +587,14 @@ O estado de cada marco é registrado no:
 
 O objetivo arquitetural em curso é o **F3 — Execução**, e ele tem três
 partes: o modo de usuário, os processos, e a comunicação entre eles. As
-duas primeiras estão implementadas e verificadas, e a terceira está
-implementada na forma da entrega de uma mensagem entre dois processos.
+três estão implementadas e verificadas, e a comunicação entre processos
+tem a entrega de uma mensagem e a espera por ela.
 
 Os objetivos que faltam no marco são:
 
-1. A chamada que **bloqueia** à espera de uma mensagem, com o
-   escalonador escolhendo outra tarefa enquanto a espera.
-2. O modelo de **capacidades** do VNC, que decide o que um processo pode
+1. O modelo de **capacidades** do VNC, que decide o que um processo pode
    alcançar, e que a pergunta aberta do ADR-0001 deixou em suspenso.
+2. A **espera com prazo**, e a espera por mais de um canal ao mesmo tempo.
 3. O **tratamento por tipo** das exceções, com um teste de recuperação, e
    o **heap dinâmico** com o VNM.
 4. A medição do custo de troca de contexto sob **carga representativa**,
@@ -618,6 +620,7 @@ O VorynOS mantém documentação técnica junto ao código-fonte.
 | [ADR-0004](docs/adr/ADR-0004-x86_64-abi-pitfalls.md) | Particularidades e problemas de ABI x86_64 |
 | [ADR-0005](docs/adr/ADR-0005-task-model-and-user-mode.md) | Modelo de tarefa e modo de usuário |
 | [ADR-0006](docs/adr/ADR-0006-address-spaces-and-processes.md) | Espaços de endereço por processo e o quadro do processador |
+| [ADR-0007](docs/adr/ADR-0007-blocking-receive.md) | A chamada que bloqueia à espera de uma mensagem |
 | [Boot Handoff](docs/specs/boot-handoff-spec.md) | Especificação do contrato de inicialização |
 | [Syscall ABI](docs/specs/syscall-abi.md) | Contrato da chamada de sistema |
 | [Notas da v0.1.0-dev.1](docs/releases/v0.1.0-dev.1.md) | Notas oficiais do marco inicial consolidado |

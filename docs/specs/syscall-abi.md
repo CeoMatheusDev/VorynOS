@@ -5,7 +5,7 @@
 | **Estado** | ACEITO |
 | **Data** | 2026-10-22 |
 | **Escopo** | A interface entre o modo de usuário e o núcleo |
-| **Versão do contrato** | `syscall_abi = 2` |
+| **Versão do contrato** | `syscall_abi = 3` |
 
 ## 1. Objetivo
 
@@ -19,8 +19,9 @@ precisa **recusar** um número de chamada que não conhece, em vez de adivinhar
 o seu significado.
 
 A versão 2 acrescenta as chamadas de canal e a chamada que copia um bloco
-entre dois processos. As chamadas da versão 1 **não mudam de número e não
-mudam de significado**.
+entre dois processos. A versão 3 acrescenta a chamada que **bloqueia** à
+espera de uma mensagem. As chamadas das versões anteriores **não mudam de
+número e não mudam de significado**.
 
 ## 2. O mecanismo
 
@@ -118,6 +119,7 @@ interrupção. O código de saída fica registrado na tarefa.
 | 5 | `send` | `RDI` canal, `RSI` lado, `RDX` tipo, `R8` valor | zero, quando a mensagem foi posta na fila |
 | 6 | `receive` | `RDI` canal, `RSI` lado | o tipo da mensagem, e o valor no `RDX` |
 | 7 | `copy_to` | `RDI` processo, `RSI` destino, `RDX` origem, `R8` comprimento | o número de bytes copiados |
+| 8 | `receive_blocking` | `RDI` canal, `RSI` lado | o tipo da mensagem, e o valor no `RDX` |
 
 ### 5.1 `send`
 
@@ -162,6 +164,38 @@ duas direções da troca.
 As duas faixas são conferidas nas tabelas do espaço de cada uma, e o espaço
 de quem chamou é restaurado no fim, qualquer que seja o resultado da cópia.
 
+### 5.4 `receive_blocking`
+
+Toma uma mensagem de um canal e **bloqueia** quem chama até que a mensagem
+chegue. Os argumentos são o identificador do canal e o lado que guarda a
+mensagem. O resultado é o tipo da mensagem, e o valor da mensagem volta no
+`RDX`.
+
+A diferença em relação à chamada `receive` é o que acontece quando a fila
+está vazia:
+
+| | `receive` | `receive_blocking` |
+|---|---|---|
+| a fila está vazia | devolve o erro 5 | a tarefa **espera** |
+| uso do processador | a tarefa repete a chamada | a tarefa **não** é executada |
+| escolha da tarefa | a tarefa continua sendo escolhida | o escalonador escolhe outra |
+| retorno | imediato | quando a mensagem chega |
+
+A tarefa que espera é marcada como bloqueada, e o escalonador não a
+escolhe. Quando a mensagem chega, a entrega escreve o tipo e o valor
+**direto no contexto salvo da tarefa**, e a tarefa acorda. A tarefa
+continua **depois** da chamada, com o resultado nos mesmos registradores
+que uma chamada que tivesse respondido de imediato.
+
+A entrega é **direta**: a mensagem não fica na fila quando há alguém
+esperando, e por isso a latência medida é o intervalo entre a mensagem
+sair e a mensagem chegar à tarefa que esperava, e não o tempo que a
+tarefa ficou esperando na fila.
+
+A chamada devolve o erro 5 quando a fila está vazia e **não há outra
+tarefa para executar**: uma espera que seria a única tarefa do sistema
+seria um laço ocupado, e não uma espera.
+
 ## 6. O resultado e os erros
 
 O resultado da chamada volta em `RAX`. Um resultado **negativo** significa
@@ -178,6 +212,7 @@ do erro:
 | 6 | canal desconhecido | o identificador do canal não existe |
 | 7 | fila cheia | o lado do canal não aceita mais mensagens |
 | 8 | processo desconhecido | o identificador do processo não existe |
+| 9 | espera impossível | a tarefa esperou por uma mensagem e não havia outra tarefa para executar |
 
 O limite de comprimento é de **64 KiB** por chamada, e ele existe para que
 o núcleo não passe um tempo indeterminado dentro de uma chamada.
@@ -203,6 +238,8 @@ conhecer os códigos de erro.
    nem `R11`, porque a instrução da chamada escreve os dois.
 8. Uma chamada que confere uma faixa confere a faixa **no espaço de
    endereço de quem chamou**, e não no espaço do núcleo.
+9. Uma chamada que bloqueia não ocupa o processador, e a tarefa só é
+   escolhida de novo quando a mensagem chega.
 
 ## 8. O que a versão 2 não tem
 
@@ -212,7 +249,10 @@ conhecer os códigos de erro.
 - **Arquivos.** A chamada `write` conhece apenas o console.
 - **Estrutura de mensagem.** Não há formato de mensagem definido, e a
   mensagem do canal carrega um tipo e um valor.
-- **Chamada que bloqueia.** A chamada que toma uma mensagem não bloqueia.
 - **Vários processos por chamada.** A chamada `copy_to` conhece o
   processo de destino pelo identificador, e não por um nome de arquivo
   nem por um caminho.
+- **Espera com prazo.** A chamada que bloqueia espera para sempre, e não
+  existe um prazo de espera.
+- **Várias esperas por tarefa.** Uma tarefa espera por um canal e por um
+  lado, e não por um conjunto de canais.

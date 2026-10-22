@@ -155,6 +155,19 @@ pub const Number = struct {
     pub const send: u64 = 5;
     /// The call that takes a message from a channel.
     pub const receive: u64 = 6;
+    /// The call that takes a message from a channel and **blocks** the
+    /// caller until the message arrives.
+    ///
+    /// The arguments are the identifier of the channel and the side of the
+    /// channel that holds the message. The result is the type of the
+    /// message, and the value of the message comes back in the `RDX`.
+    ///
+    /// A chamada que bloqueia é diferente da que não bloqueia: a tarefa
+    /// que espera **não** fica acordada, e o escalonador escolhe outra
+    /// tarefa. A mensagem entrega o resultado direto no contexto salvo da
+    /// tarefa, e a tarefa continua depois da chamada, como se a chamada
+    /// tivesse respondido.
+    pub const receive_blocking: u64 = 8;
     /// The call that copies a block of memory from the process of the caller
     /// into the space of another process.
     ///
@@ -192,6 +205,11 @@ pub const Error = struct {
     pub const full_queue: u64 = 7;
     /// The process does not exist.
     pub const unknown_process: u64 = 8;
+    /// The wait is impossible.
+    ///
+    /// A tarefa esperou por uma mensagem e não havia outra tarefa para
+    /// executar, e a espera seria um laço ocupado.
+    pub const wait_impossible: u64 = 9;
 };
 
 /// The largest block that a call copies in one go.
@@ -258,6 +276,19 @@ pub fn channelIsEmpty(channel_id: u64, side: u64) bool {
 pub fn channelLatency(channel_id: u64, side: u64) u64 {
     const channel = channel_module.get(channel_id) orelse return 0;
     return channel.latency(side);
+}
+
+/// The number of cycles between a message being sent and the message being
+/// delivered to the task that was waiting for it.
+pub fn channelDeliveryLatency(channel_id: u64, side: u64) u64 {
+    const channel = channel_module.get(channel_id) orelse return 0;
+    return channel.deliveryLatency(side);
+}
+
+/// The number of messages that arrived at a task that was waiting.
+pub fn channelDeliveries(channel_id: u64, side: u64) u64 {
+    const channel = channel_module.get(channel_id) orelse return 0;
+    return channel.deliveries(side);
 }
 
 // The selectors of the user mode are written in the entry point of the
@@ -388,6 +419,14 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
                 frame.rax,
             });
         },
+        Number.receive_blocking => {
+            frame.rax = receiveBlocking(frame, frame.rdi, frame.rsi, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} received 0x{x}", .{
+                number,
+                caller,
+                frame.rax,
+            });
+        },
         Number.copy_to => {
             frame.rax = copyTo(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
             serial.printLine("[VNK] syscall {d} from {s} copied 0x{x} bytes to the process {d}", .{
@@ -480,7 +519,13 @@ fn send(channel_id: u64, side: u64, kind: u64, value: u64, privilege: u64) u64 {
         return failure(Error.unknown_channel);
 
     const message = channel_module.Message{ .kind = kind, .value = value };
-    const sent = channel.sendTo(side, message);
+
+    // A mensagem vai direto para a tarefa que espera pela fila, e ela não
+    // fica na fila: a entrega escreve o resultado no contexto salvo da
+    // tarefa, e a tarefa acorda. Sem tarefa esperando, a mensagem fica na
+    // fila. O caminho é o mesmo nos dois casos, e por isso ele é o que
+    // marca o momento da saída da mensagem.
+    const sent = channel.post(side, message);
     if (!sent) {
         return failure(Error.full_queue);
     }
@@ -505,6 +550,45 @@ fn receive(frame: *SyscallFrame, channel_id: u64, side: u64, privilege: u64) u64
 
     frame.rdx = message.value;
     return message.kind;
+}
+
+/// Takes a message from a channel, blocking the caller until it arrives.
+///
+/// The function has the same arguments as the receive that does not block,
+/// and the difference is what happens when the queue is empty: the caller
+/// **waits**. The wait is registered in the queue, the task is marked as
+/// blocked, and the scheduler chooses another task.
+///
+/// When the message arrives, the delivery writes the type and the value
+/// directly in the saved context of the waiting task, and the task
+/// becomes ready. The task continues after the call, with the result of
+/// the call in the same registers as a call that had answered at once.
+///
+/// The function returns the type of the message when the queue already had
+/// one, and zero when the caller was left waiting: the result真正的 chega
+/// depois, no contexto salvo da tarefa.
+fn receiveBlocking(frame: *SyscallFrame, channel_id: u64, side: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    const channel = channel_module.get(channel_id) orelse
+        return failure(Error.unknown_channel);
+
+    if (!channel.isEmpty(side)) {
+        const message = channel.receiveFrom(side) orelse
+            return failure(Error.empty_queue);
+        frame.rdx = message.value;
+        return message.kind;
+    }
+
+    // A fila está vazia: a tarefa espera pela mensagem.
+    const scheduler = @import("../../task/scheduler.zig");
+    if (!scheduler.scheduler.blockCurrent(channel, side)) {
+        return failure(Error.wait_impossible);
+    }
+
+    // A tarefa ficou esperando: o resultado chega depois, no contexto
+    // salvo da tarefa, e o valor de retorno é irrelevante.
+    return 0;
 }
 
 /// Ends the task of the user mode.

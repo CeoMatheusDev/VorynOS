@@ -117,6 +117,9 @@ capacidades.
 | Cópia entre processos | CONCLUÍDO | o bloco vai de um processo para o outro, e o espaço de quem chamou não muda |
 | Canal do VNX | CONCLUÍDO | a mensagem sai de um processo e chega ao outro, e a resposta volta |
 | Latência da entrega | CONCLUÍDO | o intervalo entre a mensagem sair e a mensagem chegar, medido no relógio do processador |
+| Espera que não ocupa o processador | CONCLUÍDO | a tarefa fica bloqueada, o escalonador escolhe outra, e a mensagem a acorda |
+| Entrega direta ao contexto da tarefa | CONCLUÍDO | a mensagem não fica na fila, e a tarefa continua depois da chamada |
+| Quadro da chamada com o formato do quadro da interrupção | CONCLUÍDO | o mesmo switch serve ao bloqueio e à preempção |
 | Capacidades do VNC | PROPOSTO | — |
 
 O modo de usuário está **implementado e verificado**. A tarefa de usuário
@@ -162,19 +165,28 @@ Critérios de aceite do restante do marco:
    pelo mesmo canal. A latência medida é o intervalo entre a mensagem sair
    e a mensagem chegar, lido no relógio do processador, e não a espera de um
    turno do escalonador.
+4. A espera por uma mensagem **não ocupa o processador**. **Cumprido:** a
+   chamada que bloqueia marca a tarefa como bloqueada, o escalonador
+   escolhe outra, e a mensagem acorda a tarefa. O resultado da chamada
+   chega no contexto salvo da tarefa, e a tarefa continua depois da
+   chamada, como se ela tivesse respondido de imediato. A entrega é
+   direta, e por isso a latência relatada é a da entrega. O diagnóstico e
+   a medição estão em ADR-0007.
 
 O que ainda falta no marco:
 
-1. **A chamada que bloqueia.** A chamada que toma uma mensagem devolve o
-   erro de fila vazia, e o programa repete a chamada. A versão que
-   bloqueia exige que a chamada consiga continuar depois que a mensagem
-   chega, e que o escalonador escolha outra tarefa enquanto a espera.
-2. **As capacidades do VNC.** A pergunta aberta do ADR-0001 continua
+1. **As capacidades do VNC.** A pergunta aberta do ADR-0001 continua
    aberta: a chamada não carrega capacidades, e o processo tem acesso ao
    espaço inteiro do modo de usuário.
-3. **Mais de dois processos.** O núcleo cria dois processos, e o número de
+2. **Mais de dois processos.** O núcleo cria dois processos, e o número de
    espaços de endereço é limitado por uma constante do módulo de
    paginação.
+3. **A espera com prazo.** A chamada que bloqueia espera para sempre, e
+   não existe um prazo de espera.
+4. **O tratamento por tipo das exceções**, com um teste de recuperação, e
+   o heap dinâmico com o VNM.
+5. **A medição do custo de troca de contexto** sob carga representativa,
+   com mais tarefas e mais processos.
 
 O canal de mensagens ensinou uma regra de inicialização que vale para o
 núcleo inteiro: tudo o que as tarefas podem usar tem de existir **antes**

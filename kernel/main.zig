@@ -247,7 +247,6 @@ fn userCopyTargetAddress() u64 {
 /// is four bytes above the origin.
 const pattern_bytes: [8]u8 = @bitCast(user_overlap_pattern);
 
-
 /// The value that the kernel answers to the message of the user mode.
 ///
 /// The answer é o valor da mensagem com os bytes invertidos, e o núcleo
@@ -886,12 +885,17 @@ fn reportUserTask() void {
         serial.printLine("[VNK] channel: the answer of the other process came back, 0x{x}", .{answer});
     }
 
-    const latency = syscall.channelLatency(0, syscall.Side.user);
+    const latency = syscall.channelDeliveryLatency(0, syscall.Side.user);
     if (latency == 0) {
         serial.printLine("[VNK] channel: the latency of the delivery was not measured", .{});
     } else {
         serial.printLine("[VNK] channel: the message arrived in {d} cycles", .{latency});
     }
+
+    // A entrega a uma tarefa que esperava é o que prova que o bloqueio
+    // funciona: a tarefa ficou esperando, e a mensagem a acordou.
+    const deliveries = syscall.channelDeliveries(0, syscall.Side.user);
+    serial.printLine("[VNK] channel: {d} deliveries to a task that was waiting", .{deliveries});
 
     // The copy moves a block of the page of code to the page of data, and
     // the content proves that the copy happened.
@@ -1030,12 +1034,14 @@ fn reportScheduler() void {
     else
         0;
 
-    serial.printLine("[VNK] tasks: {d} ready, {d} ticks, {d} switches", .{
+    serial.printLine("[VNK] tasks: {d} ready, {d} blocked, {d} ticks, {d} switches", .{
         statistics.ready,
+        statistics.blocked,
         statistics.ticks,
         statistics.switches,
     });
-    serial.printLine("[VNK] tasks: switch cost {d} cycles average, {d} minimum, {d} last", .{
+    serial.printLine("[VNK] tasks: {d} blocks, switch cost {d} cycles average, {d} minimum, {d} last", .{
+        statistics.blocks,
         average,
         statistics.minimum_switch_cycles,
         statistics.last_switch_cycles,
