@@ -1,47 +1,48 @@
-# Contribuindo com o VorynOS
+# Contributing to VorynOS
 
-Obrigado pelo interesse em contribuir. O VorynOS é um projeto open source em fase inicial, com foco em implementação original, verificável e eficiente.
+Thank you for your interest in contributing. VorynOS is an early-stage open-source project focused on original, verifiable, and efficient implementations.
 
-## Antes de começar
+## Before You Start
 
-1. Verifique issues e discussões existentes para evitar trabalho duplicado.
-2. Descreva o problema e o resultado esperado antes de alterações arquitetônicas extensas.
-3. Mantenha cada contribuição pequena e focada.
-4. Não introduza dependências de runtime sem justificar custo, licença, segurança e manutenção.
+1. Review existing issues and discussions to avoid duplicate work.
+2. Describe the problem and expected outcome before making extensive architectural changes.
+3. Keep each contribution small and focused.
+4. Do not introduce runtime dependencies without justifying their cost, licensing, security, and maintenance implications.
 
-## Regras de código
+## Coding Guidelines
 
-- Priorize Zig (versão-alvo 0.17.0); utilize C23 e Assembly somente quando justificado.
-- Verifique APIs na toolchain real. Não presuma compatibilidade entre versões Zig.
-- Trate erros explicitamente, valide limites e evite comportamento indefinido.
-- Documente invariantes, contratos ABI e decisões relevantes.
-- Inclua testes e instruções para reproduzi-los quando possível.
-- Não afirme sucesso de compilação ou execução sem evidências.
+- Prefer Zig (target version 0.17.0); use C23 and Assembly only when justified.
+- Verify APIs against the actual toolchain. Do not assume compatibility between Zig versions.
+- Handle errors explicitly, validate bounds, and avoid undefined behavior.
+- Document invariants, ABI contracts, and significant design decisions.
+- Include tests and reproduction instructions whenever possible.
+- Do not claim successful builds or execution without evidence.
 
-## Licença, autoria e proveniência
+## Licensing, Authorship, and Provenance
 
-- Ao contribuir com código original para áreas cobertas pela licença principal, você concorda em disponibilizá-lo sob **GPL-3.0-only**, salvo acordo explícito em contrário.
-- Adicione `SPDX-License-Identifier: GPL-3.0-only` a novos arquivos de código próprios quando aplicável.
-- Preserve avisos de copyright e licenças de terceiros.
-- Envie apenas conteúdo que você tem direito de licenciar.
-- Informe dependências externas, suas licenças e a origem de trechos incorporados.
-- Se usar IA para auxiliar a contribuição, revise o resultado, verifique a origem de conteúdo incorporado e assuma responsabilidade técnica pelo código enviado.
-- Não presuma que uma contribuição transfere direitos autorais ao mantenedor; **não há CLA de cessão automática** estabelecido aqui.
+- By contributing original code to areas covered by the project's primary license, you agree to make it available under **GPL-3.0-only**, unless explicitly agreed otherwise.
+- Add `SPDX-License-Identifier: GPL-3.0-only` to new original source files when applicable.
+- Preserve third-party copyright notices and licenses.
+- Submit only content you have the right to license.
+- Disclose external dependencies, their licenses, and the provenance of incorporated code.
+- If you use AI to assist with a contribution, review the output, verify the provenance of incorporated content, and take technical responsibility for the submitted code.
+- Do not assume that contributing transfers copyright to the maintainer; **no automatic copyright-assignment CLA** is established here.
 
-## Pull requests
+## Pull Requests
 
-Inclua:
-- Objetivo e justificativa.
-- Arquivos e interfaces afetados.
-- Comandos de build/teste realmente executados e resultados.
-- Limitações, riscos e eventuais incompatibilidades.
+Include:
 
-Alterações de kernel, MMU, interrupções, boot, ABI, drivers, parsers e segurança exigem revisão humana antes de integração.
+- The objective and rationale.
+- Affected files and interfaces.
+- Build and test commands actually executed, along with their results.
+- Known limitations, risks, and potential incompatibilities.
 
-## Conduta e segurança
+Changes involving the kernel, MMU, interrupts, boot process, ABI, drivers, parsers, or security require human review before integration.
 
-Mantenha discussões técnicas respeitosas. Para vulnerabilidades, siga [SECURITY.md](SECURITY.md) em vez de abrir uma issue pública com detalhes exploráveis.
+## Conduct and Security
 
-## Marca
+Keep technical discussions respectful. For vulnerabilities, follow [SECURITY.md](SECURITY.md) instead of opening a public issue containing exploitable details.
 
-Forks e redistribuições são permitidos nos termos da licença aplicável. Não apresente versões modificadas como lançamentos oficiais do VorynOS nem implique endosso inexistente.
+## Trademarks and Branding
+
+Forks and redistribution are permitted under the applicable license. Do not present modified versions as official VorynOS releases or imply endorsement where none exists.
