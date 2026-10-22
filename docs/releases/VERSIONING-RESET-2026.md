@@ -25,9 +25,17 @@ funcionalidade foi removida.
 | `v0.1.0-dev.2` | VorynOS v0.1.0-dev.2 — Native UEFI Boot & Kernel Bring-Up | `42c3e62fbf84798d07cf36c3461d6b73e51cbb0f` | `91e1e06d481b6b793b9b4fe25ff7b34e30868d06` | 2026-10-21T20:58:00Z |
 | `v0.1.0-dev.3` | VorynOS v0.1.0-dev.3 — User-Mode Execution Milestone | `5dd258830823ca8a9d9a257460643c7924ee23d9` | `0b2cbd33449141f79f1404000af26ae387095e8a` | 2026-10-21T22:57:46Z |
 
-Os dois commits acima **continuam no histórico da `main`** e não foram
-reescritos, descartados ou apagados. Eles são a referência técnica
-original de cada marco.
+Os dois commits acima **não foram reescritos, descartados nem apagados**.
+Eles continuam preservados na branch de arquivo
+`archive/versioning-reset-2026`, que aponta para o topo da linhagem
+antiga e é alcançável a partir de qualquer cópia do repositório. Eles são
+a referência técnica original de cada marco.
+
+**A branch de arquivo não substitui o histórico da `main`.** A `main` tem o
+histórico completo da linha atual, com a integração do trabalho paralelo, e
+a `archive/versioning-reset-2026` existe apenas para que os commits dos
+marcos descontinuados continuem alcançáveis depois da remoção das tags que
+os apontavam.
 
 ## 3. Estado técnico registrado de cada marco
 
@@ -135,9 +143,12 @@ eles afirmavam.
 
 ## 6. O que foi preservado
 
-- A branch `main` **não** foi apagada, reescrita ou reposicionada.
-- O histórico de commits da `main` é **intacto**, e os dois commits dos
-  marcos descontinuados continuam nele.
+- A branch `main` **não** foi apagada, reescrita ou reposicionada, e
+  nenhum `push` forçado foi executado.
+- O histórico de commits da `main` é **intacto**: a integração do trabalho
+  paralelo foi feita por merge, que preserva os dois históricos.
+- Os dois commits dos marcos descontinuados continuam alcançáveis, na
+  branch de arquivo `archive/versioning-reset-2026`.
 - Nenhum arquivo de código-fonte foi apagado, e nenhuma funcionalidade foi
   descartada.
 - A documentação histórica dos dois marcos está neste documento e no
@@ -183,11 +194,11 @@ lógica, nenhuma tabela, nenhum contrato e nenhum teste foi alterado.
 
 ## 8. Referência Git original
 
-| Identificador | Commit | Tag anotada |
-|---|---|---|
-| `v0.1.0-dev.1` (novo) | o commit que contém o estado consolidado e esta documentação | tag anotada `v0.1.0-dev.1` |
-| `v0.1.0-dev.2` (descontinuado) | `42c3e62fbf84798d07cf36c3461d6b73e51cbb0f` | `91e1e06d481b6b793b9b4fe25ff7b34e30868d06` |
-| `v0.1.0-dev.3` (descontinuado) | `5dd258830823ca8a9d9a257460643c7924ee23d9` | `0b2cbd33449141f79f1404000af26ae387095e8a` |
+| Identificador | Commit | Tag anotada | Onde o commit permanece |
+|---|---|---|---|
+| `v0.1.0-dev.1` (novo) | `1c47f505b766538398214f1b5c8ee473c4c96527` | tag anotada `v0.1.0-dev.1` | branch `main` |
+| `v0.1.0-dev.2` (descontinuado) | `42c3e62fbf84798d07cf36c3461d6b73e51cbb0f` | `91e1e06d481b6b793b9b4fe25ff7b34e30868d06` | branch `archive/versioning-reset-2026` |
+| `v0.1.0-dev.3` (descontinuado) | `5dd258830823ca8a9d9a257460643c7924ee23d9` | `0b2cbd33449141f79f1404000af26ae387095e8a` | branch `archive/versioning-reset-2026` |
 
 ## 9. Política de versionamento a partir de agora
 
