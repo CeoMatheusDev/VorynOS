@@ -55,12 +55,6 @@ O projeto encontra-se em desenvolvimento inicial e **ainda não constitui um sis
 > **Licença:** GPL-3.0-only  
 > **Última revisão documental:** 22/10/2026
 
-A versão publicada é o **marco inicial consolidado** do projeto: ela
-carrega todo o progresso técnico já verificado, e a partir dela a numeração
-das versões volta a ter sentido. A reorganização dos marcos públicos está
-registrada em
-[VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md).
-
 O desenvolvimento está organizado em marcos incrementais, com critérios técnicos de aceitação e documentação das evidências de funcionamento.
 
 ### Progresso dos marcos
