@@ -101,7 +101,7 @@ O modelo de componentes e seus custos estão em
 | Mapa de memória | array de `MemoryDescriptor` (40 bytes) | `shared/handoff.zig` |
 | Imagem do kernel | ELF64 relocável (`ET_DYN`) | `shared/elf64.zig` |
 | Janela do modo de usuário | constantes de deslocamento, compartilhadas com o assembly | `shared/usermode.zig` |
-| Contrato da chamada de sistema | versão `syscall_abi = 2`, sete chamadas | `docs/specs/syscall-abi.md` |
+| Contrato da chamada de sistema | versão `syscall_abi = 3`, oito chamadas | `docs/specs/syscall-abi.md` |
 | Contexto da tarefa | `extern struct` com os quinze registradores | `kernel/task/context.zig` |
 | Console | escritor `std.Io.Writer` sobre a UART | `shared/arch/x86_64/serial.zig` |
 

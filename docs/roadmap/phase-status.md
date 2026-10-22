@@ -105,7 +105,7 @@ capacidades.
 | Contexto completo da tarefa | CONCLUÍDO | os quinze registradores são preservados a cada troca |
 | Pilha do núcleo separada da pilha do código | CONCLUÍDO | o quadro do processador nunca fica em uma página do usuário |
 | Chamada de sistema | CONCLUÍDO | a instrução `syscall`, com o tratador em Zig |
-| Contrato da chamada de sistema | CONCLUÍDO | sete chamadas, com o contrato em `docs/specs/syscall-abi.md` |
+| Contrato da chamada de sistema | CONCLUÍDO | oito chamadas, com o contrato em `docs/specs/syscall-abi.md` |
 | Conferência das faixas do usuário | CONCLUÍDO | uma chamada com um endereço do núcleo é recusada |
 | Modo de usuário | CONCLUÍDO | a tarefa escreve na sua página e a resposta da chamada volta |
 | Segmento de tarefa do modo de 64 bits | CONCLUÍDO | o layout é verificado em tempo de compilação |

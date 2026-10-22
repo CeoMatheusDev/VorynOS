@@ -200,7 +200,36 @@ lógica, nenhuma tabela, nenhum contrato e nenhum teste foi alterado.
 | `v0.1.0-dev.2` (descontinuado) | `42c3e62fbf84798d07cf36c3461d6b73e51cbb0f` | `91e1e06d481b6b793b9b4fe25ff7b34e30868d06` | branch `archive/versioning-reset-2026` |
 | `v0.1.0-dev.3` (descontinuado) | `5dd258830823ca8a9d9a257460643c7924ee23d9` | `0b2cbd33449141f79f1404000af26ae387095e8a` | branch `archive/versioning-reset-2026` |
 
-## 9. Política de versionamento a partir de agora
+## 9. A republicação da mesma versão
+
+A primeira publicação de `v0.1.0-dev.1` apontou para o commit
+`1539547cf6e6f213a53db75148cbd7cc88cee256`, que é o estado do projeto
+antes da auditoria e da curadoria do pacote de distribuição.
+
+A auditoria posterior encontrou inconsistências comprovadas entre a
+documentação e o código publicado: a contagem de chamadas de sistema, a
+contagem de verificações do teste de boot e o estado do recebimento
+bloqueante estavam desatualizados, e o pacote de código-fonte gerado a
+partir da tag antiga carregava os documentos internos de desenvolvimento.
+
+A pedido explícita do proprietário, a mesma versão foi **republicada**:
+
+1. O release antigo e a tag antiga foram removidos, depois de o commit
+   antigo ser preservado em uma referência de backup identificada como
+   histórica.
+2. A tag `v0.1.0-dev.1` foi recriada, anotada, sobre o commit final
+   validado da `main`.
+3. Um novo release, com o mesmo identificador e com as notas reescritas,
+   foi publicado com o pacote oficial filtrado como anexo.
+
+**A republicação não altera o histórico da `main`**, e a árvore de
+commits do projeto é a mesma antes e depois: a republicação removeu uma
+referência de versão, e não uma linha de desenvolvimento.
+
+A política de versionamento registra a exceção na seção 8 da
+[VVS-0001](../standards/VVS-0001.md).
+
+## 10. Política de versionamento a partir de agora
 
 A sequência oficial começa em `v0.1.0-dev.1`:
 
