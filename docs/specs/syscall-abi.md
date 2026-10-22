@@ -5,7 +5,7 @@
 | **State** | ACCEPTED |
 | **Date** | 2026-10-22 |
 | **Scope** | The interface between the user mode and the kernel |
-| **Contract version** | `syscall_abi = 6` |
+| **Contract version** | `syscall_abi = 8` |
 
 ## 1. Objective
 
@@ -133,6 +133,9 @@ next interrupt. The exit code is registered in the task.
 | 9 | `grant` | `RDI` process, `RSI` kind, `RDX` subject, `R8` rights | zero, when the capability was given |
 | 10 | `revoke` | `RDI` process, `RSI` kind, `RDX` subject | zero, when the capability was taken back |
 | 11 | `receive_timeout` | `RDI` channel, `RSI` side, `RDX` timeout | the kind of the message, and the value in the `RDX` |
+| 12 | `receive_any` | `RDI` array, `RSI` count, `RDX` timeout | the kind of the message, the value in the `RDX` and the index in the `R8` |
+| 13 | `get_priority` | `RDI` task identifier, `RSI` | the priority of the task |
+| 14 | `set_priority` | `RDI` task identifier, `RSI` the new priority | zero, when the priority was set
 
 ### 5.1 `send`
 

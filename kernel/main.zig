@@ -441,6 +441,9 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     installScheduler();
     installTimer();
 
+    // Initialize the file system.
+    installFs();
+
     // The main task waits until the workers have been scheduled a few
     // times, which proves that the scheduler works.
     while (scheduler.scheduler.statisticsOf().switches < 20) {
@@ -702,6 +705,12 @@ fn installTimer() void {
     serial.printLine("[VNK] timer: {d} Hz, {d} ticks", .{ timer.ticksPerSecond(), timer.ticks() });
 }
 
+/// Initializes the file system.
+fn installFs() void {
+    // TODO: Implement file system initialization
+    serial.printLine("[VNK] fs: file system initialization started", .{});
+}
+
 /// Creates the capability of the channel of the VNX and gives it to the
 /// process that owns it.
 ///
@@ -924,8 +933,8 @@ fn installSystemCall() void {
 fn installScheduler() void {
     scheduler.scheduler.init(@intFromPtr(&voryn_boot_stack_end), &kernel_stacks[0]);
 
-    _ = scheduler.scheduler.spawn(&workerOne, &task_stacks[1], &kernel_stacks[1]);
-    _ = scheduler.scheduler.spawn(&workerTwo, &task_stacks[2], &kernel_stacks[2]);
+    _ = scheduler.scheduler.spawn(&workerOne, &task_stacks[1], &kernel_stacks[1], 0);
+    _ = scheduler.scheduler.spawn(&workerTwo, &task_stacks[2], &kernel_stacks[2], 0);
 
     // The tasks of the user mode have a stack of their own for the user and
     // another for the kernel, where the handlers run. Each process runs in

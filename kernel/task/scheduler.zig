@@ -88,6 +88,15 @@ pub const Task = struct {
     exit_code: u64 = 0,
     /// The number of times the task was scheduled.
     schedules: u64 = 0,
+    /// The priority of the task. Higher values mean higher priority.
+    /// The scheduler chooses the ready task with the highest priority.
+    priority: u8 = 0,
+    /// The time quantum of the task, in ticks of the scheduler timer.
+    ///
+    /// When the quantum expires, the task is preempted and returned to the
+    /// ready queue, and the scheduler chooses the next task. A quantum of
+    /// zero means that the task is not subject to time-slicing.
+    quantum: u16 = 0,
 };
 
 /// Maximum number of tasks that the kernel supports.
@@ -159,18 +168,23 @@ pub const Scheduler = struct {
         task.stack = @as([*]u8, @ptrFromInt(kernel_stack_top))[0..0];
         task.kernel_rsp = stackTop(kernel_stack);
         task.state = .running;
+        task.priority = 0;
         self.current = task;
         segment.tss.rsp0 = task.kernel_rsp;
         voryn_kernel_stack_pointer = task.kernel_rsp;
     }
 
-    /// Creates a task that starts at `entry` with the given stack.
+    /// Spawns a new task that starts at `entry` with the given stack.
     ///
     /// The stack of the task has to be aligned to sixteen bytes and to be
     /// large enough for the frame of the entry function. The stack of the
     /// kernel of the task is a different memory, and it receives the frames
     /// of the interrupts and of the calls.
-    pub fn spawn(self: *Scheduler, entry: *const fn () void, stack: []u8, kernel_stack: []u8) ?*Task {
+    ///
+    /// The priority of the new task is set to `priority` (0-255), with 0 being
+    /// the default and higher values meaning higher priority. If `priority` is
+    /// not specified, it defaults to 0.
+    pub fn spawn(self: *Scheduler, entry: *const fn () void, stack: []u8, kernel_stack: []u8, priority: u8) ?*Task {
         if (stack.len < 256) return null;
         if (kernel_stack.len < 256) return null;
 
@@ -192,6 +206,7 @@ pub const Scheduler = struct {
         task.stack = stack;
         task.kernel_rsp = stackTop(kernel_stack);
         task.state = .ready;
+        task.priority = priority;
 
         return task;
     }
@@ -265,6 +280,18 @@ pub const Scheduler = struct {
     /// tick of the timer, and therefore the tick counter does not move.
     fn prepareNext(self: *Scheduler) bool {
         const current = self.current orelse return false;
+
+        // Decrement the quantum of the current task, and preempt it if it
+        // has expired. A quantum of zero means the task is not subject to
+        // time-slicing.
+        if (current.quantum != 0) {
+            current.quantum -= 1;
+            if (current.quantum == 0) {
+                // The current task has exhausted its quantum: return it to
+                // the ready queue and choose the next task.
+                current.state = .ready;
+            }
+        }
 
         const next = self.findNextReady(current) orelse return false;
 
@@ -432,15 +459,25 @@ pub const Scheduler = struct {
     fn findNextReady(self: *const Scheduler, current: *Task) ?*Task {
         const start = self.indexOf(current) + 1;
 
+        var best_task: ?*Task = null;
+        var best_priority: u8 = 0;
+
         var offset: usize = 0;
         while (offset < self.tasks.len) : (offset += 1) {
             const index = (start + offset) % self.tasks.len;
             const task = self.tasks[index] orelse continue;
             if (task == current) continue;
             if (task.state != .ready) continue;
-            return task;
+            // Choose the task with the highest priority.
+            // If priorities are equal, the first task encountered wins.
+            if (task.priority > best_priority or
+                (task.priority == best_priority and best_task == null))
+            {
+                best_priority = task.priority;
+                best_task = task;
+            }
         }
-        return null;
+        return best_task;
     }
 
     /// The position of a task in the list of the scheduler.
@@ -460,7 +497,7 @@ pub const Scheduler = struct {
         self.count += 1;
 
         const task = &self.storage[index];
-        task.* = .{ .id = self.next_id, .state = .ready };
+        task.* = .{ .id = self.next_id, .state = .ready, .quantum = 16 };
         self.next_id += 1;
         self.tasks[index] = task;
 
