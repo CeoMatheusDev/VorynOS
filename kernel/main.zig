@@ -153,20 +153,38 @@ const user_result_value: u64 = syscall.ping_result;
 /// verifiable — if the spaces shared a mapping, the second process would
 /// read the program of the first one and the signatures below would never
 /// both appear.
-const process_code_address: u64 = paging.user_window_base;
+///
+/// The window does not have a fixed address: `paging.setup` places it
+/// where the handoff left room, so the addresses of the pages of a process
+/// are variables that the boot fills after the tables are built and
+/// before any process exists.
+var process_code_address: u64 = undefined;
 
 /// The virtual address of the page of data of a demo process.
 ///
 /// The programs of the demo write their signature in this page, which sits
 /// inside the window of the user mode of each space.
-const process_data_address: u64 = paging.user_window_base + 0x1000;
+var process_data_address: u64 = undefined;
 
 /// The virtual address of the stack of a demo process.
 ///
 /// One page is enough for the program of the demo, which calls the kernel
 /// without pushing anything of its own; the address stays inside the
 /// window of the user mode of the space, like the other pages.
-const process_stack_address: u64 = paging.user_window_base + 0x2000;
+var process_stack_address: u64 = undefined;
+
+/// Fills the addresses of the pages of a process from the placed window.
+///
+/// Runs right after the page tables of the kernel, which is where the
+/// paging module decides the final position of the window. The programs of
+/// the demo reach their page of data through an absolute address that the
+/// assembly takes from the kernel (`voryn_process_data_address`), so the
+/// assignment happens before any copy of a program into a page of code.
+fn prepareProcessWindow() void {
+    process_code_address = paging.user_window_base;
+    process_data_address = paging.user_window_base + 0x1000;
+    process_stack_address = paging.user_window_base + 0x2000;
+}
 
 /// The value that the first process writes in its page of data.
 const proc_a_signature: u64 = 0xA1A1_A1A1;
@@ -312,6 +330,7 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
 
     installMemoryManager();
     buildPageTables(boot);
+    prepareProcessWindow();
     activatePageTables();
     installHeap();
     // The task of the user mode is prepared after the tables are active:

@@ -126,16 +126,49 @@ var bounce_used: usize = 0;
 /// Whether the bounce pages were already prepared.
 var bounce_ready = false;
 
-/// The first virtual address that the tables of the kernel map by identity.
+/// The lowest physical address that the hierarchy of the kernel names.
 ///
-/// The image is mapped page by page from `kernel_base` up, and the window
-/// of the user mode sits below where any placement of the image can be: a
-/// frame under this address is therefore not named by any mapping of the
-/// kernel itself, which makes it a safe destination for a bounce page.
-const kernel_lowest_address: u64 = 0x20_0000;
+/// The image is mapped page by page from `kernel_base` up, so no entry of
+/// the kernel points below the place where the loader put it — but the
+/// kernel does not know that address until `setup` runs. The value stays
+/// null until then, and `isFrameUnmappedByKernel` answers conservatively:
+/// an unknown limit means that no frame can be called free of mappings.
+var kernel_lowest_address: ?u64 = null;
+
+/// Whether a frame is not named by any mapping of the kernel hierarchy.
+///
+/// A frame at or above the lowest mapped address of the image already has
+/// an identity mapping of its own, and adding a second one would give two
+/// virtual addresses to the same memory. Below the limit — and only once
+/// the limit is known — the frame is free for a new identity entry, which
+/// is what the bounce pages need.
+fn isFrameUnmappedByKernel(frame: u64) bool {
+    const limit = kernel_lowest_address orelse return false;
+    return frame < limit;
+}
 
 /// The first address of the window of the user mode of a process.
-pub const user_window_base: u64 = 0x40_0000;
+///
+/// The default places the window in the low megabytes, below any normal
+/// placement of the image; `setup` moves it above the image when the
+/// loader put the kernel lower than that, and reports through
+/// `windowFramesUsable` whether the frames of the window can still be
+/// reached without a switch of `CR3`.
+pub var user_window_base: u64 = 0x40_0000;
+
+/// Whether the frames of the window live below the mapping of the image.
+///
+/// When the placement of the image leaves no room for the window (the
+/// frame of a page of the user collides with an entry of the kernel), the
+/// views of `borrowPage` cannot guarantee collision free identity, and the
+/// feature of the processes stays off until the handoff of the boot places
+/// the image higher.
+var window_frames_ok = true;
+
+/// Reports whether the window of the user mode has usable frames.
+pub fn windowFramesUsable() bool {
+    return window_frames_ok;
+}
 
 /// The size of the window of the user mode of a process.
 pub const user_window_size: u64 = large_page_size;
@@ -229,37 +262,57 @@ fn mapPage(virtual: u64, physical: u64, flags: u64) Error!void {
 
 /// Maps a page by identity, in every address space that exists.
 ///
-/// The mapping is written in the level 1 table attached to the entry of
-/// the kernel of the root table of the space — the chain that `setup`
-/// builds for the image of the kernel — and the root table of every
-/// process carries a copy of that same entry, so a page mapped here is
-/// reachable from any space without a switch of `CR3`. The bounce pages
-/// of the window use it: a frame below the image is not named by any
-/// other mapping of the kernel, which keeps the identity collision free.
+/// The mapping goes through the generic path of `mapPage`, so it reaches
+/// whatever level 1 table covers the address — the table of the image for
+/// frames inside it, a fresh pair of tables for frames outside. The entry
+/// of the kernel of the root table points at the same hierarchy that the
+/// function writes, and the root table of every process carries a copy of
+/// that entry, so a page mapped here is reachable from any space without
+/// a switch of `CR3`.
+///
+/// Only frames that no mapping of the kernel already names are accepted:
+/// a second virtual address for one piece of memory would break the
+/// invariant that the isolation reasoning depends on. The caller uses
+/// `isFrameUnmappedByKernel` before asking for the mapping.
 ///
 /// A new process space created after this call inherits the mapping,
 /// because the entry of the kernel is copied at the moment of the
 /// creation and the chain below it is shared, not duplicated.
 pub fn mapKernelIdentityPage(frame: u64) Error!void {
-    if (frame >= kernel_lowest_address or frame % page_size != 0) return error.RangeTooLarge;
+    if (frame % page_size != 0) return error.RangeTooLarge;
+    if (!isFrameUnmappedByKernel(frame)) return error.RangeTooLarge;
 
-    // The chain of the kernel is the one that `setup` built: the first
-    // gigabyte of the address space, with a single pair of tables. Any
-    // other range would need a table that the kernel does not own.
-    const level2_index = (frame >> 21) & 511;
-    if (level2_index != 0) return error.RangeTooLarge;
+    // An entry that already exists means another mapping names the frame,
+    // or the same frame was mapped twice by mistake. Either way, stop.
+    const probe = resolveEntry(frame) orelse {
+        try mapPage(frame, frame, Flags.present | Flags.writable);
+        return;
+    };
+    if (probe & Flags.present != 0) return error.RangeTooLarge;
 
-    if (level4.entries[0] & Flags.present == 0) return error.RangeTooLarge;
-    if (level3.entries[0] & Flags.present == 0) return error.RangeTooLarge;
+    try mapPage(frame, frame, Flags.present | Flags.writable);
+}
 
-    const level2 = tableOf(level3.entries[0]);
-    if (level2.entries[0] & Flags.present == 0) return error.RangeTooLarge;
+/// Walks the hierarchy of the kernel and returns the entry that describes
+/// a virtual address, or null when a table of the chain does not exist.
+///
+/// A large page answers with its own entry: the bit of the large page
+/// tells the caller that the address is covered by a bigger mapping.
+fn resolveEntry(virtual: u64) ?u64 {
+    const level4_index = (virtual >> 39) & 511;
+    const level3_index = (virtual >> 30) & 511;
+    const level2_index = (virtual >> 21) & 511;
+    const level1_index = (virtual >> 12) & 511;
 
-    const level1 = tableOf(level2.entries[0]);
-    const level1_index = (frame >> 12) & 511;
-    if (level1.entries[level1_index] & Flags.present != 0) return error.RangeTooLarge;
-
-    level1.entries[level1_index] = frame | Flags.present | Flags.writable;
+    if (level4.entries[level4_index] & Flags.present == 0) return null;
+    const level3_table = tableOf(level4.entries[level4_index]);
+    if (level3_table.entries[level3_index] & Flags.present == 0) return null;
+    const level2_table = tableOf(level3_table.entries[level3_index]);
+    const level2_entry = level2_table.entries[level2_index];
+    if (level2_entry & Flags.present == 0) return null;
+    if (level2_entry & Flags.large != 0) return level2_entry;
+    const level1_table = tableOf(level2_entry);
+    return level1_table.entries[level1_index];
 }
 
 /// The attributes of the entries of the upper levels of the hierarchy.
@@ -314,6 +367,9 @@ pub fn setup(
     active_space = null;
     space_switches = 0;
     process_pages_mapped = 0;
+    bounce_ready = false;
+    bounce_used = 0;
+    kernel_lowest_address = kernel_base;
 
     // The kernel image, by identity, with small pages.
     const first_page = kernel_base / page_size;
@@ -331,6 +387,20 @@ pub fn setup(
     var page = first_page;
     while (page < last_page) : (page += 1) {
         level1.entries[page % 512] = (page * page_size) | Flags.present | Flags.writable;
+    }
+
+    // The window of the user mode lives between the end of the low memory
+    // that the loader may hand out and the first page of the image: the
+    // frames that the physical manager gives for a window therefore never
+    // collide with an entry of the kernel, which is what makes the view of
+    // `borrowPage` safe in any address space. When the placement of the
+    // image leaves no room for the window, the feature of the processes
+    // stays off and the boot continues without it — see `bouncePagesReady`.
+    if (user_window_base + user_window_size <= kernel_base) {
+        window_frames_ok = true;
+    } else {
+        window_frames_ok = false;
+        user_window_base = (kernel_base + large_page_size - 1) / large_page_size * large_page_size;
     }
 
     // The framebuffer, by identity, with large pages and without the cache.
