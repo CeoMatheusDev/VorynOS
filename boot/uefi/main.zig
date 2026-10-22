@@ -266,7 +266,6 @@ fn jumpToKernel(handoff_address: u64, entry: u64) noreturn {
         :
         : [handoff] "{rdi}" (handoff_address),
           [entry] "{rax}" (entry),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
     unreachable;
 }

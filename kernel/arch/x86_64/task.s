@@ -106,8 +106,22 @@ voryn_task_switch:
     movq 168(%rsp), %rax        /* the stack segment */
     movq %rax, 160(%rdi)
 
+    /* The state of the floating point unit and of the vector registers is
+     * not saved here. The entry point of the interruption and the entry
+     * point of the system call save it before the handler in Zig runs, and
+     * the handler uses the vector registers; a save in the switch would
+     * record the state that the handler had left behind, and not the state
+     * of the task that is leaving.
+     *
+     * The state of the first task is captured by voryn_capture_context, and
+     * the state of a task that is created is the initial state of the unit.
+     */
+
     /* The context of the task that is entering. */
     movq voryn_next_context(%rip), %rsi
+
+    /* The state of the unit of the task that is entering. */
+    fxrstor64 192(%rsi)
 
     /* The frame of the entering task is built on the stack of the kernel of
      * the task. The scheduler points the segment of task state at it, and
@@ -243,6 +257,11 @@ voryn_task_switch:
 .global voryn_capture_context
 .type voryn_capture_context, @function
 voryn_capture_context:
+    /* The register of the caller is saved first: it holds the address of
+     * the context, and the routine has to give it back with the value
+     * that the caller had. */
+    pushq %rdi
+
     movq %rax, 112(%rdi)        /* rax */
     movq %rcx, 104(%rdi)        /* rcx */
     movq %rdx, 96(%rdi)         /* rdx */
@@ -257,18 +276,35 @@ voryn_capture_context:
     movq %r13, 16(%rdi)         /* r13 */
     movq %r14, 8(%rdi)          /* r14 */
     movq %r15, 0(%rdi)          /* r15 */
-    leaq 8(%rsp), %rax          /* the stack pointer of the caller */
+    /* The stack pointer of the caller: the entry pushed the return address
+     * of the call and the register of the context, and the pointer that the
+     * caller had before the call is eight bytes above the two. */
+    leaq 16(%rsp), %rax         /* the stack pointer of the caller */
     movq %rax, 128(%rdi)        /* rsp */
     pushfq
     popq %rax
     movq %rax, 136(%rdi)        /* the flags */
-    movq (%rsp), %rax           /* the return address of the call */
+    movq 8(%rsp), %rax          /* the return address of the call */
     movq %rax, 144(%rdi)        /* the instruction to continue at */
+    /* The move of sixteen bits writes the low half of the register and
+     * keeps the high half, which still holds the address of return. The
+     * register is zeroed first, so that the field of the context holds the
+     * selector and nothing else: a selector with the high bits of an
+     * address is not a selector, and the interrupt return refuses it. */
+    xorl %eax, %eax
     movw %cs, %ax
     movq %rax, 152(%rdi)        /* the code segment */
+    xorl %eax, %eax
     movw %ss, %ax
     movq %rax, 160(%rdi)        /* the stack segment */
     movq $0, 120(%rdi)          /* the vector */
+
+    /* The state of the floating point unit and of the vector registers.
+     * The processor does not save it between the tasks in the long mode. */
+    fxsave64 192(%rdi)
+
+    /* The register of the caller goes back to the caller. */
+    popq %rdi
     ret
 .size voryn_capture_context, . - voryn_capture_context
 

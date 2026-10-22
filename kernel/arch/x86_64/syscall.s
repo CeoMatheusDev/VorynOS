@@ -122,6 +122,21 @@ voryn_syscall_instruction_entry:
 
     movq %rsp, %rdi                 /* the frame with the state of the user */
     movq $3, %rsi                   /* the privilege level of the caller */
+
+    /* The state of the floating point unit and of the vector registers
+     * belongs to the caller, and the handler in Zig uses the vector
+     * registers. The state is saved here, before the handler runs, and not
+     * in the switch of the context: the switch runs after the handler, and
+     * it would save the state that the handler had left behind.
+     *
+     * RAX is used to hold the address of the context; the value that the
+     * caller had is already saved in the frame, at the offset 112. */
+    movq voryn_current_context(%rip), %rax
+    testq %rax, %rax
+    jz .Lsyscall_skip_fp_save
+    fxsave64 192(%rax)
+.Lsyscall_skip_fp_save:
+
     call voryn_syscall_handler
 
     /* The task may have blocked, waiting for a message. The frame is

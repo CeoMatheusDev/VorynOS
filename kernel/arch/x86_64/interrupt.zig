@@ -117,22 +117,22 @@ pub fn vectorName(vector: u64) []const u8 {
         7 => "device not available",
         8 => "double fault",
         9 => "reserved",
-        10 => "reserved",
+        10 => "invalid TSS",
         11 => "segment not present",
-        12 => "general protection fault",
-        13 => "stack fault",
+        12 => "stack segment fault",
+        13 => "general protection fault",
         14 => "page fault",
         15 => "reserved",
         16 => "x87 floating point",
         17 => "alignment check",
-        18 => "invalid TSS",
-        19 => "segment not present",
+        18 => "machine check",
+        19 => "SIMD floating point",
         20 => "virtualization",
         21 => "control protection",
-        22 => "maskable interrupt",
-        23 => "hypervisor injection",
-        24 => "VMM communication",
-        25 => "security exception",
+        22 => "reserved",
+        23 => "reserved",
+        24 => "reserved",
+        25 => "reserved",
         26 => "reserved",
         27 => "reserved",
         28 => "hypervisor injection",
@@ -170,12 +170,21 @@ pub fn install() void {
     voryn_load_idt(&table_pointer);
 }
 
+/// The vector of the double fault.
+const double_fault_vector: usize = 8;
+
 /// Writes the gate of a vector.
+///
+/// The gate of the double fault uses the stack of the task segment: the
+/// double fault is the exception that happens when the stack of the kernel
+/// is already broken, and the stack of the task segment is the one that
+/// does not depend on it. The other gates use the stack of the kernel of
+/// the task, which is the stack that the exception interrupted.
 fn setGate(vector: usize, address: u64) void {
     table[vector] = .{
         .offset_low = @truncate(address),
         .selector = kernel_code_selector,
-        .ist = 0,
+        .ist = if (vector == double_fault_vector) 1 else 0,
         .type_attributes = gate_type,
         .offset_middle = @truncate(address >> 16),
         .offset_high = @truncate(address >> 32),

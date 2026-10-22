@@ -250,7 +250,6 @@ pub fn install(kernel_stack_top: u64) void {
     // far jump.
     voryn_gdt_load_data(selectors.kernel_data);
     voryn_gdt_load_code(selectors.kernel_code);
-
 }
 
 /// Loads the task state segment into the `TR` register.
@@ -285,7 +284,7 @@ extern fn voryn_gdt_load_code(code_selector: u16) callconv(.c) void;
 extern fn voryn_load_tss(selector: u16) callconv(.c) void;
 
 /// Loads the global descriptor table from the given structure.
-extern fn voryn_load_gdt(pointer: *const align(8) GdtPointer) callconv(.c) void;
+extern fn voryn_load_gdt(pointer: *align(8) const GdtPointer) callconv(.c) void;
 
 /// Stores the global descriptor table into the given structure.
 extern fn voryn_store_gdt(pointer: *align(8) GdtPointer) callconv(.c) void;

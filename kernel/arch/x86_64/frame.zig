@@ -17,7 +17,7 @@
 //! which saves it and restores it. The three parts read the **same**
 //! positions, and this module is where that contract is written.
 //!
-//! ## A forma do quadro
+//! ## The shape of the frame
 //!
 //! The processor pushes, when the exception happens, the error code (only
 //! on the exceptions that have one), the `RIP`, the `CS`, the flags, the
@@ -89,7 +89,7 @@ pub const ProcessorFrame = struct {
 ///
 /// The frame of the processor starts after the fifteen registers, the
 /// vector and the marker, and the `RIP` is the first of the five words of
-/// retorno do processador.
+/// the return of the processor.
 pub const rip_offset: usize = @sizeOf(Registers) + 8;
 
 /// The distance, in bytes, between the beginning of the frame of the

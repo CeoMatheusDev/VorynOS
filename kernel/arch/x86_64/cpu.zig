@@ -32,8 +32,7 @@ pub fn writeCr0(value: u64) void {
     asm volatile ("movq %[value], %%cr0"
         :
         : [value] "r" (value),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 /// Reads the `CR2` control register, which holds the address that caused a
@@ -64,8 +63,7 @@ pub fn writeCr3(value: u64) void {
     asm volatile ("movq %[value], %%cr3"
         :
         : [value] "r" (value),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 /// Reads the `CR4` control register.
@@ -82,8 +80,7 @@ pub fn writeCr4(value: u64) void {
     asm volatile ("movq %[value], %%cr4"
         :
         : [value] "r" (value),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 /// Invalidates the TLB entry that maps the given virtual address.
@@ -91,8 +88,7 @@ pub fn invlpg(address: u64) void {
     asm volatile ("invlpg (%[address])"
         :
         : [address] "r" (address),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 /// Executes the `CPUID` instruction.
@@ -109,8 +105,7 @@ pub fn cpuid(leaf: u32, subleaf: u32) [4]u32 {
           [edx] "={edx}" (edx),
         : [leaf] "{eax}" (leaf),
           [subleaf] "{ebx}" (subleaf),
-        : .{ .cc = true }
-    );
+        : .{ .cc = true });
 
     return .{ eax, ebx, ecx, edx };
 }
@@ -139,8 +134,7 @@ pub fn writeMsr(msr: u32, value: u64) void {
         : [low] "{eax}" (low),
           [high] "{edx}" (high),
           [msr] "{ecx}" (msr),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 /// Enables interrupts by setting the interrupt enable flag.
@@ -174,9 +168,16 @@ pub fn enableFloatingPoint() void {
     // The coprocessor is usable: the bit that reports it as unavailable is
     // cleared, and the bit that makes the processor check the state of the
     // task before every use is set.
+    //
+    // The bit of the alignment mask is cleared as well: with the bit set,
+    // an access that is not aligned raises the exception of the alignment
+    // check, and the user mode can ask for it with the flag of the flags.
+    // The kernel does not use that exception, and a stack frame that the
+    // compiler aligns is not worth an exception that moves the frame.
     var cr0 = readCr0();
     cr0 &= ~(@as(u64, 1) << 2);
     cr0 |= @as(u64, 1) << 1;
+    cr0 &= ~(@as(u64, 1) << 18);
     writeCr0(cr0);
 
     // The state of the unit is saved by the processor and the exceptions of
@@ -192,16 +193,14 @@ pub fn enableFloatingPoint() void {
     asm volatile ("fldcw %[control]"
         :
         : [control] "m" (control_word),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 
     // The control and the status words of the unit.
     status_word = 0x1F80;
     asm volatile ("ldmxcsr %[status]"
         :
         : [status] "m" (status_word),
-        : .{ .memory = true }
-    );
+        : .{ .memory = true });
 }
 
 /// Information about the processor, collected with `CPUID`.

@@ -55,6 +55,44 @@
     pushq %r15
 .endm
 
+/*
+ * Aligns the stack for the call of the handler.
+ *
+ * The convention of the system V of AMD64 asks for a stack pointer that is
+ * a multiple of sixteen before the call, and the handler of Zig assumes
+ * that it is the case.
+ *
+ * The processor does not leave the stack aligned when the interruption
+ * comes from the kernel itself: the processor pushes the frame of the
+ * return only when the privilege level changes, and the pushes of the stub
+ * change the parity of the stack pointer. The interruption that comes from
+ * the user mode leaves the stack aligned, and the padding is not pushed
+ * for it.
+ *
+ * The macro has to be paired with UNALIGN_STACK, and the register of the
+ * padding is the one that the convention of the call makes the callee
+ * save.
+ */
+.macro ALIGN_STACK
+    movq %rsp, %rax
+    testq $8, %rax
+    jz 901f
+    pushq $0                  /* the padding */
+    movq $1, %rbx
+    jmp 902f
+901:
+    movq $0, %rbx
+902:
+.endm
+
+/* Removes the padding that ALIGN_STACK pushed, if there was one. */
+.macro UNALIGN_STACK
+    testq %rbx, %rbx
+    jz 903f
+    addq $8, %rsp
+903:
+.endm
+
 /* Restores the registers saved by PUSH_REGISTERS. */
 .macro POP_REGISTERS
     popq %r15
@@ -93,7 +131,9 @@ voryn_exception_\number:
     movq $0, voryn_exception_error_code(%rip)
     movq $\number, %rdi
     movq %rsp, %rsi
+    ALIGN_STACK
     call voryn_exception_handler
+    UNALIGN_STACK
     POP_REGISTERS
     addq $16, %rsp
     iretq
@@ -136,7 +176,9 @@ voryn_exception_\number:
     movq %rax, 168(%rsp)
     movq $\number, %rdi
     movq %rsp, %rsi
+    ALIGN_STACK
     call voryn_exception_handler
+    UNALIGN_STACK
     POP_REGISTERS
     addq $16, %rsp
     iretq
@@ -155,9 +197,29 @@ voryn_interrupt_\number:
     pushq $0
     pushq $\number
     PUSH_REGISTERS
+    /* The state of the floating point unit and of the vector registers
+     * belongs to the task that is interrupted, and the processor does not
+     * save it in the long mode. The area is the one of the context of the
+     * task, and the context is the one that the scheduler points at.
+     *
+     * The save happens here, at the entry of the interruption, and not in
+     * the switch: the handler is written in Zig, and the code that it
+     * runs uses the vector registers, and therefore it would save the state
+     * that the interrupted task had left behind.
+     *
+     * The save comes after PUSH_REGISTERS because the instruction needs a
+     * register to hold the address of the context, and every register of
+     * the task is already saved in the frame at this point. */
+    movq voryn_current_context(%rip), %rax
+    testq %rax, %rax
+    jz .Lskip_fp_save_\number
+    fxsave64 192(%rax)
+.Lskip_fp_save_\number:
     movq $\number, %rdi
     movq %rsp, %rsi
+    ALIGN_STACK
     call voryn_interrupt_handler
+    UNALIGN_STACK
     /* The handler returns zero to resume the interrupted code, and a value
      * different from zero to switch to another task. The switch reads the
      * frame that is still on the stack, so it is entered with a jump and not
@@ -183,7 +245,9 @@ voryn_exception_unexpected:
     PUSH_REGISTERS
     movq $255, %rdi
     movq %rsp, %rsi
+    ALIGN_STACK
     call voryn_exception_handler
+    UNALIGN_STACK
     POP_REGISTERS
     addq $16, %rsp
     iretq
@@ -198,7 +262,7 @@ EXCEPTION_ENTRY 5
 EXCEPTION_ENTRY 6
 EXCEPTION_ENTRY 7
 EXCEPTION_ENTRY_WITH_ERROR 8
-EXCEPTION_ENTRY_WITH_ERROR 9
+EXCEPTION_ENTRY 9
 EXCEPTION_ENTRY_WITH_ERROR 10
 EXCEPTION_ENTRY_WITH_ERROR 11
 EXCEPTION_ENTRY_WITH_ERROR 12
@@ -206,11 +270,11 @@ EXCEPTION_ENTRY_WITH_ERROR 13
 EXCEPTION_ENTRY_WITH_ERROR 14
 EXCEPTION_ENTRY 15
 EXCEPTION_ENTRY 16
-EXCEPTION_ENTRY 17
+EXCEPTION_ENTRY_WITH_ERROR 17
 EXCEPTION_ENTRY 18
 EXCEPTION_ENTRY 19
 EXCEPTION_ENTRY 20
-EXCEPTION_ENTRY 21
+EXCEPTION_ENTRY_WITH_ERROR 21
 EXCEPTION_ENTRY 22
 EXCEPTION_ENTRY 23
 EXCEPTION_ENTRY 24

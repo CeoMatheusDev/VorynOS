@@ -102,7 +102,7 @@ pub fn fetch(
         const entry = base[count * stride ..][0..stride];
 
         output[count] = .{
-            .memory_type = @enumFromInt(std.mem.readInt(u32, entry[offset_type..][0..4], .little)),
+            .memory_type = @fromBackingInt(@intCast(std.mem.readInt(u32, entry[offset_type..][0..4], .little))),
             .physical_start = std.mem.readInt(u64, entry[offset_physical_start..][0..8], .little),
             .virtual_start = std.mem.readInt(u64, entry[offset_virtual_start..][0..8], .little),
             .page_count = std.mem.readInt(u64, entry[offset_number_of_pages..][0..8], .little),
