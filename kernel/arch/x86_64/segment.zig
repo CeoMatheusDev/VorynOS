@@ -88,6 +88,15 @@ const GdtPointer = packed struct {
     base: u64,
 };
 
+// The layout of the descriptor and of the pointer is part of the contract
+// with the processor: the check below makes sure that the layout does not
+// drift.
+comptime {
+    if (@sizeOf(Entry) != 8) @compileError("the descriptor of the table is not eight bytes wide");
+    if (@offsetOf(GdtPointer, "base") != 2) @compileError("the base of the table is not at the offset 2");
+    if (@bitSizeOf(GdtPointer) != 80) @compileError("the pointer of the table is not ten bytes wide");
+}
+
 /// The 64 bit task state segment.
 ///
 /// The layout is the one of the architecture in the long mode, and it is not

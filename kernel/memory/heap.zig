@@ -113,7 +113,7 @@ pub const Heap = struct {
     /// The returned memory is aligned to `alignment` and its first bytes are
     /// not initialised.
     pub fn alloc(self: *Heap, size: usize) ?[*]u8 {
-        const wanted = std.mem.alignForward(u64, size, alignment);
+        const wanted = alignedSize(size) orelse return null;
         if (wanted == 0) return null;
 
         var block = self.first;
@@ -231,7 +231,31 @@ pub const Heap = struct {
 /// The heap of the kernel.
 pub var heap: Heap = .{};
 
+/// Rounds the size up to the alignment of the heap.
+///
+/// A size near the end of the address space would wrap when it is rounded
+/// up, and the heap would hand out a block smaller than the one that was
+/// asked for. The function refuses the size instead.
+fn alignedSize(size: usize) ?usize {
+    if (size > std.math.maxInt(usize) - (alignment - 1)) return null;
+    return std.mem.alignForward(u64, size, alignment);
+}
+
 const testing = std.testing;
+
+test "the size of a block does not wrap when it is aligned" {
+    try testing.expectEqual(alignment, alignedSize(1).?);
+    try testing.expectEqual(alignment, alignedSize(alignment).?);
+
+    // A size that cannot be rounded up without crossing the end of the
+    // address space is refused, and not turned into a smaller block.
+    try testing.expect(alignedSize(std.math.maxInt(usize)) == null);
+    try testing.expect(alignedSize(std.math.maxInt(usize) - alignment + 2) == null);
+    try testing.expectEqual(
+        std.math.maxInt(usize) - alignment + 1,
+        alignedSize(std.math.maxInt(usize) - alignment + 1).?,
+    );
+}
 
 test "the heap hands out aligned memory and tracks its use" {
     var test_heap: Heap = .{};

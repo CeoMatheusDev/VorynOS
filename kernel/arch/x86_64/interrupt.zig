@@ -68,6 +68,21 @@ const IdtPointer = packed struct {
     base: u64,
 };
 
+// The layout of the gate and of the pointer is part of the contract with
+// the processor: the check below makes sure that the layout does not drift.
+comptime {
+    if (@sizeOf(Gate) != 16) @compileError("the gate of the table is not sixteen bytes wide");
+    if (@offsetOf(Gate, "offset_low") != 0) @compileError("the low part of the handler is not at the offset 0");
+    if (@offsetOf(Gate, "selector") != 2) @compileError("the selector is not at the offset 2");
+    if (@offsetOf(Gate, "ist") != 4) @compileError("the index of the stack is not at the offset 4");
+    if (@offsetOf(Gate, "type_attributes") != 5) @compileError("the attributes are not at the offset 5");
+    if (@offsetOf(Gate, "offset_middle") != 6) @compileError("the middle of the handler is not at the offset 6");
+    if (@offsetOf(Gate, "offset_high") != 8) @compileError("the high part of the handler is not at the offset 8");
+    if (@offsetOf(Gate, "reserved") != 12) @compileError("the reserved field is not at the offset 12");
+    if (@offsetOf(IdtPointer, "base") != 2) @compileError("the base of the table is not at the offset 2");
+    if (@bitSizeOf(IdtPointer) != 80) @compileError("the pointer of the table is not ten bytes wide");
+}
+
 /// Type of an interrupt gate: present, ring 0, interrupt gate.
 const gate_type: u8 = 0x8E;
 

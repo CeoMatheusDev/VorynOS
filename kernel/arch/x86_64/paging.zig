@@ -147,6 +147,8 @@ pub const Error = error{
     RangeTooLarge,
     /// The kernel does not have enough tables for the requested mapping.
     OutOfTables,
+    /// The address is not aligned to the size of a page.
+    UnalignedPage,
 };
 
 /// Maps a page of the kernel, with the same address in the physical and in
@@ -168,6 +170,13 @@ pub fn mapUserPage(virtual: u64, physical: u64) Error!void {
 /// allowed. The pages of the kernel do not have the bit, therefore they
 /// stay inaccessible from the user mode.
 fn mapPage(virtual: u64, physical: u64, flags: u64) Error!void {
+    // The entries of the table describe pages, and the low bits of the
+    // address are not part of the entry: an unaligned address would be
+    // silently rounded down, and the page that the caller asked for would
+    // not be the page that the tables describe.
+    if (virtual & (page_size - 1) != 0) return error.UnalignedPage;
+    if (physical & (page_size - 1) != 0) return error.UnalignedPage;
+
     const level4_index = (virtual >> 39) & 511;
     const level3_index = (virtual >> 30) & 511;
     const level2_index = (virtual >> 21) & 511;
@@ -304,9 +313,14 @@ fn mapKernelRange(virtual: u64, length: u64) Error!void {
 
         // The table of the first level covers the chunk of two megabytes
         // that holds the address, and the walk stops at the end of the
-        // chunk or at the end of the range.
+        // chunk or at the end of the range. The end of the chunk is
+        // computed with the check of the overflow: a range near the end of
+        // the address space would wrap, and the walk would stop before it
+        // starts.
         const chunk_start = (address >> 21) << 21;
-        const chunk_end = @min(end, chunk_start + large_page_size);
+        const chunk_limit = std.math.add(u64, chunk_start, large_page_size) catch
+            return error.RangeTooLarge;
+        const chunk_end = @min(end, chunk_limit);
 
         while (address < chunk_end) : (address += page_size) {
             const index = (address >> 12) & 511;
@@ -431,6 +445,9 @@ pub fn createAddressSpace(window: u64) ?*AddressSpace {
 /// level of privilege, and the table of the first level of the space is the
 /// one that receives the entry.
 pub fn mapUserPageIn(space: *AddressSpace, virtual: u64, physical: u64) Error!void {
+    if (virtual & (page_size - 1) != 0) return error.UnalignedPage;
+    if (physical & (page_size - 1) != 0) return error.UnalignedPage;
+
     const level2_index = (virtual >> 21) & 511;
     const level1_index = (virtual >> 12) & 511;
 
@@ -702,6 +719,30 @@ test "the mapping of the window refuses an address outside the window" {
         0x403000,
     ));
     try testing.expect(isUserRangeIn(space, window, page_size, true));
+}
+
+test "the mapping refuses an address that is not aligned to the page" {
+    try setup(0x200000, 0x300000, 0, 0);
+    process_spaces_used = 0;
+
+    const window: u64 = 0x200000 - 0x4000;
+    const space = createAddressSpace(window).?;
+
+    // An address with the low bits set would be rounded down, and the
+    // table would describe a page that the caller did not name.
+    try testing.expectError(error.UnalignedPage, mapUserPageIn(
+        space,
+        window + 1,
+        0x400000,
+    ));
+    try testing.expectError(error.UnalignedPage, mapUserPageIn(
+        space,
+        window,
+        0x400001,
+    ));
+    try testing.expectError(error.UnalignedPage, mapKernelPage(0x200001, 0x200000));
+    try testing.expectError(error.UnalignedPage, mapKernelPage(0x400000, 0x400001));
+    try testing.expect(!isUserRangeIn(space, window, page_size, true));
 }
 
 test "a large mapping that crosses a gigabyte is refused" {
