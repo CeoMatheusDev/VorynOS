@@ -7,7 +7,7 @@
 **An independent operating system built from scratch to provide direct hardware control, efficiency, and technological freedom.**
 
 [![Zig](https://img.shields.io/badge/Zig-0.17.0-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
-[![Release](https://img.shields.io/badge/release-v0.1.0--dev.1-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.1)
+[![Release](https://img.shields.io/badge/release-v0.1.0--dev.2-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2)
 [![License](https://img.shields.io/badge/license-GPL--3.0--only-22C55E)](LICENSE)
 [![Architecture](https://img.shields.io/badge/architecture-x86__64-64748B)](#architecture)
 [![Status](https://img.shields.io/badge/status-in%20development-EAB308)](#project-status)
@@ -17,7 +17,7 @@
 [**Building**](#building) ·
 [**Architecture**](#architecture) ·
 [**Documentation**](#documentation) ·
-[**Release Notes**](docs/releases/v0.1.0-dev.1.md)
+[**Release Notes**](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2)
 
 ![VorynOS Logo](Logos_VorynOS.png)
 
@@ -48,14 +48,14 @@ The project is currently in its early development stages and **does not yet cons
 
 ## Project Status
 
-> **Published version:** `v0.1.0-dev.1` — [Release Notes](docs/releases/v0.1.0-dev.1.md)  
+> **Published version:** `v0.1.0-dev.2` — [Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2)  
 > **Initial architecture:** `x86_64`  
 > **Primary language:** Zig 0.17.0  
 > **Boot firmware:** UEFI  
 > **License:** GPL-3.0-only  
 > **Last documentation revision:** October 22, 2026
 
-The published version represents the project's **consolidated initial milestone**. It incorporates all previously verified technical progress and establishes a coherent baseline for subsequent version numbering.
+The current development release focuses on **process fault recovery and kernel reliability**. User-mode exceptions now terminate the affected process without halting unaffected tasks; exception-frame handling, physical memory accounting, firmware memory-map safety, and heap alignment have been corrected. The release documents a three-process QEMU fault-recovery scenario and execution of **36 unit tests**. This remains an experimental pre-release, not a production-ready operating system.
 
 The reorganization of public milestones is documented in [VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md).
 
@@ -294,10 +294,10 @@ cd VorynOS
 To obtain the exact published milestone:
 
 ```bash
-git checkout v0.1.0-dev.1
+git checkout v0.1.0-dev.2
 ```
 
-**About release artifacts:** The `v0.1.0-dev.1` release distributes **source code only**.
+**About release artifacts:** The `v0.1.0-dev.2` release provides source distribution artifacts.
 
 No binaries are distributed with this release because the project does not yet maintain a sufficiently reproducible build pipeline to designate a binary artifact as official.
 
@@ -616,7 +616,7 @@ VorynOS maintains technical documentation alongside its source code.
 | [ADR-0009](docs/adr/ADR-0009-capability-model.md) | The capability fabric of the VNC |
 | [Boot Handoff](docs/specs/boot-handoff-spec.md) | Boot handoff contract specification |
 | [Syscall ABI](docs/specs/syscall-abi.md) | System call contract |
-| [v0.1.0-dev.1 Release Notes](docs/releases/v0.1.0-dev.1.md) | Official notes for the consolidated initial milestone |
+| [v0.1.0-dev.2 Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2) | Process fault recovery, kernel reliability fixes, and validation results |
 | [Roadmap](docs/roadmap/phase-status.md) | Milestone status and planning |
 | [Testing Strategy](docs/testing/testing-strategy.md) | Validation strategy |
 | [VVS-0001](docs/standards/VVS-0001.md) | Versioning policy |
