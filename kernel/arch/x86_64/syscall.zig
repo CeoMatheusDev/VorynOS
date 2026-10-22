@@ -178,6 +178,10 @@ pub const Privilege = struct {
     pub const user: u64 = 3;
 };
 
+/// The identifier of a process, used by the calls that work between two
+/// address spaces.
+pub const ProcessId = u32;
+
 /// The entry point of the call, provided by the assembly.
 extern var voryn_syscall_instruction_entry: u8;
 
@@ -255,8 +259,8 @@ pub fn verify() bool {
 /// of privilege of the caller, which tells the handler whether the call
 /// comes from the user mode or from the kernel.
 ///
-/// The result of the call is returned in the first register, e o valor
-/// negativo de um erro indica que a chamada falhou.
+/// The result of the call is returned in the first register, and a
+/// negative value is the failure code of the call.
 pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callconv(.c) void {
     const number = frame.rax;
 
@@ -300,21 +304,22 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
 
 /// The value of a call that failed.
 ///
-/// The value is a negative number, e o seu valor absoluto é o código do
-/// erro.
+/// The value is a negative number, and its absolute value is the error
+/// code.
 pub fn failure(code: u64) u64 {
     return -%code;
 }
 
 /// Writes a buffer of the user mode in the console.
 ///
-/// The buffer belongs to the user, and the kernel may not trust the
-/// address: the range is checked in the page tables before the read.
+/// The buffer belongs to the caller, and the kernel may not trust the
+/// address: the range is checked in the page tables of the space that is
+/// active before the read.
 fn write(buffer: u64, length: u64, descriptor: u64, privilege: u64) u64 {
     if (privilege != Privilege.user) return failure(Error.not_allowed);
     if (descriptor != Descriptor.console) return failure(Error.not_allowed);
     if (length == 0 or length > max_block_length) return failure(Error.invalid_length);
-    if (!paging.isUserRange(buffer, length, false)) return failure(Error.invalid_address);
+    if (!paging.isUserRangeIn(buffer, length, false)) return failure(Error.invalid_address);
 
     const bytes: [*]const u8 = @ptrFromInt(buffer);
     serial.write(bytes[0..@intCast(length)]);
@@ -324,14 +329,15 @@ fn write(buffer: u64, length: u64, descriptor: u64, privilege: u64) u64 {
 
 /// Copies a block of memory of the user mode.
 ///
-/// Both ranges are checked in the page tables before the copy, and the
-/// copy is made by the kernel, so that the user does not need a routine
-/// of its own for it.
+/// Both ranges are checked in the page tables of the space that is active
+/// before the copy, and the copy is made by the kernel, so that the user
+/// does not need a routine of its own for it. A copy between two processes
+/// goes through the frames of each space, see `copyBetweenProcesses`.
 fn memcpy(destination: u64, source: u64, length: u64, privilege: u64) u64 {
     if (privilege != Privilege.user) return failure(Error.not_allowed);
     if (length == 0 or length > max_block_length) return failure(Error.invalid_length);
-    if (!paging.isUserRange(source, length, false)) return failure(Error.invalid_address);
-    if (!paging.isUserRange(destination, length, true)) return failure(Error.invalid_address);
+    if (!paging.isUserRangeIn(source, length, false)) return failure(Error.invalid_address);
+    if (!paging.isUserRangeIn(destination, length, true)) return failure(Error.invalid_address);
 
     const from: [*]const u8 = @ptrFromInt(source);
     const to: [*]u8 = @ptrFromInt(destination);
@@ -351,3 +357,74 @@ fn exitTask(code: u64, privilege: u64) void {
     const scheduler = @import("../../task/scheduler.zig");
     scheduler.scheduler.terminateCurrent(code);
 }
+
+/// Copies a block of memory from one process to another one.
+///
+/// This is the mechanism behind the criterion of the copy between
+/// processes: the destination belongs to a different address space, so
+/// neither range can be reached through the window of the user mode of the
+/// caller. The kernel therefore validates every page of both ranges
+/// against the tables of its own space, and moves the bytes page by page
+/// through the bounce pages of the paging module: the entry of the window
+/// of each space temporarily points at a frame that the hierarchy of the
+/// kernel also maps by identity, which makes the memory of the process
+/// reachable without a switch of `CR3` and without ever giving a process
+/// access to the frame of another one.
+///
+/// The function runs with interrupts disabled inside a system call, or
+/// from the boot sequence before the timer starts; in both cases no
+/// process reaches the processor while an entry of a window points at a
+/// bounce page.
+pub fn copyBetweenProcesses(
+    source_space: *const paging.AddressSpace,
+    source_address: u64,
+    destination_space: *const paging.AddressSpace,
+    destination_address: u64,
+    length: u64,
+) Result!void {
+    if (length == 0 or length > max_block_length) return error.InvalidLength;
+    if (!paging.isUserRangeWith(source_space, source_address, length, false)) {
+        return error.InvalidAddress;
+    }
+    if (!paging.isUserRangeWith(destination_space, destination_address, length, true)) {
+        return error.InvalidAddress;
+    }
+
+    var offset: u64 = 0;
+    while (offset < length) {
+        const source_page = source_address + offset;
+        const destination_page = destination_address + offset;
+
+        // One page of each side, borrowed through a bounce page. The two
+        // views live until the end of this iteration, where both are
+        // released explicitly; an early return inside the body below is
+        // not possible, which is why the releases are not `defer`s.
+        var source_view = paging.borrowPage(source_space, source_page & ~@as(u64, 0xFFF)) orelse {
+            return error.InvalidAddress;
+        };
+        var destination_view = paging.borrowPage(destination_space, destination_page & ~@as(u64, 0xFFF)) orelse {
+            paging.releasePage(&source_view);
+            return error.InvalidAddress;
+        };
+
+        const source_offset = source_page % paging.page_size;
+        const destination_offset = destination_page % paging.page_size;
+        const chunk = @min(paging.page_size - source_offset, paging.page_size - destination_offset);
+        const count = @min(chunk, length - offset);
+
+        const from: [*]const u8 = @ptrFromInt(source_view.frame + source_offset);
+        const to: [*]u8 = @ptrFromInt(destination_view.frame + destination_offset);
+        @memcpy(to[0..@intCast(count)], from[0..@intCast(count)]);
+
+        paging.releasePage(&destination_view);
+        paging.releasePage(&source_view);
+
+        offset += count;
+    }
+}
+
+/// The errors of the copy between processes.
+pub const Result = error{
+    InvalidAddress,
+    InvalidLength,
+};

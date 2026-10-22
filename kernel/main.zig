@@ -71,6 +71,9 @@ const task_stack_size = 16 * 1024;
 /// Number of tasks of the kernel: the main task and two workers.
 const task_count = 3;
 
+/// Number of processes that the kernel runs in address spaces of their own.
+const process_count = 2;
+
 /// The stacks of the tasks of the kernel.
 ///
 /// The stacks live in the image of the kernel because the region has to
@@ -82,6 +85,9 @@ var task_stacks: [task_count][task_stack_size]u8 align(16) = undefined;
 /// The handlers of the calls and of the interrupts of the task run on it,
 /// and not on the stack of the user, which the user could rewrite.
 var user_task_stack: [task_stack_size]u8 align(16) = undefined;
+
+/// The stack of the kernel of each demo process.
+var process_kernel_stacks: [process_count][task_stack_size]u8 align(16) = undefined;
 
 /// The virtual address of the program of the task that runs in user mode.
 const user_code_address: u64 = 0x40_0000;
@@ -138,6 +144,89 @@ const user_copy_length: u64 = 8;
 
 /// The result that the kernel answers to the call of the probe.
 const user_result_value: u64 = syscall.ping_result;
+
+/// The virtual address of the page of code of a demo process.
+///
+/// Both processes start at the same virtual address: each one reaches it
+/// through its own private chain of page tables, and the two chains name
+/// different physical frames. This is exactly what makes the isolation
+/// verifiable — if the spaces shared a mapping, the second process would
+/// read the program of the first one and the signatures below would never
+/// both appear.
+const process_code_address: u64 = paging.user_window_base;
+
+/// The virtual address of the page of data of a demo process.
+///
+/// The programs of the demo write their signature in this page, which sits
+/// inside the window of the user mode of each space.
+const process_data_address: u64 = paging.user_window_base + 0x1000;
+
+/// The virtual address of the stack of a demo process.
+///
+/// One page is enough for the program of the demo, which calls the kernel
+/// without pushing anything of its own; the address stays inside the
+/// window of the user mode of the space, like the other pages.
+const process_stack_address: u64 = paging.user_window_base + 0x2000;
+
+/// The value that the first process writes in its page of data.
+const proc_a_signature: u64 = 0xA1A1_A1A1;
+
+/// The value that the second process writes in its page of data.
+const proc_b_signature: u64 = 0xB2B2_B2B2;
+
+/// The length of the program of a demo process, in bytes.
+///
+/// The two programs have the same length by construction, and the kernel
+/// refuses to build an image that breaks the assumption: the copy of the
+/// program uses this constant as its length, and the assembly of the
+/// programs pads itself to exactly this size.
+const demo_program_length: usize = 49;
+
+/// The programs of the demo processes, provided by `task.s`.
+///
+/// Each symbol marks the beginning of a program, and the matching `_end`
+/// symbol marks the byte after its last instruction. The addresses are
+/// taken with `@intFromPtr`, so only the symbols themselves are referenced.
+extern var voryn_demo_program_a: u8;
+extern var voryn_demo_program_a_end: u8;
+extern var voryn_demo_program_b: u8;
+extern var voryn_demo_program_b_end: u8;
+
+// Guards that the programs of the demo keep the length that the kernel
+// assumes when it copies them into the pages of the processes. The copy
+// uses `demo_program_length` as its length, and the assembly pads each
+// program to exactly this size. The addresses of external symbols only
+// exist at runtime, so the guard runs when the kernel boots: a program of
+// an unexpected length is reported on the console before any process is
+// created, and the automated boot test refuses a log that carries it.
+fn verifyDemoPrograms() void {
+    const a_length = @intFromPtr(&voryn_demo_program_a_end) -% @intFromPtr(&voryn_demo_program_a);
+    const b_length = @intFromPtr(&voryn_demo_program_b_end) -% @intFromPtr(&voryn_demo_program_b);
+
+    if (a_length != demo_program_length or b_length != demo_program_length) {
+        serial.printLine("[VNK] FATAL: the programs of the demo have an unexpected length: {d} {d}, expected {d}", .{
+            a_length,
+            b_length,
+            demo_program_length,
+        });
+        port.haltForever();
+    }
+}
+
+/// The address spaces of the two demo processes.
+///
+/// The spaces live in the static pool of the paging module, so the tasks
+/// can point at them for as long as the machine runs. The kernel keeps the
+/// only handles through which it reads the memory of a process while the
+/// other space is active — the borrow of a page goes through these tables.
+var process_spaces: [process_count]paging.AddressSpace = undefined;
+
+/// Whether the demo processes were installed.
+///
+/// The reporting and the copy run only when the installation succeeded; a
+/// kernel without enough memory stops before any of them, so the flag is
+/// a guard against a silent half state, not against a recovery path.
+var processes_installed = false;
 
 /// Whether the task of the user mode is scheduled.
 ///
@@ -229,6 +318,10 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // the program is copied through them, and the tables of the firmware
     // would place the copy in another physical page.
     installUserTask();
+    // The demo processes live in address spaces of their own, prepared the
+    // same way as the task of the user mode: pages from the physical
+    // manager, mapped through the private chain of each space.
+    installProcesses();
     // The system call of the user mode does not go through the interrupt
     // table: the instruction `syscall` reads the entry point and the
     // segments from the registers of model.
@@ -244,6 +337,7 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     }
     reportScheduler();
     reportUserTask();
+    reportProcesses();
 
     // Sentinel consumed by the automated boot test.
     serial.printLine("VORYN-KERNEL-READY", .{});
@@ -251,6 +345,11 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // The self test of the system call runs first, from the kernel itself:
     // it separates a broken gate from a broken transition of privilege.
     syscallSelfTest();
+
+    // The copy between the two processes runs after the sentinel: the
+    // destination belongs to another address space, and the walk through
+    // the frames of each one is what the boot test verifies.
+    processCopyDemo();
 
     // The self test of the exception handling runs at the very end, because
     // an exception stops the kernel.
@@ -544,6 +643,214 @@ fn installUserTask() void {
 fn reportOutOfMemory() noreturn {
     serial.printLine("[VNK] FATAL: out of memory", .{});
     port.haltForever();
+}
+
+/// Prepares the bounce pages of the paging module.
+///
+/// The frames come from the physical manager, below the address where the
+/// image of the kernel starts to be mapped by identity: a frame in that
+/// range is not named by any other mapping of the kernel, so the identity
+/// entry that the paging module adds for it cannot collide with anything,
+/// and every address space carries the entry of the kernel, which makes
+/// the page reachable without a switch of `CR3`.
+fn allocateBounceFrame(limit: u64) ?u64 {
+    return physical.manager.allocateBelow(limit);
+}
+
+/// Creates one demo process: an address space, three pages, and a task.
+///
+/// The program arrives in the page of code through the borrow of a bounce
+/// page, never through the window itself: at this point no space is
+/// active, and the contract of the window is that only its owner reaches
+/// it while the owner is scheduled. The data page and the stack are left
+/// empty — the program writes its signature into the page of data when it
+/// runs, which is what the reporting reads back later.
+fn installProcess(index: usize, program_start: u64, signature: u64) void {
+    const space = paging.createAddressSpace() catch |err| {
+        serial.printLine("[VNK] FATAL: the space of the process could not be created: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    process_spaces[index] = space;
+
+    const code_frame = physical.manager.allocate() orelse reportOutOfMemory();
+    const data_frame = physical.manager.allocate() orelse reportOutOfMemory();
+    const stack_frame = physical.manager.allocate() orelse reportOutOfMemory();
+
+    paging.mapUserPageIn(&space, process_code_address, code_frame) catch reportMappingFailure("the page of the program");
+    paging.mapUserPageIn(&space, process_data_address, data_frame) catch reportMappingFailure("the page of data");
+    paging.mapUserPageIn(&space, process_stack_address, stack_frame) catch reportMappingFailure("the stack");
+
+    // The program is copied into the page of code through a borrowed view
+    // over the frame: the kernel writes at the identity address of the
+    // bounce page, and the entry of the window goes back to the frame of
+    // the process when the view is released.
+    var view = paging.borrowPage(&space, process_code_address) orelse {
+        serial.printLine("[VNK] FATAL: the bounce pages are not ready", .{});
+        port.haltForever();
+    };
+    defer paging.releasePage(&view);
+
+    const destination: [*]u8 = @ptrFromInt(view.frame);
+    const source: [*]const u8 = @ptrFromInt(program_start);
+    @memcpy(destination[0..demo_program_length], source[0..demo_program_length]);
+
+    serial.printLine("[VNK] processes: space {d}: code=0x{x} data=0x{x} signature=0x{x}", .{
+        index,
+        process_code_address,
+        process_data_address,
+        signature,
+    });
+
+    _ = scheduler.scheduler.spawnProcess(
+        process_code_address,
+        process_stack_address,
+        handoff.page_size,
+        &process_kernel_stacks[index],
+        &process_spaces[index],
+    ) orelse reportOutOfMemory();
+}
+
+/// Stops the kernel when a page of a process cannot be mapped.
+fn reportMappingFailure(name: []const u8) noreturn {
+    serial.printLine("[VNK] FATAL: {s} of a process could not be mapped", .{name});
+    port.haltForever();
+}
+
+/// Creates the two demo processes, each one in an address space of its own.
+///
+/// The processes start at the same virtual address, in spaces whose private
+/// chains name different physical frames: everything that separates them
+/// is the table, not the code. The programs write their signature in the
+/// page of data and ask the kernel to end the task, so after a few ticks
+/// both signatures sit in the memory of the kernel's choosing and nowhere
+/// else.
+fn installProcesses() void {
+    if (process_count != 2) {
+        serial.printLine("[VNK] FATAL: the demo expects exactly two processes", .{});
+        port.haltForever();
+    }
+
+    // The contract between the assembly and the kernel is checked before
+    // any copy happens: a program of an unexpected length would be copied
+    // with the wrong number of bytes, and the process would run garbage.
+    verifyDemoPrograms();
+
+    // The bounce pages have to exist before any space is created: the copy
+    // of the program into the page of code goes through them, and a space
+    // made afterwards inherits the entry of the kernel that carries them.
+    paging.prepareBouncePages(allocateBounceFrame) catch |err| {
+        serial.printLine("[VNK] FATAL: the bounce pages could not be prepared: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    installProcess(0, @intFromPtr(&voryn_demo_program_a), proc_a_signature);
+    installProcess(1, @intFromPtr(&voryn_demo_program_b), proc_b_signature);
+
+    processes_installed = true;
+}
+
+/// Reads the page of data of a process through the tables of its space.
+///
+/// The value lives in the frame that the private chain of the space names
+/// for the virtual address of the page of data, reached through a borrowed
+/// bounce page: the read works whichever space the processor is running,
+/// and it can only ever see the memory of the process that owns the space.
+fn readProcessData(index: usize) ?u64 {
+    var view = paging.borrowPage(&process_spaces[index], process_data_address) orelse return null;
+    defer paging.releasePage(&view);
+
+    const word: *volatile u64 = @ptrFromInt(view.frame + (process_data_address % handoff.page_size));
+    return word.*;
+}
+
+/// Waits until both processes wrote their signature, and reports the proof.
+///
+/// Two things are verified here. The first one is that each process ran in
+/// its own space: the signature of each one appears in the frame that the
+/// tables of its own space name, and the frames are different — the same
+/// virtual address reaching two different pieces of memory is the
+/// isolation, seen from the side of the kernel. The second one is that no
+/// process saw the memory of the other: the signature of A never appears
+/// in the frame of B, and the other way around.
+fn reportProcesses() void {
+    if (!processes_installed) return;
+
+    var a_value: u64 = 0;
+    var b_value: u64 = 0;
+    var attempts: u64 = 0;
+    while (attempts < 50_000_000) : (attempts += 1) {
+        a_value = readProcessData(0) orelse 0;
+        b_value = readProcessData(1) orelse 0;
+        if (a_value == proc_a_signature and b_value == proc_b_signature) break;
+        cpu.halt();
+    }
+
+    if (a_value != proc_a_signature or b_value != proc_b_signature) {
+        serial.printLine("[VNK] processes: the signatures did not appear: a=0x{x} b=0x{x}", .{
+            a_value,
+            b_value,
+        });
+        return;
+    }
+
+    const a_frame = paging.frameOf(&process_spaces[0], process_data_address) orelse 0;
+    const b_frame = paging.frameOf(&process_spaces[1], process_data_address) orelse 0;
+
+    const statistics = paging.spaceStatistics();
+    serial.printLine("[VNK] processes: {d} spaces, {d} pages mapped, {d} switches", .{
+        statistics.spaces_created,
+        statistics.pages_mapped,
+        statistics.switches,
+    });
+    serial.printLine("[VNK] processes: same address 0x{x}, frames 0x{x} and 0x{x}", .{
+        process_data_address,
+        a_frame,
+        b_frame,
+    });
+
+    if (statistics.spaces_created < process_count or a_frame == 0 or b_frame == 0 or a_frame == b_frame) {
+        serial.printLine("[VNK] processes: the spaces do not isolate the pages", .{});
+        return;
+    }
+
+    serial.printLine("[VNK] processes: isolation proven, each space holds its own signature", .{});
+}
+
+/// Copies a block from the memory of one process into the memory of the
+/// other, through the kernel, and verifies the result.
+///
+/// The source belongs to the first space and the destination to the
+/// second: neither address is reachable through the tables of the other
+/// process, and the copy walks the private chain of each one, borrowing a
+/// bounce page per side. After the copy, the page of data of the second
+/// process holds the signature of the first one — the value crossed the
+/// boundary because the kernel moved it, and only because the kernel
+/// checked both ranges against the right tables.
+fn processCopyDemo() void {
+    if (!processes_installed) return;
+
+    syscall.copyBetweenProcesses(
+        &process_spaces[0],
+        process_data_address,
+        &process_spaces[1],
+        process_data_address,
+        8,
+    ) catch |err| {
+        serial.printLine("[VNK] processes: the copy between the spaces failed: {s}", .{@errorName(err)});
+        return;
+    };
+
+    const moved = readProcessData(1) orelse {
+        serial.printLine("[VNK] processes: the destination could not be read", .{});
+        return;
+    };
+
+    if (moved != proc_a_signature) {
+        serial.printLine("[VNK] processes: the copy moved 0x{x}, expected 0x{x}", .{ moved, proc_a_signature });
+        return;
+    }
+
+    serial.printLine("[VNK] processes: copy between spaces ok, 0x{x} moved to the other process", .{moved});
 }
 
 /// Programs the registers of model of the system call.

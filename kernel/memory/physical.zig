@@ -129,6 +129,34 @@ pub const Manager = struct {
         return null;
     }
 
+    /// Hands out a page below `limit`, or returns null when there is no
+    /// free page under the limit.
+    ///
+    /// The low allocations exist for the bounce pages of the paging module:
+    /// frames that the tables of the kernel map by identity without
+    /// colliding with the image, which sits above the megabyte that the
+    /// manager never hands out.
+    pub fn allocateBelow(self: *Manager, limit: u64) ?u64 {
+        if (limit > managed_address_space) return null;
+        const last_page: u32 = @intCast(limit / page_size);
+
+        var page = self.hint;
+        var attempts: u32 = 0;
+        while (attempts < last_page) : (attempts += 1) {
+            if (page >= last_page) page = minimum_address / page_size;
+            if (!self.isPageUsed(page)) {
+                self.setUsed(page, true);
+                self.statistics.used_pages += 1;
+                self.statistics.free_pages -= 1;
+                self.hint = page + 1;
+                return @as(u64, page) * page_size;
+            }
+            page += 1;
+        }
+
+        return null;
+    }
+
     /// Returns a page to the manager.
     pub fn free(self: *Manager, address: u64) void {
         if (address % page_size != 0) return;

@@ -17,6 +17,7 @@ const std = @import("std");
 const voryn = @import("voryn_shared");
 
 const context = @import("context.zig");
+const paging = @import("../arch/x86_64/paging.zig");
 const segment = @import("../arch/x86_64/segment.zig");
 
 /// The context of a task.
@@ -66,6 +67,16 @@ pub const Task = struct {
     exit_code: u64 = 0,
     /// The number of times the task was scheduled.
     schedules: u64 = 0,
+    /// The address space of the task, or null when the task belongs to the
+    /// kernel and runs with the hierarchy of the kernel itself.
+    ///
+    /// The scheduler switches the space together with the context: the
+    /// write in `CR3` happens on the way to the new task, while the
+    /// registers still belong to the old one, and it is safe because the
+    /// entry of the kernel is copied in every root table — the switch
+    /// never leaves the code, the stack or the tables of the kernel
+    /// unmapped.
+    space: ?*const paging.AddressSpace = null,
 };
 
 /// Maximum number of tasks that the kernel supports.
@@ -166,12 +177,35 @@ pub const Scheduler = struct {
     /// The task starts at `entry` with the stack of the user mode. The stack
     /// is described by its virtual address, because the task only knows the
     /// virtual address space.
+    ///
+    /// A null space means the hierarchy of the kernel itself, which is what
+    /// the first tasks of the user mode ran with: every page that they use
+    /// was mapped in the tables of the kernel.
     pub fn spawnUser(
         self: *Scheduler,
         entry: u64,
         user_stack_address: u64,
         user_stack_length: u64,
         kernel_stack: []u8,
+    ) ?*Task {
+        return self.spawnProcess(entry, user_stack_address, user_stack_length, kernel_stack, null);
+    }
+
+    /// Creates a task that runs in the third level of privilege, inside an
+    /// address space of its own.
+    ///
+    /// The pages of the task — the program, the data and the stack — are
+    /// addresses of the window of the user mode of `space`, and the
+    /// scheduler switches the space together with the context: when the
+    /// task reaches the processor, the window names the frames that belong
+    /// to it, and no other process can read them.
+    pub fn spawnProcess(
+        self: *Scheduler,
+        entry: u64,
+        user_stack_address: u64,
+        user_stack_length: u64,
+        kernel_stack: []u8,
+        space: ?*const paging.AddressSpace,
     ) ?*Task {
         if (user_stack_length < 1024) return null;
 
@@ -191,6 +225,7 @@ pub const Scheduler = struct {
         // kernel gave it, and not on the stack of the user.
         const kernel_top = (@intFromPtr(kernel_stack.ptr) + kernel_stack.len) & ~@as(u64, 0xF);
         task.kernel_rsp = kernel_top;
+        task.space = space;
         task.state = .ready;
 
         return task;
@@ -219,6 +254,15 @@ pub const Scheduler = struct {
         // kernel of the task, and not the stack of the user.
         segment.tss.rsp0 = next.kernel_rsp;
         voryn_kernel_stack_pointer = next.kernel_rsp;
+
+        // The address space travels with the context. The write in `CR3`
+        // happens here, while the handler still runs on the stack of the
+        // kernel: every space carries the entry of the kernel copied from
+        // the hierarchy of the kernel itself, so the code, the stack and
+        // the tables of the kernel stay mapped in both directions of the
+        // switch. The switch of the registers below happens through
+        // `voryn_task_switch`, after this point.
+        paging.useSpace(next.space);
 
         voryn_current_context = &current.context;
         voryn_next_context = &next.context;

@@ -246,6 +246,71 @@ voryn_user_program:
 .global voryn_user_program_end
 voryn_user_program_end:
 
+/*
+ * The programs of the two demo processes.
+ *
+ * Each program writes a known signature into the page of data that sits at
+ * the same virtual address in both processes — 0x401000, one page above the
+ * entry point — and then calls the system call that ends the task. The two
+ * programs are deliberately almost identical: what separates them is not
+ * the code but the address space, because each process reaches 0x401000
+ * through its own private chain of page tables, which names a different
+ * physical frame. If the spaces shared a mapping, only one of the two
+ * signatures would ever be seen by the kernel; seeing both, in the frames
+ * of their own spaces, is the proof of the isolation.
+ *
+ * After the call of exit the processor keeps running the task until the
+ * next interruption; the loop that branches to itself covers the case where
+ * the task is scheduled again before it is taken out of the list.
+ *
+ * The kernel copies exactly these bytes into the page of code of each
+ * process, so the length of each program is part of the contract with the
+ * kernel (see demo_program_length in main.zig). With the assembler used by
+ * the project the encoding is:
+ *
+ *   movabsq $signature, %rax    10 bytes
+ *   movabsq $0x401000, %rdi     10 bytes
+ *   movq %rax, (%rdi)            3 bytes
+ *   movq $4, %rax                5 bytes
+ *   movq $0, %rdi                5 bytes
+ *   syscall                      2 bytes
+ *   jmp .                        2 bytes
+ *   padding to 49 bytes         12 bytes (nop)
+ */
+
+.section .rodata
+.align 16
+
+.global voryn_demo_program_a
+.type voryn_demo_program_a, @function
+voryn_demo_program_a:
+    movabsq $0xA1A1A1A1, %rax
+    movabsq $0x401000, %rdi
+    movq %rax, (%rdi)
+    movq $4, %rax             /* the number of the system call of exit */
+    movq $0, %rdi             /* the code of exit */
+    syscall
+    jmp .                     /* the task should not come back */
+    .fill 49 - (. - voryn_demo_program_a), 1, 0x90
+.size voryn_demo_program_a, . - voryn_demo_program_a
+.global voryn_demo_program_a_end
+voryn_demo_program_a_end:
+
+.global voryn_demo_program_b
+.type voryn_demo_program_b, @function
+voryn_demo_program_b:
+    movabsq $0xB2B2B2B2, %rax
+    movabsq $0x401000, %rdi
+    movq %rax, (%rdi)
+    movq $4, %rax             /* the number of the system call of exit */
+    movq $0, %rdi             /* the code of exit */
+    syscall
+    jmp .                     /* the task should not come back */
+    .fill 49 - (. - voryn_demo_program_b), 1, 0x90
+.size voryn_demo_program_b, . - voryn_demo_program_b
+.global voryn_demo_program_b_end
+voryn_demo_program_b_end:
+
 /* The contexts of the tasks that are leaving and that are entering, and the
  * measurements of the switches. */
 .section .bss
