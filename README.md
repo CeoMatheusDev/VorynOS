@@ -2,371 +2,365 @@
 
 # VorynOS
 
-### Liberdade • Performance • Seu Controle
+### Freedom • Performance • Your Control
 
-**Um sistema operacional independente, desenvolvido do zero para oferecer controle direto sobre o hardware, eficiência e liberdade tecnológica.**
+**An independent operating system built from scratch to provide direct hardware control, efficiency, and technological freedom.**
 
 [![Zig](https://img.shields.io/badge/Zig-0.17.0-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
 [![Release](https://img.shields.io/badge/release-v0.1.0--dev.1-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.1)
 [![License](https://img.shields.io/badge/license-GPL--3.0--only-22C55E)](LICENSE)
-[![Architecture](https://img.shields.io/badge/architecture-x86__64-64748B)](#arquitetura)
-[![Status](https://img.shields.io/badge/status-em%20desenvolvimento-EAB308)](#estado-do-projeto)
+[![Architecture](https://img.shields.io/badge/architecture-x86__64-64748B)](#architecture)
+[![Status](https://img.shields.io/badge/status-in%20development-EAB308)](#project-status)
 
-[**Visão geral**](#visão-geral) ·
-[**Estado atual**](#estado-do-projeto) ·
-[**Compilação**](#compilação) ·
-[**Arquitetura**](#arquitetura) ·
-[**Documentação**](#documentação) ·
-[**Notas da versão**](docs/releases/v0.1.0-dev.1.md)
+[**Overview**](#overview) ·
+[**Current Status**](#project-status) ·
+[**Building**](#building) ·
+[**Architecture**](#architecture) ·
+[**Documentation**](#documentation) ·
+[**Release Notes**](docs/releases/v0.1.0-dev.1.md)
 
-![Logo do VorynOS](Logos_VorynOS.png)
+![VorynOS Logo](Logos_VorynOS.png)
 
 </div>
 
 ---
 
-## Visão geral
+## Overview
 
-O **VorynOS** é um projeto de sistema operacional independente, desenvolvido principalmente em **Zig**, utilizando **Assembly x86_64** para operações que exigem controle direto da arquitetura do processador.
+**VorynOS** is an independent operating system project developed primarily in **Zig**, using **x86_64 Assembly** for operations requiring direct control over the processor architecture.
 
-O projeto prioriza:
+The project prioritizes:
 
-- **Independência:** kernel, bootloader, contratos e mecanismos fundamentais desenvolvidos especificamente para o VorynOS.
-- **Performance:** controle explícito sobre memória, execução, interrupções e comunicação entre componentes.
-- **Eficiência:** redução de abstrações desnecessárias, dependências externas e sobrecarga operacional.
-- **Segurança:** arquitetura orientada ao isolamento e ao controle de acesso por capacidades, com implementação progressiva.
-- **Modularidade:** componentes com responsabilidades e interfaces documentadas.
-- **Transparência:** desenvolvimento aberto, documentação técnica e distinção entre funcionalidades existentes e planejadas.
+- **Independence:** A kernel, bootloader, contracts, and fundamental mechanisms developed specifically for VorynOS.
+- **Performance:** Explicit control over memory, execution, interrupts, and communication between components.
+- **Efficiency:** Reduced unnecessary abstractions, external dependencies, and operational overhead.
+- **Security:** An architecture designed around isolation and capability-based access control, with progressive implementation.
+- **Modularity:** Components with clearly defined responsibilities and documented interfaces.
+- **Transparency:** Open development, technical documentation, and a clear distinction between implemented and planned features.
 
-O VorynOS **não é uma distribuição Linux, um fork do Windows, uma variante de BSD ou uma interface construída sobre outro sistema operacional**.
+VorynOS **is not a Linux distribution, a Windows fork, a BSD variant, or an interface built on top of another operating system**.
 
-Seu bootloader e kernel são implementações próprias.
+Its bootloader and kernel are original implementations.
 
-O projeto encontra-se em desenvolvimento inicial e **ainda não constitui um sistema operacional completo para uso cotidiano**.
+The project is currently in its early development stages and **does not yet constitute a complete operating system suitable for everyday use**.
 
 ---
 
-## Estado do projeto
+## Project Status
 
-> **Versão publicada:** `v0.1.0-dev.1` — [notas da versão](docs/releases/v0.1.0-dev.1.md)  
-> **Arquitetura inicial:** `x86_64`  
-> **Linguagem principal:** Zig 0.17.0  
-> **Firmware de inicialização:** UEFI  
-> **Licença:** GPL-3.0-only  
-> **Última revisão documental:** 22/10/2026
+> **Published version:** `v0.1.0-dev.1` — [Release Notes](docs/releases/v0.1.0-dev.1.md)  
+> **Initial architecture:** `x86_64`  
+> **Primary language:** Zig 0.17.0  
+> **Boot firmware:** UEFI  
+> **License:** GPL-3.0-only  
+> **Last documentation revision:** October 22, 2026
 
-A versão publicada é o **marco inicial consolidado** do projeto: ela
-carrega todo o progresso técnico já verificado, e a partir dela a numeração
-das versões volta a ter sentido. A reorganização dos marcos públicos está
-registrada em
-[VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md).
+The published version represents the project's **consolidated initial milestone**. It incorporates all previously verified technical progress and establishes a coherent baseline for subsequent version numbering.
 
-O desenvolvimento está organizado em marcos incrementais, com critérios técnicos de aceitação e documentação das evidências de funcionamento.
+The reorganization of public milestones is documented in [VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md).
 
-### Progresso dos marcos
+Development is organized into incremental milestones, each with technical acceptance criteria and documented evidence of functionality.
 
-| Marco | Descrição | Estado |
+### Milestone Progress
+
+| Milestone | Description | Status |
 |:---:|---|:---:|
-| F0 | Fundação, toolchain, build e documentação | ✅ Concluído |
-| F1 | Bootloader UEFI e inicialização do kernel | ✅ Concluído |
-| F2 | Estruturas do processador, interrupções e memória | 🟢 Testado localmente |
-| F3 | Threads, scheduler, processos, syscalls e IPC | 🟡 Em desenvolvimento |
-| F4 | Armazenamento e sistemas de arquivos | 📋 Proposto |
-| F5 | Runtime, SDK e aplicações nativas | 📋 Proposto |
-| F6 | Subsistema gráfico e ambiente desktop | 📋 Proposto |
-| F7 | Drivers, rede, áudio e hardware físico | 📋 Proposto |
-| F8 | Compatibilidade com formatos e APIs externas | 📋 Proposto |
-| F9 | Infraestrutura de inteligência artificial | 📋 Proposto |
-| F10 | Instalação, segurança, recuperação e produção | 📋 Proposto |
+| F0 | Foundation, toolchain, build system, and documentation | ✅ Completed |
+| F1 | UEFI bootloader and kernel initialization | ✅ Completed |
+| F2 | Processor structures, interrupts, and memory | 🟢 Locally Tested |
+| F3 | Threads, scheduler, processes, syscalls, and IPC | 🟡 In Development |
+| F4 | Storage and file systems | 📋 Proposed |
+| F5 | Runtime, SDK, and native applications | 📋 Proposed |
+| F6 | Graphics subsystem and desktop environment | 📋 Proposed |
+| F7 | Drivers, networking, audio, and physical hardware | 📋 Proposed |
+| F8 | Compatibility with external formats and APIs | 📋 Proposed |
+| F9 | Artificial intelligence infrastructure | 📋 Proposed |
+| F10 | Installation, security, recovery, and production readiness | 📋 Proposed |
 
-**Importante:** os estados representam o conteúdo documentado e publicado na branch `main`. Funcionalidades desenvolvidas apenas localmente não são consideradas implementadas no repositório público.
+**Important:** These statuses reflect the documented content published on the `main` branch. Features developed only in local environments are not considered implemented in the public repository.
 
-Consulte o [roadmap técnico](docs/roadmap/phase-status.md) para conhecer os objetivos, critérios de aceitação, limitações e riscos de cada marco.
+See the [technical roadmap](docs/roadmap/phase-status.md) for each milestone's objectives, acceptance criteria, limitations, and risks.
 
 ---
 
-## Funcionalidades implementadas
+## Implemented Features
 
 ### VNB — Voryn Native Boot
 
-Bootloader UEFI independente, implementado em Zig para a arquitetura x86_64.
+An independent UEFI bootloader implemented in Zig for the x86_64 architecture.
 
-Responsabilidades implementadas:
+Implemented responsibilities:
 
-- Inicialização como aplicação UEFI.
-- Comunicação com os serviços do firmware.
-- Diagnóstico por console UEFI e porta serial.
-- Descoberta do framebuffer utilizando GOP.
-- Identificação do formato de pixels e das propriedades do framebuffer.
-- Obtenção e normalização do mapa de memória UEFI.
-- Leitura da imagem do kernel a partir do volume EFI.
-- Validação da estrutura ELF64.
-- Carregamento dos segmentos do kernel em memória.
-- Aplicação das realocações necessárias à imagem relocável.
-- Preparação do contrato de inicialização.
-- Encerramento dos serviços de boot por `ExitBootServices`.
-- Nova tentativa de encerramento quando o mapa de memória é alterado.
-- Transferência controlada da execução para o kernel.
+- Initialization as a UEFI application.
+- Communication with firmware services.
+- Diagnostics through the UEFI console and serial port.
+- Framebuffer discovery using GOP.
+- Identification of pixel formats and framebuffer properties.
+- Retrieval and normalization of the UEFI memory map.
+- Loading the kernel image from the EFI volume.
+- ELF64 structure validation.
+- Loading kernel segments into memory.
+- Applying the relocations required by the relocatable kernel image.
+- Preparing the boot handoff contract.
+- Terminating boot services through `ExitBootServices`.
+- Retrying boot service termination when the memory map changes.
+- Controlled transfer of execution to the kernel.
 
-**Implementação:** `boot/uefi/`
+**Implementation:** `boot/uefi/`
 
 ### VNK — Voryn Nucleus Kernel
 
-Kernel independente, implementado em Zig e Assembly.
+An independent kernel implemented in Zig and Assembly.
 
-O núcleo possui uma infraestrutura inicial funcional para gerenciamento do processador, memória e interrupções.
+The kernel provides an initial functional infrastructure for processor management, memory management, and interrupt handling.
 
-**Inicialização e arquitetura x86_64**
+**Initialization and x86_64 Architecture**
 
-- Ponto de entrada próprio.
-- Configuração da pilha inicial.
-- Validação do contrato recebido do bootloader.
-- Identificação de características do processador por CPUID.
-- Configuração da Global Descriptor Table (GDT).
-- Configuração da Task State Segment (TSS).
-- Configuração da Interrupt Descriptor Table (IDT).
-- Tratamento de exceções com diagnóstico dos registradores.
-- Configuração inicial das interrupções de hardware.
-- Remapeamento dos controladores 8259.
-- Programação do temporizador 8254 a 100 Hz.
-- Preparação do coprocessor, que o firmware deixa desabilitado.
+- Custom entry point.
+- Initial stack configuration.
+- Validation of the contract received from the bootloader.
+- Processor feature identification through CPUID.
+- Global Descriptor Table (GDT) configuration.
+- Task State Segment (TSS) configuration.
+- Interrupt Descriptor Table (IDT) configuration.
+- Exception handling with register diagnostics.
+- Initial hardware interrupt configuration.
+- Remapping of the 8259 interrupt controllers.
+- Programming the 8254 timer at 100 Hz.
+- Initialization of the coprocessor, which the firmware leaves disabled.
 
-**Execução de tarefas**
+**Task Execution**
 
-- Escalonador preemptivo acionado pelo temporizador.
-- Contexto de tarefa com o quadro completo do processador: os quinze
-  registradores de uso geral são preservados a cada troca.
-- Política circular, que não produz fome entre tarefas.
-- Tarefas do kernel em pilhas próprias, e pilha do núcleo separada da
-  pilha do código, para que o quadro do processador nunca fique em uma
-  página que o usuário mode possa reescrever.
-- Estrutura de tarefa preparada para o terceiro nível de privilégio.
-- Mapeamento de páginas de usuário nas tabelas de página próprias.
-- Chamada de sistema pela instrução `syscall`, com o tratador em Zig.
-- Contrato da chamada de sistema com oito chamadas, e conferência das
-  faixas do usuário nas tabelas de página do espaço do processo antes de o
-  núcleo tocar a memória do usuário.
-- Medição do custo da troca de contexto pelo contador de tempo.
+- Preemptive scheduler driven by timer interrupts.
+- Task context containing the complete processor register frame: all fifteen general-purpose registers are preserved during each context switch.
+- Round-robin scheduling policy designed to prevent task starvation.
+- Kernel tasks with dedicated stacks, and a kernel stack separated from the code stack, ensuring that the processor return frame is never stored on a page writable by user-mode code.
+- Task structure prepared for privilege level 3.
+- User-page mappings in dedicated page tables.
+- System calls through the `syscall` instruction, with a handler implemented in Zig.
+- System call contract with eight calls, including validation of user memory ranges against the calling process's page tables before the kernel accesses user memory.
+- Context-switch cost measurement using the processor's time counter.
 
-**Processos**
+**Processes**
 
-- Espaço de endereço próprio por processo, com as tabelas do núcleo
-  copiadas para dentro dele, e a janela do modo de usuário como única
-  região que o processo possui.
-- Troca do espaço de endereço junto com a troca do contexto da tarefa.
-- Isolamento entre processos: dois processos usam o mesmo endereço virtual
-  e não veem as mesmas páginas.
-- Janela do modo de usuário sem endereço fixo, escolhida fora da imagem do
-  núcleo e entregue à tarefa no momento de sua criação.
-- Cópia de um bloco de memória de um processo para outro, com a leitura da
-  origem e a escrita do destino feitas no espaço de cada um.
-- Canal de mensagens do VNX com a entrega entre dois processos, e a
-  latência da entrega medida no relógio do processador.
-- Chamada de sistema que **bloqueia** à espera de uma mensagem: a tarefa
-  que espera não é executada, o escalonador escolhe outra, e a mensagem
-  acorda a tarefa com o resultado no contexto salvo dela.
-**Gerenciamento de memória**
+- A dedicated address space for each process, with kernel page-table mappings copied into it and the user-mode window as the only region owned by the process.
+- Address-space switching alongside task context switching.
+- Process isolation: two processes can use the same virtual address without accessing the same physical pages.
+- A dynamically selected user-mode window positioned outside the kernel image and assigned to the task during creation.
+- Copying a memory block from one process to another, reading from the source address space and writing to the destination address space.
+- VNX message channels supporting message delivery between two processes, with delivery latency measured using the processor clock.
+- A **blocking** system call that waits for a message: the waiting task is not scheduled, the scheduler selects another task, and message arrival wakes the waiting task with the result stored in its saved context.
 
-- Gerenciador de memória física baseado em bitmap.
-- Controle inicial de páginas físicas.
-- Construção de tabelas de páginas próprias.
-- Substituição das tabelas de páginas por meio de CR3.
-- Mapeamento do kernel e do framebuffer, com a imagem do(kernel descrita
-  inteira, e não só os seus primeiros dois megabytes.
-- Heap com metadados de blocos.
-- Divisão e fusão de blocos de memória.
-- Verificação básica de corrupção do heap.
+**Memory Management**
 
-**Diagnóstico**
+- Bitmap-based physical memory manager.
+- Initial physical page tracking.
+- Construction of dedicated page tables.
+- Page-table switching through CR3.
+- Kernel and framebuffer mappings covering the entire described kernel image rather than only its first two megabytes.
+- Heap with block metadata.
+- Memory block splitting and coalescing.
+- Basic heap corruption detection.
 
-- Comunicação serial pela UART 16550.
-- Registro de eventos de inicialização.
-- Diagnóstico de exceções do processador.
-- Verificação de estruturas críticas durante o boot.
-- Teste de escrita no framebuffer.
+**Diagnostics**
 
-**Implementação:** `kernel/`
+- Serial communication through the UART 16550.
+- Boot event logging.
+- Processor exception diagnostics.
+- Validation of critical structures during boot.
+- Framebuffer write testing.
 
-### Contrato de inicialização
+**Implementation:** `kernel/`
 
-O VorynOS utiliza um contrato próprio para transferir informações entre o bootloader e o kernel.
+### Boot Handoff Contract
 
-Esse contrato permite comunicar:
+VorynOS uses a custom contract to transfer information between the bootloader and the kernel.
 
-- Informações do framebuffer.
-- Mapa de memória.
-- Informações necessárias à inicialização do núcleo.
-- Identificadores e dados de validação do contrato.
+This contract communicates:
 
-A estrutura possui versionamento e verificações de integridade estrutural.
+- Framebuffer information.
+- Memory map.
+- Information required for kernel initialization.
+- Contract identifiers and validation data.
 
-**Implementação:** `shared/handoff.zig`
+The structure includes versioning and structural integrity checks.
 
-**Especificação:** [Boot Handoff Specification](docs/specs/boot-handoff-spec.md)
+**Implementation:** `shared/handoff.zig`
 
-### Ferramenta de imagem de disco
+**Specification:** [Boot Handoff Specification](docs/specs/boot-handoff-spec.md)
 
-O projeto inclui um construtor próprio de imagem FAT16, implementado em Zig.
+### Disk Image Tool
 
-Essa ferramenta prepara o volume inicializável utilizado nos testes do sistema.
+The project includes a custom FAT16 image builder implemented in Zig.
 
-**Implementação:** `tools/fatimg.zig`
+This tool prepares the bootable volume used in system tests.
+
+**Implementation:** `tools/fatimg.zig`
 
 ---
 
-## Limitações atuais
+## Current Limitations
 
-O VorynOS está em estágio de desenvolvimento de infraestrutura.
+VorynOS is currently in the infrastructure development stage.
 
-As seguintes limitações são conhecidas e documentadas:
+The following limitations are known and documented:
 
-| Subsistema | Limitação |
+| Subsystem | Limitation |
 |---|---|
-| Memória física | Bitmap com cobertura de até 4 GiB |
-| Heap | Região fixa de 256 KiB |
-| Memória virtual | Imagem do núcleo e framebuffer mapeados, com a janela de cada processo |
-| Processos | Dois processos, e o limite de espaços de endereço é uma constante do módulo de paginação |
-| TSS | Estrutura do modo de 64 bits, com o layout verificado em tempo de compilação |
-| Exceções | Tratamento fatal, sem recuperação |
-| Syscalls | Oito chamadas, e a volta ao usuário é verificada |
-| IPC | A entrega e a espera entre dois processos são verificadas, e não há ordenação, nem entrega garantida, nem sincronização |
-| Espera | A espera não tem prazo, e uma tarefa espera por um canal e por um lado |
-| Capacidades | Não implementadas, e o processo tem acesso a todo o seu espaço |
-| Armazenamento | Sem sistema de arquivos operacional no kernel |
-| Drivers | Sem infraestrutura geral de drivers |
-| Interface gráfica | Não implementada |
-| Hardware físico | Sem validação documentada |
+| Physical memory | Bitmap covering up to 4 GiB |
+| Heap | Fixed 256 KiB region |
+| Virtual memory | Kernel image and framebuffer mappings, with a dedicated window for each process |
+| Processes | Two processes; the address-space limit is a constant defined in the paging module |
+| TSS | 64-bit mode structure with a layout verified at compile time |
+| Exceptions | Fatal handling without recovery |
+| Syscalls | Eight system calls, with verified return to user mode |
+| IPC | Message delivery and waiting between two processes are verified; ordering, guaranteed delivery, and synchronization are not provided |
+| Waiting | No timeout support; a task waits on one channel and one endpoint |
+| Capabilities | Not implemented; a process can access its entire address space |
+| Storage | No operational kernel file system |
+| Drivers | No general-purpose driver infrastructure |
+| Graphical interface | Not implemented |
+| Physical hardware | No documented validation |
 
-O processo de usuário executa no terceiro nível de privilégio, escreve na sua própria página de dados, chama o núcleo pela instrução `syscall` e recebe a resposta de volta no mesmo registrador. Cada processo tem um espaço de endereço próprio, e dois processos que usam o mesmo endereço virtual não veem as mesmas páginas. O canal de mensagens do VNX entrega uma mensagem de um processo para outro, e a resposta volta pelo mesmo canal. A cópia de memória entre os dois processos é uma cópia de verdade: o espaço de quem chamou não muda.
+User-mode processes execute at privilege level 3, write to their own data pages, invoke the kernel through the `syscall` instruction, and receive results in the same register.
 
-O que ainda não existe são as threads, a espera com prazo, o modelo de
-capacidades do VNC, e a validação em hardware físico.
+Each process has its own address space. Two processes using the same virtual address do not access the same physical pages.
 
-Esses recursos pertencem aos próximos incrementos de desenvolvimento.
+The VNX message channel delivers messages between processes, and responses return through the same channel.
+
+Interprocess memory copying performs an actual data copy: the calling process's address space remains unchanged.
+
+Features that do not yet exist include:
+
+- Threads.
+- Timed waiting.
+- The VNC capability model.
+- Physical hardware validation.
+
+These features belong to upcoming development increments.
 
 ---
 
-## Requisitos
+## Requirements
 
-### Ambiente de desenvolvimento
+### Development Environment
 
-| Componente | Requisito |
+| Component | Requirement |
 |---|---|
-| Sistema de referência | Fedora Linux 44 |
-| Arquitetura | x86_64 |
+| Reference operating system | Fedora Linux 44 |
+| Architecture | x86_64 |
 | Zig | 0.17.0 |
 | QEMU | 10.x |
 | Firmware | OVMF / edk2 |
 | Shell | Bash |
-| Utilitários | Coreutils |
+| Utilities | Coreutils |
 
-O projeto utiliza o sistema de compilação nativo do Zig.
+The project uses Zig's native build system.
 
-O ambiente principal de desenvolvimento é Linux, mas o kernel produzido é independente do sistema operacional utilizado para compilá-lo.
+The primary development environment is Linux, but the resulting kernel is independent of the operating system used to compile it.
 
-### Verificar a toolchain
+### Verify the Toolchain
 
 ```bash
 zig version
 qemu-system-x86_64 --version
 ```
 
-No ambiente Fedora de referência, os arquivos do OVMF são encontrados em:
+In the reference Fedora environment, OVMF files are located at:
 
 ```text
 /usr/share/edk2/ovmf/OVMF_CODE.fd
 /usr/share/edk2/ovmf/OVMF_VARS.fd
 ```
 
-Os scripts de execução utilizam o QEMU e o firmware OVMF para inicializar o sistema.
+The execution scripts use QEMU and OVMF firmware to boot the system.
 
 ---
 
-## Compilação
+## Building
 
-### 1. Obter o código-fonte
+### 1. Obtain the Source Code
 
 ```bash
 git clone https://github.com/CeoMatheusDev/VorynOS.git
 cd VorynOS
 ```
 
-Para obter exatamente o marco publicado:
+To obtain the exact published milestone:
 
 ```bash
 git checkout v0.1.0-dev.1
 ```
 
-**Sobre os artefatos:** o release `v0.1.0-dev.1` publica **apenas o código
-fonte**. Nenhum binário é distribuído junto dele, porque o projeto não
-mantém uma cadeia de construção reproduzível o bastante para que um
-artefato binário possa ser declarado oficial. A imagem de inicialização é
-construída localmente pelo próprio projeto, e é ela que o teste de boot
-verifica.
+**About release artifacts:** The `v0.1.0-dev.1` release distributes **source code only**.
 
-### 2. Compilar o projeto
+No binaries are distributed with this release because the project does not yet maintain a sufficiently reproducible build pipeline to designate a binary artifact as official.
+
+The boot image is built locally by the project itself and is used by the automated boot test.
+
+### 2. Build the Project
 
 ```bash
 zig build
 ```
 
-O processo constrói:
+The build process produces:
 
-- O bootloader UEFI.
-- O kernel ELF64.
-- A ferramenta de criação da imagem.
-- A imagem de inicialização.
+- The UEFI bootloader.
+- The ELF64 kernel.
+- The image-building tool.
+- The boot image.
 
-### 3. Executar os testes
+### 3. Run the Tests
 
 ```bash
 zig build test
 ```
 
-Executa os testes de unidade no ambiente host.
+Runs unit tests in the host environment.
 
 ```bash
 zig build qemu-test
 ```
 
-Executa o teste automatizado de inicialização utilizando QEMU e OVMF.
+Runs the automated boot test using QEMU and OVMF.
 
 ```bash
 zig build check
 ```
 
-Executa os testes de unidade e o teste automatizado de boot.
+Runs unit tests and the automated boot test.
 
-### 4. Inicializar o sistema
+### 4. Boot the System
 
 ```bash
 zig build qemu
 ```
 
-Inicializa o VorynOS no QEMU em modo interativo.
+Starts VorynOS interactively in QEMU.
 
-O console serial constitui o canal principal de diagnóstico.
+The serial console is the primary diagnostic channel.
 
-Para encerrar o QEMU no modo de terminal serial, utilize:
+To exit QEMU in serial terminal mode, use:
 
 ```text
 Ctrl+A, X
 ```
 
-### Comandos disponíveis
+### Available Commands
 
-| Comando | Finalidade |
+| Command | Purpose |
 |---|---|
-| `zig build` | Compilar os componentes e gerar a imagem |
-| `zig build image` | Construir a imagem de inicialização |
-| `zig build test` | Executar os testes de unidade |
-| `zig build qemu` | Inicializar o sistema interativamente |
-| `zig build qemu-test` | Executar o teste automatizado de boot |
-| `zig build check` | Executar a verificação integrada |
+| `zig build` | Compile components and generate the image |
+| `zig build image` | Build the boot image |
+| `zig build test` | Run unit tests |
+| `zig build qemu` | Boot the system interactively |
+| `zig build qemu-test` | Run the automated boot test |
+| `zig build check` | Run integrated verification |
 
-### Artefatos
+### Build Artifacts
 
-Após a compilação, os principais artefatos são:
+After compilation, the main artifacts are:
 
 ```text
 zig-out/
@@ -377,48 +371,48 @@ zig-out/
     └── vorynos.img
 ```
 
-| Artefato | Descrição |
+| Artifact | Description |
 |---|---|
-| `voryn-boot.efi` | Aplicação UEFI do Voryn Native Boot |
-| `voryn-kernel` | Kernel ELF64 relocável |
-| `voryn-fsimg` | Ferramenta de construção de imagem FAT16 |
-| `vorynos.img` | Imagem de volume EFI inicializável |
+| `voryn-boot.efi` | Voryn Native Boot UEFI application |
+| `voryn-kernel` | Relocatable ELF64 kernel |
+| `voryn-fsimg` | FAT16 image-building tool |
+| `vorynos.img` | Bootable EFI volume image |
 
 ---
 
-## Arquitetura
+## Architecture
 
-A arquitetura do projeto é organizada em torno do modelo denominado **Voryn Fabric**.
+The project's architecture is organized around a model called **Voryn Fabric**.
 
-Esse modelo define componentes com responsabilidades específicas e contratos explícitos de comunicação.
+This model defines components with specific responsibilities and explicit communication contracts.
 
-A arquitetura está documentada na decisão:
+The architecture is documented in:
 
 [ADR-0001 — Voryn Fabric](docs/adr/ADR-0001-voryn-fabric.md)
 
-### Componentes
+### Components
 
-| Sigla | Componente | Responsabilidade |
+| Acronym | Component | Responsibility |
 |:---:|---|---|
-| VNB | Voryn Native Boot | Inicialização UEFI e carregamento do kernel |
-| VNK | Voryn Nucleus Kernel | Mecanismos privilegiados do núcleo |
-| VNH | Voryn Hardware Nexus | Descoberta e interfaces de hardware |
-| VNM | Voryn Nexus Memory | Gerenciamento de memória |
-| VNT | Voryn Task Fabric | Tarefas, threads e escalonamento |
-| VNX | Voryn Exchange | Comunicação entre processos |
-| VNC | Voryn Capability Fabric | Controle de acesso por capacidades |
-| VND | Voryn Device Fabric | Infraestrutura de drivers |
-| VSN | Voryn Service Node | Serviços e supervisão |
+| VNB | Voryn Native Boot | UEFI initialization and kernel loading |
+| VNK | Voryn Nucleus Kernel | Privileged kernel mechanisms |
+| VNH | Voryn Hardware Nexus | Hardware discovery and interfaces |
+| VNM | Voryn Nexus Memory | Memory management |
+| VNT | Voryn Task Fabric | Tasks, threads, and scheduling |
+| VNX | Voryn Exchange | Interprocess communication |
+| VNC | Voryn Capability Fabric | Capability-based access control |
+| VND | Voryn Device Fabric | Driver infrastructure |
+| VSN | Voryn Service Node | Services and supervision |
 
-**Os nomes acima representam a arquitetura planejada. Nem todos os componentes possuem implementação funcional.**
+**The names above represent the planned architecture. Not all components have functional implementations.**
 
-Atualmente, as implementações publicadas concentram-se no VNB, no VNK, nas rotinas iniciais de memória e nos contratos compartilhados.
+Currently, published implementations focus on VNB, VNK, initial memory-management routines, and shared contracts.
 
-### Fluxo de inicialização
+### Boot Flow
 
 ```text
                  ┌─────────────────────┐
-                 │    Firmware UEFI    │
+                 │    UEFI Firmware    │
                  └──────────┬──────────┘
                             │
                             ▼
@@ -427,10 +421,10 @@ Atualmente, as implementações publicadas concentram-se no VNB, no VNK, nas rot
                  │ Voryn Native Boot   │
                  └──────────┬──────────┘
                             │
-                   Carregamento ELF64
-                   Mapa de memória
-                   Framebuffer GOP
-                   Contrato de handoff
+                     ELF64 Loading
+                     Memory Map
+                     GOP Framebuffer
+                     Handoff Contract
                             │
                             ▼
                  ┌─────────────────────┐
@@ -447,21 +441,21 @@ Atualmente, as implementações publicadas concentram-se no VNB, no VNK, nas rot
               │             │             │
               ▼             ▼             ▼
           ┌───────┐    ┌─────────┐    ┌────────┐
-          │GDT/TSS│    │   IDT   │    │ Memória│
+          │GDT/TSS│    │   IDT   │    │ Memory │
           └───────┘    └─────────┘    └────────┘
               │             │             │
               └─────────────┼─────────────┘
                             │
                             ▼
                  ┌─────────────────────┐
-                 │ Infraestrutura      │
-                 │ inicial do kernel   │
+                 │ Initial Kernel      │
+                 │ Infrastructure      │
                  └─────────────────────┘
 ```
 
-Esse fluxo representa a infraestrutura atualmente implementada, sem pressupor a existência de processos, serviços ou ambiente gráfico.
+This flow represents the currently implemented infrastructure without assuming the existence of additional services or a graphical environment.
 
-### Organização do código-fonte
+### Source Code Organization
 
 ```text
 VorynOS/
@@ -505,7 +499,7 @@ VorynOS/
 │   ├── standards/
 │   └── testing/
 │
-├── internal/            # documentos de desenvolvimento (não vão no pacote)
+├── internal/            # Development documents (excluded from source packages)
 ├── CONTRIBUTING.md
 ├── SECURITY.md
 ├── LICENSE
@@ -514,181 +508,174 @@ VorynOS/
 └── README.md
 ```
 
-A organização separa código dependente da arquitetura, contratos compartilhados, ferramentas do host e testes de integração.
+This organization separates architecture-dependent code, shared contracts, host tools, and integration tests.
 
 ---
 
-## Testes e validação
+## Testing and Validation
 
-O projeto utiliza diferentes níveis de verificação.
+The project uses multiple levels of verification.
 
-### Testes de unidade
+### Unit Tests
 
-Executados no ambiente host para validar componentes que não dependem diretamente da execução privilegiada.
+Unit tests run in the host environment to validate components that do not directly depend on privileged execution.
 
-Entre eles:
+These include:
 
-- Estruturas compartilhadas.
-- Validação de formatos.
-- Contratos de inicialização.
-- Gerenciadores de memória.
+- Shared structures.
+- Format validation.
+- Boot contracts.
+- Memory managers.
 
-### Testes de integração
+### Integration Tests
 
-A inicialização é testada em uma máquina virtual x86_64 com firmware OVMF.
+Boot execution is tested in an x86_64 virtual machine using OVMF firmware.
 
-O teste automatizado verifica **33 marcadores** de progresso emitidos pelo
-bootloader e pelo kernel, e identifica condições de falha durante a
-inicialização.
+The automated test checks **33 progress markers** emitted by the bootloader and kernel, identifying failure conditions during initialization.
 
-Os marcadores do núcleo verificam o **conteúdo** e não só a execução: o
-marcador da página de dados de cada processo é conferido, e os dois
-processos escrevem valores diferentes no mesmo endereço virtual, o que
-prova o isolamento; o conteúdo da cópia com faixas sobrepostas é conferido
-byte a byte; e o espaço de endereço de quem chamou a cópia entre processos
-é conferido depois da cópia, o que prova que a cópia é uma cópia e não um
-compartilhamento de página.
+Kernel markers verify **actual data content**, not merely execution progress.
 
-O console serial é o canal verificado, e a escrita nele é atômica: uma
-tarefa que escreve desliga as interrupções enquanto a mensagem é montada.
-Sem essa garantia, o console deixaria de ser uma evidência, porque
-relataria linhas que ninguém escreveu.
+Each process's data-page marker is checked, and both processes write different values to the same virtual address, demonstrating isolation.
 
-### Integração contínua
+Overlapping memory copies are verified byte by byte.
 
-O repositório possui um workflow de GitHub Actions:
+After an interprocess memory copy, the calling process's address space is checked to confirm that the operation performed a copy rather than shared-page mapping.
+
+The serial console is the verified diagnostic channel, and writes to it are atomic: a task disables interrupts while assembling its message.
+
+Without this guarantee, the console would no longer provide reliable evidence because it could report interleaved output that no task actually produced.
+
+### Continuous Integration
+
+The repository includes a GitHub Actions workflow:
 
 `.github/workflows/ci.yml`
 
-O workflow executa:
+The workflow performs:
 
-1. Preparação da toolchain Zig.
-2. Instalação das dependências de emulação.
-3. Testes de unidade.
-4. Compilação dos artefatos.
-5. Teste automatizado de boot.
-6. Inspeção dos binários gerados.
+1. Zig toolchain setup.
+2. Installation of emulation dependencies.
+3. Unit testing.
+4. Artifact compilation.
+5. Automated boot testing.
+6. Inspection of generated binaries.
 
-A existência do workflow não implica que todas as funcionalidades futuras estejam implementadas ou que o sistema tenha sido validado em hardware físico.
+The existence of this workflow does not imply that all planned features are implemented or that the system has been validated on physical hardware.
 
-### Evidências e critérios
+### Evidence and Acceptance Criteria
 
-A estratégia de testes está documentada em:
+The testing strategy is documented in:
 
 [Testing Strategy](docs/testing/testing-strategy.md)
 
-O estado de cada marco é registrado no:
+The status of each milestone is recorded in:
 
 [Roadmap](docs/roadmap/phase-status.md)
 
 ---
 
-## Próximos passos
+## Next Steps
 
-O objetivo arquitetural em curso é o **F3 — Execução**, e ele tem três
-partes: o modo de usuário, os processos, e a comunicação entre eles. As
-três estão implementadas e verificadas, e a comunicação entre processos
-tem a entrega de uma mensagem e a espera por ela.
+The current architectural objective is **F3 — Execution**, consisting of three major areas: user mode, processes, and interprocess communication.
 
-Os objetivos que faltam no marco são:
+All three have been implemented and verified. Interprocess communication supports message delivery and blocking reception.
 
-1. O modelo de **capacidades** do VNC, que decide o que um processo pode
-   alcançar, e que a pergunta aberta do ADR-0001 deixou em suspenso.
-2. A **espera com prazo**, e a espera por mais de um canal ao mesmo tempo.
-3. O **tratamento por tipo** das exceções, com um teste de recuperação, e
-   o **heap dinâmico** com o VNM.
-4. A medição do custo de troca de contexto sob **carga representativa**,
-   com mais tarefas e mais processos.
+The remaining objectives for this milestone are:
 
-A implementação desses recursos deverá respeitar os contratos arquiteturais e os critérios de validação definidos pelo projeto.
+1. The **VNC capability model**, which determines what resources a process may access and addresses the open architectural question recorded in ADR-0001.
+2. **Timed waiting** and waiting on multiple channels simultaneously.
+3. **Exception handling by type**, including a recovery test, and **dynamic heap management** through VNM.
+4. Measuring context-switch overhead under **representative workloads**, with more tasks and processes.
 
-**Nenhum desses objetivos deve ser interpretado como funcionalidade concluída enquanto não houver implementação e evidências correspondentes.**
+These implementations must respect the project's architectural contracts and established validation criteria.
+
+**None of these objectives should be considered complete until the corresponding implementation and supporting evidence are available.**
 
 ---
 
-## Documentação
+## Documentation
 
-O VorynOS mantém documentação técnica junto ao código-fonte.
+VorynOS maintains technical documentation alongside its source code.
 
-| Documento | Descrição |
+| Document | Description |
 |---|---|
-| [Architecture Overview](docs/architecture/overview.md) | Organização e contratos arquiteturais |
-| [ADR-0001](docs/adr/ADR-0001-voryn-fabric.md) | Modelo Voryn Fabric |
-| [ADR-0002](docs/adr/ADR-0002-boot-chain-and-uefi-abi.md) | Cadeia de inicialização e ABI UEFI |
-| [ADR-0003](docs/adr/ADR-0003-toolchain-and-build.md) | Toolchain e sistema de compilação |
-| [ADR-0004](docs/adr/ADR-0004-x86_64-abi-pitfalls.md) | Particularidades e problemas de ABI x86_64 |
-| [ADR-0005](docs/adr/ADR-0005-task-model-and-user-mode.md) | Modelo de tarefa e modo de usuário |
-| [ADR-0006](docs/adr/ADR-0006-address-spaces-and-processes.md) | Espaços de endereço por processo e o quadro do processador |
-| [ADR-0007](docs/adr/ADR-0007-blocking-receive.md) | A chamada que bloqueia à espera de uma mensagem |
-| [Boot Handoff](docs/specs/boot-handoff-spec.md) | Especificação do contrato de inicialização |
-| [Syscall ABI](docs/specs/syscall-abi.md) | Contrato da chamada de sistema |
-| [Notas da v0.1.0-dev.1](docs/releases/v0.1.0-dev.1.md) | Notas oficiais do marco inicial consolidado |
-| [Roadmap](docs/roadmap/phase-status.md) | Estado e planejamento dos marcos |
-| [Testing Strategy](docs/testing/testing-strategy.md) | Estratégia de validação |
-| [VVS-0001](docs/standards/VVS-0001.md) | Política de versionamento |
-| [VN-NAMES-0001](docs/standards/VN-NAMES-0001.md) | Convenções de nomenclatura |
+| [Architecture Overview](docs/architecture/overview.md) | Architectural organization and contracts |
+| [ADR-0001](docs/adr/ADR-0001-voryn-fabric.md) | Voryn Fabric model |
+| [ADR-0002](docs/adr/ADR-0002-boot-chain-and-uefi-abi.md) | Boot chain and UEFI ABI |
+| [ADR-0003](docs/adr/ADR-0003-toolchain-and-build.md) | Toolchain and build system |
+| [ADR-0004](docs/adr/ADR-0004-x86_64-abi-pitfalls.md) | x86_64 ABI details and pitfalls |
+| [ADR-0005](docs/adr/ADR-0005-task-model-and-user-mode.md) | Task model and user mode |
+| [ADR-0006](docs/adr/ADR-0006-address-spaces-and-processes.md) | Per-process address spaces and processor frames |
+| [ADR-0007](docs/adr/ADR-0007-blocking-receive.md) | Blocking message reception syscall |
+| [Boot Handoff](docs/specs/boot-handoff-spec.md) | Boot handoff contract specification |
+| [Syscall ABI](docs/specs/syscall-abi.md) | System call contract |
+| [v0.1.0-dev.1 Release Notes](docs/releases/v0.1.0-dev.1.md) | Official notes for the consolidated initial milestone |
+| [Roadmap](docs/roadmap/phase-status.md) | Milestone status and planning |
+| [Testing Strategy](docs/testing/testing-strategy.md) | Validation strategy |
+| [VVS-0001](docs/standards/VVS-0001.md) | Versioning policy |
+| [VN-NAMES-0001](docs/standards/VN-NAMES-0001.md) | Naming conventions |
 
-As decisões arquiteturais são registradas por meio de ADRs, incluindo suas justificativas, alternativas e consequências.
-
----
-
-## Desenvolvimento
-
-O VorynOS segue uma abordagem de engenharia incremental.
-
-As alterações devem priorizar:
-
-- Correção e previsibilidade.
-- Controle explícito de recursos.
-- Eficiência de memória.
-- Baixa sobrecarga de execução.
-- Interfaces e contratos documentados.
-- Testes reproduzíveis.
-- Organização consistente do código-fonte.
-- Ausência de dependências desnecessárias.
-
-### Política do repositório
-
-- Branch principal: `main`.
-- Commits descritivos em português brasileiro.
-- Alterações incrementais e verificáveis.
-- Documentação atualizada junto às implementações.
-- Publicação de alterações somente mediante autorização explícita do responsável pelo projeto.
+Architectural decisions are documented through ADRs, including their rationale, alternatives, and consequences.
 
 ---
 
-## Contribuição
+## Development
 
-Contribuições são bem-vindas.
+VorynOS follows an incremental engineering approach.
 
-Antes de propor alterações, consulte:
+Changes should prioritize:
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) — orientações para contribuições.
-- [SECURITY.md](SECURITY.md) — diretrizes para comunicação de vulnerabilidades.
+- Correctness and predictability.
+- Explicit resource management.
+- Memory efficiency.
+- Low execution overhead.
+- Documented interfaces and contracts.
+- Reproducible testing.
+- Consistent source code organization.
+- Avoidance of unnecessary dependencies.
 
-Contribuições devem respeitar a arquitetura existente, os contratos documentados e os critérios de qualidade definidos pelo projeto.
+### Repository Policy
+
+- Main branch: `main`.
+- Descriptive commit messages in Brazilian Portuguese.
+- Incremental and verifiable changes.
+- Documentation updated alongside implementations.
+- Changes published only with explicit authorization from the project maintainer.
 
 ---
 
-## Segurança
+## Contributing
 
-O VorynOS ainda está em desenvolvimento inicial.
+Contributions are welcome.
 
-Mecanismos avançados de isolamento, controle de capacidades, proteção entre processos e recuperação de falhas permanecem em planejamento.
+Before proposing changes, please review:
 
-**Não utilize o sistema como ambiente de produção ou para processamento de informações sensíveis.**
+- [CONTRIBUTING.md](CONTRIBUTING.md) — Contribution guidelines.
+- [SECURITY.md](SECURITY.md) — Vulnerability reporting guidelines.
 
-Para comunicar vulnerabilidades, consulte [SECURITY.md](SECURITY.md).
+Contributions must respect the existing architecture, documented contracts, and established quality criteria.
 
 ---
 
-## Licença
+## Security
 
-O VorynOS é disponibilizado sob a licença **GNU General Public License, versão 3, exclusivamente (GPL-3.0-only)**.
+VorynOS is still in its early development stages.
 
-Consulte o arquivo [LICENSE](LICENSE) para conhecer os termos completos.
+Advanced isolation mechanisms, capability-based access control, interprocess protection, and fault recovery remain under development or are planned for future milestones.
 
-As contribuições estão sujeitas às condições estabelecidas em [CONTRIBUTING.md](CONTRIBUTING.md).
+**Do not use this system in production environments or to process sensitive information.**
+
+To report vulnerabilities, please refer to [SECURITY.md](SECURITY.md).
+
+---
+
+## License
+
+VorynOS is distributed under the **GNU General Public License, version 3 only (GPL-3.0-only)**.
+
+See the [LICENSE](LICENSE) file for the complete terms.
+
+Contributions are subject to the conditions established in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -696,13 +683,13 @@ As contribuições estão sujeitas às condições estabelecidas em [CONTRIBUTIN
 
 ### VorynOS
 
-**Liberdade • Performance • Seu Controle**
+**Freedom • Performance • Your Control**
 
-*Construindo um sistema operacional independente, um componente de cada vez.*
+*Building an independent operating system, one component at a time.*
 
-[Repositório](https://github.com/CeoMatheusDev/VorynOS) ·
-[Documentação](docs/) ·
-[Contribuir](CONTRIBUTING.md) ·
-[Licença](LICENSE)
+[Repository](https://github.com/CeoMatheusDev/VorynOS) ·
+[Documentation](docs/) ·
+[Contribute](CONTRIBUTING.md) ·
+[License](LICENSE)
 
 </div>
