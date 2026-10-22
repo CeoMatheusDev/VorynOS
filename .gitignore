@@ -19,3 +19,6 @@ serial.log
 
 # Arquivos de trabalho do emulador, usados no diagnóstico.
 .qemu-run/
+
+# Release archives generated locally
+dist/
