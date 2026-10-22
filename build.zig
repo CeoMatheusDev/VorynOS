@@ -199,6 +199,11 @@ pub fn build(b: *std.Build) void {
     const qemu_test = b.addSystemCommand(&.{ "bash", "tests/integration/boot-qemu.sh" });
     qemu_test.addPrefixedFileArg("--image=", image_path);
     qemu_test.has_side_effects = true;
+    // The command reads the image, and the dependency on the step that
+    // groups the two commands does not order them: without the edge below
+    // the build system may run the test against the image of the previous
+    // build.
+    qemu_test.step.dependOn(&image_step.step);
     qemu_test_step.dependOn(&image_step.step);
     qemu_test_step.dependOn(&qemu_test.step);
 
@@ -206,6 +211,7 @@ pub fn build(b: *std.Build) void {
     const qemu_run = b.addSystemCommand(&.{ "bash", "scripts/qemu-run.sh" });
     qemu_run.addPrefixedFileArg("--image=", image_path);
     qemu_run.has_side_effects = true;
+    qemu_run.step.dependOn(&image_step.step);
     qemu_run_step.dependOn(&image_step.step);
     qemu_run_step.dependOn(&qemu_run.step);
 
