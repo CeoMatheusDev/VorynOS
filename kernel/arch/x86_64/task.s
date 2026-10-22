@@ -173,6 +173,19 @@ voryn_task_switch:
     movq %rax, voryn_switch_minimum(%rip)
 1:
 
+    /* The address space of the entering task. A process runs in a space of
+     * its own, and the switch of the space happens together with the switch
+     * of the context. The value is zero when the space does not change.
+     *
+     * The change happens after the frame is built, because the frame lives
+     * in the image of the kernel, and the image is mapped in every space. */
+    movq voryn_next_cr3(%rip), %rax
+    testq %rax, %rax
+    jz 2f
+    movq %rax, %cr3
+    movq $0, voryn_next_cr3(%rip)
+2:
+
     /* The registers of the entering task, in the order of the pops.
      *
      * The frame holds the registers from the lowest address to the highest
@@ -254,8 +267,8 @@ voryn_capture_context:
  * A program that runs in the third level of privilege.
  *
  * The program writes a known value into the page of data that the kernel
- * prepared for it, calls the four calls of the kernel, writes the results
- * in the same page and ends the task.
+ * prepared for it, calls the calls of the kernel, writes the results in the
+ * same page and ends the task.
  *
  * The values prove four different things:
  *
@@ -273,6 +286,13 @@ voryn_capture_context:
  * the task in the register RBX when the task starts. The program therefore
  * reaches every address through that register.
  *
+ * The same program serves the two processes of the kernel. The role of the
+ * process arrives in the first register of the entry point: the process of
+ * role zero starts the conversation on the channel, and the process of role
+ * one answers it. The marker of the page of data carries the role, and two
+ * processes that write different markers in the same virtual address prove
+ * that their pages are not the same pages.
+ *
  * The page of data of the user:
  *
  *   0x00  the marker
@@ -286,12 +306,21 @@ voryn_capture_context:
  *   0x40  the block of the copy with the overlapping ranges
  *   0x44  the destination of the copy with the overlapping ranges
  *   0x50  the result of the copy with the overlapping ranges
+ *   0x58  the result of the copy to the other process
+ *   0x60  the block that the copy to the other process wrote
  */
 .global voryn_user_program
 .type voryn_user_program, @function
 voryn_user_program:
-    /* The marker of the page of data. */
-    movabsq $0x5A5A1234, %rax
+    /* The role of the process. The register is callee saved, therefore the
+     * role survives the calls of the system. */
+    movq %rcx, %r12
+
+    /* The marker of the page of data. The marker carries the role, and two
+     * processes that write different markers in the same address prove
+     * that the pages of the two processes are not the same pages. */
+    movq %r12, %rax
+    addq $0x5A5A1234, %rax
     leaq 0x1000(%rbx), %rdi
     movq %rax, (%rdi)
 
@@ -365,18 +394,56 @@ voryn_user_program:
     leaq 0x1050(%rbx), %rdi
     movq %rax, (%rdi)
 
-    /* The message for the channel: the type of the message is one and
-     * the value is the marker of the page of data. */
+    /* The role decides who starts the conversation. */
+    testq %r12, %r12
+    jz 5f
+
+    /* The process that answers. It waits for the message of the other
+     * process, and the call that takes a message does not block: the call
+     * is repeated until the queue has a message. */
+6:  movq $0, %rdi             /* the channel */
+    movq $1, %rsi             /* the side of the process that started */
+    movq $6, %rax             /* the number of the system call */
+    syscall
+    testq %rax, %rax
+    js 6b                     /* negative: the queue is empty */
+
+    /* The answer is the value of the message with the bytes inverted, and
+     * it waits in the queue of the side of the process that started. */
+    movq %rdx, %rax
+    notq %rax
     movq $0, %rdi             /* the channel */
-    movq $1, %rsi             /* the type of the message */
-    movq $0x5A5A1234, %rdx    /* the value of the message */
+    movq $0, %rsi             /* the side of the process that answers */
+    movq $2, %rdx             /* the type of the answer */
+    movq %rax, %r8            /* the value of the answer */
     movq $5, %rax             /* the number of the system call */
     syscall
 
-    /* The answer of the kernel may not have arrived yet, and the call
-     * that takes a message does not block: the call is repeated until
+    /* The call that ends the task. The kernel marks the task as
+     * terminated, and the processor only leaves it in the next
+     * interruption. */
+    movq $0, %rdi             /* the code of exit */
+    movq $4, %rax             /* the number of the system call */
+    syscall
+7:  jmp 7b
+
+    /* The process that starts the conversation. */
+5:
+    /* The message for the channel: the arguments are the channel, the side
+     * of the process that answers, the type of the message and the value
+     * of the message. */
+    movq $0, %rdi             /* the channel */
+    movq $1, %rsi             /* the side of the process that answers */
+    movq $1, %rdx             /* the type of the message */
+    movq $0x5A5A1234, %r8     /* the value of the message */
+    movq $5, %rax             /* the number of the system call */
+    syscall
+
+    /* The answer of the other process may not have arrived yet, and the
+     * call that takes a message does not block: the call is repeated until
      * the queue has a message. */
 2:  movq $0, %rdi             /* the channel */
+    movq $0, %rsi             /* the side of the process that answers */
     movq $6, %rax             /* the number of the system call */
     syscall
     testq %rax, %rax
@@ -387,16 +454,25 @@ voryn_user_program:
     leaq 0x1038(%rbx), %rdi
     movq %rdx, (%rdi)
 
-    /* The call that ends the task. The kernel marks the task as
-     * terminated, and the processor only leaves it in the next
-     * interruption. */
+    /* The copy to the other process. The arguments are the identifier of
+     * the process of the destination, the address of the destination in
+     * the space of that process, the address of the origin in the space of
+     * the caller, and the length of the block. The two spaces do not name
+     * the same pages, therefore the kernel copies the block through the
+     * tables of the two spaces. */
+    movq $1, %rdi             /* the process of the destination */
+    leaq 0x1060(%rbx), %rsi   /* the destination */
+    leaq 0x1000(%rbx), %rdx   /* the origin, the marker of the process */
+    movq $8, %r8              /* the length */
+    movq $7, %rax             /* the number of the system call */
+    syscall
+    leaq 0x1058(%rbx), %rdi
+    movq %rax, (%rdi)
+
+    /* The call that ends the task. */
     movq $0, %rdi             /* the code of exit */
     movq $4, %rax             /* the number of the system call */
     syscall
-
-    /* The task should not come back. The instruction that halts the
-     * processor and the pause instruction are privileged, the loop only
-     * branches to itself. */
 1:  jmp 1b
 .size voryn_user_program, . - voryn_user_program
 .global voryn_user_program_end
@@ -411,6 +487,9 @@ voryn_current_context:
     .quad 0
 .global voryn_next_context
 voryn_next_context:
+    .quad 0
+.global voryn_next_cr3
+voryn_next_cr3:
     .quad 0
 .global voryn_switch_timestamp
 voryn_switch_timestamp:

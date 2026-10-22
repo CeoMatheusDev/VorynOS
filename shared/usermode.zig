@@ -67,6 +67,13 @@ pub const data_overlap_destination: u64 = 0x44;
 /// The offset of the result of the copy with the overlapping ranges.
 pub const data_overlap_result: u64 = 0x50;
 
+/// The offset of the result of the copy to the other process.
+pub const data_copy_result: u64 = 0x58;
+
+/// The offset of the block that the copy to the other process writes in the
+/// space of the other process.
+pub const data_copy_target: u64 = 0x60;
+
 /// The block that the program of the user mode writes for the copy with the
 /// overlapping ranges.
 pub const overlap_pattern: u64 = 0x1122_3344_5566_7788;

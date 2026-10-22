@@ -41,6 +41,13 @@ pub fn build(b: *std.Build) void {
         .target = boot_target,
         .optimize = optimize,
         .single_threaded = true,
+        // The trace of the errors is a feature of the development, and it
+        // reads a register that the caller of a function that does not
+        // return an error does not set. The bootloader and the kernel do
+        // not have a runtime that can report a trace, and the mechanism
+        // itself is able to raise a fault in the middle of a message of
+        // the console.
+        .error_tracing = false,
     });
     boot_module.addImport("voryn_shared", shared);
     const boot_executable = b.addExecutable(.{
@@ -63,6 +70,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .single_threaded = true,
         .pic = true,
+        // The trace of the errors is a feature of the development, and it
+        // reads a register that the caller of a function that does not
+        // return an error does not set. The kernel does not have a runtime
+        // that can report a trace, and the mechanism itself is able to
+        // raise a fault in the middle of a message of the console.
+        .error_tracing = false,
     });
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/entry.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/segment.s"));

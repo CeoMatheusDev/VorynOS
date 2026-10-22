@@ -137,9 +137,26 @@ pub const Number = struct {
     /// The call that ends the task of the user mode.
     pub const exit: u64 = 4;
     /// The call that puts a message in a channel.
+    ///
+    /// The arguments are the identifier of the channel, the side of the
+    /// channel that receives the message, the type of the message and the
+    /// value of the message. The value travels in the eighth register,
+    /// because the instruction of the call replaces the fourth register
+    /// with the address of return.
     pub const send: u64 = 5;
     /// The call that takes a message from a channel.
     pub const receive: u64 = 6;
+    /// The call that copies a block of memory from the process of the caller
+    /// into the space of another process.
+    ///
+    /// The arguments are the identifier of the target process, the address of
+    /// the destination in the space of the target, the address of the origin
+    /// in the space of the caller, and the length of the block.
+    ///
+    /// The length travels in the eighth register and not in the fourth one,
+    /// because the instruction of the call replaces the fourth register with
+    /// the address of return.
+    pub const copy_to: u64 = 7;
 };
 
 /// The result that the kernel answers to the call of the probe.
@@ -164,6 +181,8 @@ pub const Error = struct {
     pub const unknown_channel: u64 = 6;
     /// The queue of the channel is full.
     pub const full_queue: u64 = 7;
+    /// The process does not exist.
+    pub const unknown_process: u64 = 8;
 };
 
 /// The largest block that a call copies in one go.
@@ -343,20 +362,30 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
             frame.rax = 0;
         },
         Number.send => {
-            frame.rax = send(frame.rdi, frame.rsi, frame.rdx, privilege);
-            serial.printLine("[VNK] syscall {d} from {s} sent 0x{x} of the type {d}", .{
+            frame.rax = send(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} sent 0x{x} of the type {d} to the side {d}", .{
                 number,
                 caller,
                 frame.rax,
+                frame.rdx,
                 frame.rsi,
             });
         },
         Number.receive => {
-            frame.rax = receive(frame, frame.rdi, privilege);
+            frame.rax = receive(frame, frame.rdi, frame.rsi, privilege);
             serial.printLine("[VNK] syscall {d} from {s} received 0x{x}", .{
                 number,
                 caller,
                 frame.rax,
+            });
+        },
+        Number.copy_to => {
+            frame.rax = copyTo(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} copied 0x{x} bytes to the process {d}", .{
+                number,
+                caller,
+                frame.rax,
+                frame.rdi,
             });
         },
         else => {
@@ -435,16 +464,14 @@ fn memcpy(destination: u64, source: u64, length: u64, privilege: u64) u64 {
 /// The arguments are the identifier of the channel, the type of the
 /// message and the value of the message. The result is zero, and the
 /// negative value of an error means that the message was not sent.
-fn send(channel_id: u64, kind: u64, value: u64, privilege: u64) u64 {
+fn send(channel_id: u64, side: u64, kind: u64, value: u64, privilege: u64) u64 {
     if (privilege != Privilege.user) return failure(Error.not_allowed);
 
     const channel = channel_module.get(channel_id) orelse
         return failure(Error.unknown_channel);
 
-    // The message waits in the queue of the other side, and the queue of
-    // the user mode is the one that the user receives from.
     const message = channel_module.Message{ .kind = kind, .value = value };
-    const sent = channel.sendTo(channel_module.Side.kernel, message);
+    const sent = channel.sendTo(side, message);
     if (!sent) {
         return failure(Error.full_queue);
     }
@@ -458,13 +485,13 @@ fn send(channel_id: u64, kind: u64, value: u64, privilege: u64) u64 {
 /// of the message, and the second result, in the register RDX, is the
 /// value of the message. An empty queue answers with the error of the
 /// empty queue.
-fn receive(frame: *SyscallFrame, channel_id: u64, privilege: u64) u64 {
+fn receive(frame: *SyscallFrame, channel_id: u64, side: u64, privilege: u64) u64 {
     if (privilege != Privilege.user) return failure(Error.not_allowed);
 
     const channel = channel_module.get(channel_id) orelse
         return failure(Error.unknown_channel);
 
-    const message = channel.receiveFrom(channel_module.Side.user) orelse
+    const message = channel.receiveFrom(side) orelse
         return failure(Error.empty_queue);
 
     frame.rdx = message.value;
@@ -482,3 +509,56 @@ fn exitTask(code: u64, privilege: u64) void {
     const scheduler = @import("../../task/scheduler.zig");
     scheduler.scheduler.terminateCurrent(code);
 }
+
+/// Copies a block of memory from the space of the caller into the space of
+/// another process.
+///
+/// The two spaces do not name the same physical pages, therefore the kernel
+/// cannot copy the block with a single move: it reads the origin with the
+/// space of the caller active, holds the block in a buffer of the kernel,
+/// and writes the destination with the space of the target active.
+///
+/// The buffer lives in the image of the kernel, and the image is mapped in
+/// every space, therefore the buffer is reachable in both directions of the
+/// switch.
+///
+/// The two ranges are checked in the tables of their own space before the
+/// copy, and the space of the caller is restored at the end, whatever the
+/// result of the copy is.
+fn copyTo(process: u64, destination: u64, source: u64, length: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+    if (length == 0 or length > max_block_length) return failure(Error.invalid_length);
+
+    const target = paging.spaceById(process) orelse return failure(Error.unknown_process);
+
+    // The origin belongs to the space of the caller, and the destination
+    // belongs to the space of the target.
+    const caller = paging.activeSpace() orelse return failure(Error.not_allowed);
+    if (!paging.isUserRangeIn(caller, source, length, false)) return failure(Error.invalid_address);
+    if (!paging.isUserRangeIn(target, destination, length, true)) return failure(Error.invalid_address);
+
+    const saved = cpu.readCr3();
+    const saved_space = paging.activeSpace();
+
+    // The origin is read with the space of the caller active.
+    const origin: [*]const u8 = @ptrFromInt(source);
+    @memcpy(copy_buffer[0..@intCast(length)], origin[0..@intCast(length)]);
+
+    // The destination is written with the space of the target active.
+    paging.activateSpace(target);
+    const target_address: [*]u8 = @ptrFromInt(destination);
+    @memcpy(target_address[0..@intCast(length)], copy_buffer[0..@intCast(length)]);
+
+    // The space of the caller is restored, whatever happened above.
+    cpu.writeCr3(saved);
+    paging.setActiveSpace(saved_space);
+
+    return length;
+}
+
+/// The buffer that holds the block of a copy between two processes.
+///
+/// The buffer lives in the image of the kernel, and the image is mapped in
+/// every space of every process, therefore it is reachable with the space of
+/// the caller and with the space of the target active.
+var copy_buffer: [max_block_length]u8 align(16) = undefined;

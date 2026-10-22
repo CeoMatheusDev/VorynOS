@@ -103,6 +103,18 @@ var user_task_stack: [task_stack_size]u8 align(16) = undefined;
 /// the first register when the task starts.
 var user_window_base: u64 = 0;
 
+/// The number of processes that the kernel creates.
+const process_count = 2;
+
+/// The address space of the process of the usuário mode.
+var user_space: ?*paging.AddressSpace = null;
+
+/// The address space of the segundo processo.
+var second_space: ?*paging.AddressSpace = null;
+
+/// The stack of the kernel do segundo processo.
+var second_task_stack: [task_stack_size]u8 align(16) = undefined;
+
 /// The virtual address of the program of the task that runs in user mode.
 fn userCodeAddress() u64 {
     return user_window_base + usermode.code_offset;
@@ -205,11 +217,27 @@ fn userOverlapDestinationAddress() u64 {
 /// the overlapping ranges.
 const user_overlap_pattern: u64 = usermode.overlap_pattern;
 
+/// The address of the twelfth word of the page of data of the user mode.
+///
+/// The program of the user mode writes there the result of the copy to the
+/// other process.
+fn userCopyResultAddress() u64 {
+    return userDataAddress() + usermode.data_copy_result;
+}
+
+/// The address of the thirteenth word of the page of data of the user mode.
+///
+/// The copy to the other process writes there the block that it copied.
+fn userCopyTargetAddress() u64 {
+    return userDataAddress() + usermode.data_copy_target;
+}
+
 /// The bytes of the block that the program of the user mode writes.
 ///
 /// The block is compared byte by byte, because the destination of the copy
 /// is four bytes above the origin.
 const pattern_bytes: [8]u8 = @bitCast(user_overlap_pattern);
+
 
 /// The value that the kernel answers to the message of the user mode.
 ///
@@ -597,7 +625,38 @@ fn installTimer() void {
 /// The task has a program, a page of data and a stack of its own, all in
 /// pages that the kernel maps with the bit that allows the access from the
 /// user mode. The pages of the kernel are not accessible from there.
+///
+/// The task is a process: it has an address space of its own, and the
+/// window of the user mode lives in that space and in no other. The page of
+/// the program is therefore not mapped in the space of the kernel, and the
+/// kernel activates the space of the process to copy the program into it.
 fn installUserTask() void {
+    for (0..process_count) |role| {
+        const space = installProcess(role) orelse {
+            serial.printLine("[VNK] FATAL: the process {d} could not be created", .{role});
+            port.haltForever();
+        };
+
+        if (role == 0) {
+            user_space = space;
+        } else {
+            second_space = space;
+        }
+    }
+}
+
+/// Creates a process and returns its address space.
+///
+/// The process has an address space of its own, a program, a page of data
+/// and a stack. The pages of the user mode live in the space of the process
+/// and in no other, and two processes that use the same virtual addresses
+/// therefore never see the same pages.
+///
+/// The role of the process tells the program what it has to do: the process
+/// of role zero starts the conversation on the channel, and the process of
+/// role one answers it.
+fn installProcess(role: u64) ?*paging.AddressSpace {
+    _ = role;
     // The window of the user mode is placed right below the image of the
     // kernel. The image is mapped by identity, and a window inside the
     // image would replace the pages of the kernel with the pages of the
@@ -609,41 +668,53 @@ fn installUserTask() void {
     }
     user_window_base = window;
 
-    const code_page = physical.manager.allocate() orelse return reportOutOfMemory();
-    const data_page = physical.manager.allocate() orelse return reportOutOfMemory();
-    const user_stack_low = physical.manager.allocate() orelse return reportOutOfMemory();
-    const user_stack_high = physical.manager.allocate() orelse return reportOutOfMemory();
+    const space = paging.createAddressSpace(window) orelse return null;
+
+    const code_page = physical.manager.allocate() orelse return null;
+    const data_page = physical.manager.allocate() orelse return null;
+    const user_stack_low = physical.manager.allocate() orelse return null;
+    const user_stack_high = physical.manager.allocate() orelse return null;
     // The pages of the user mode. The pages are mapped before the program is
     // copied, because the tables are already the active ones.
-    paging.mapUserPage(userCodeAddress(), code_page) catch |err| {
+    paging.mapUserPageIn(space, userCodeAddress(), code_page) catch |err| {
         serial.printLine("[VNK] FATAL: the page of the program could not be mapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
-    paging.mapUserPage(userDataAddress(), data_page) catch |err| {
+    paging.mapUserPageIn(space, userDataAddress(), data_page) catch |err| {
         serial.printLine("[VNK] FATAL: the page of data could not be mapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
-    paging.mapUserPage(userStackAddress(), user_stack_low) catch |err| {
+    paging.mapUserPageIn(space, userStackAddress(), user_stack_low) catch |err| {
         serial.printLine("[VNK] FATAL: the stack could not be mapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
-    paging.mapUserPage(userStackAddress() + handoff.page_size, user_stack_high) catch |err| {
+    paging.mapUserPageIn(space, userStackAddress() + handoff.page_size, user_stack_high) catch |err| {
         serial.printLine("[VNK] FATAL: the stack could not be mapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
 
-    // The program is copied into the page that the user mode sees.
+    // The program is copied into the page that the user mode sees, and the
+    // copy runs with the space of the process active, because the page of
+    // the program is not mapped in the space of the kernel.
     const program_start = @intFromPtr(&voryn_user_program);
     const program_end = @intFromPtr(&voryn_user_program_end);
     const program_length = program_end - program_start;
+
+    const saved_cr3 = cpu.readCr3();
+    paging.activateSpace(space);
     const destination: [*]u8 = @ptrFromInt(userCodeAddress());
     @memcpy(destination[0..program_length], @as([*]const u8, @ptrFromInt(program_start))[0..program_length]);
+    cpu.writeCr3(saved_cr3);
+    paging.setActiveSpace(null);
 
-    serial.printLine("[VNK] user: program at 0x{x}, data at 0x{x}, stack at 0x{x}", .{
+    serial.printLine("[VNK] user: process {d}, program at 0x{x}, data at 0x{x}, stack at 0x{x}", .{
+        space.id,
         userCodeAddress(),
         userDataAddress(),
         userStackAddress(),
     });
+
+    return space;
 }
 
 /// Reports that the kernel does not have enough memory.
@@ -674,8 +745,9 @@ fn installScheduler() void {
     _ = scheduler.scheduler.spawn(&workerOne, &task_stacks[1], &kernel_stacks[1]);
     _ = scheduler.scheduler.spawn(&workerTwo, &task_stacks[2], &kernel_stacks[2]);
 
-    // The task of the user mode has a stack of its own for the user and
-    // another for the kernel, where the handlers run.
+    // The tasks of the user mode have a stack of their own for the user and
+    // another for the kernel, where the handlers run. Each process runs in
+    // the address space of its own.
     if (enable_user_task) {
         const user_task = scheduler.scheduler.spawnUser(
             userCodeAddress(),
@@ -683,6 +755,8 @@ fn installScheduler() void {
             usermode.stack_pages * handoff.page_size,
             &user_task_stack,
             user_window_base,
+            user_space,
+            0,
         ) orelse return reportOutOfMemory();
         serial.printLine("[VNK] user: task {d} cs=0x{x} ss=0x{x} rip=0x{x} rsp=0x{x}", .{
             user_task.id,
@@ -690,6 +764,23 @@ fn installScheduler() void {
             user_task.context.ss,
             user_task.context.rip,
             user_task.context.rsp,
+        });
+
+        const second_task = scheduler.scheduler.spawnUser(
+            userCodeAddress(),
+            userStackAddress(),
+            usermode.stack_pages * handoff.page_size,
+            &second_task_stack,
+            user_window_base,
+            second_space,
+            1,
+        ) orelse return reportOutOfMemory();
+        serial.printLine("[VNK] user: task {d} cs=0x{x} ss=0x{x} rip=0x{x} rsp=0x{x}", .{
+            second_task.id,
+            second_task.context.cs,
+            second_task.context.ss,
+            second_task.context.rip,
+            second_task.context.rsp,
         });
     }
 
@@ -704,120 +795,146 @@ fn installScheduler() void {
 /// the call reached the handler of the kernel and that the answer came
 /// back to the user mode.
 fn reportUserTask() void {
-    const marker: *volatile u64 = @ptrFromInt(userDataAddress());
-    const result: *volatile u64 = @ptrFromInt(userResultAddress());
-    const written: *volatile u64 = @ptrFromInt(userWriteAddress());
-    const copied: *volatile u64 = @ptrFromInt(userCopyAddress());
-    const content: *volatile u64 = @ptrFromInt(userCopyContentAddress());
-    const code: *volatile u64 = @ptrFromInt(userCodeAddress());
+    const space = user_space orelse return;
+
+    // The pages of the user mode live in the space of the process and in no
+    // other, therefore every read of them runs with the space of the
+    // process active.
+    const marker = userWord(space, userDataAddress());
+    const result = userWord(space, userResultAddress());
+    const written = userWord(space, userWriteAddress());
+    const copied = userWord(space, userCopyAddress());
+    const content = userWord(space, userCopyContentAddress());
+    const code = userWord(space, userCodeAddress());
 
     // The task of the user mode is scheduled by the timer, therefore the
     // kernel waits for it instead of assuming that it already ran.
     var attempts: u64 = 0;
-    while (result.* != user_result_value and attempts < 10_000_000) : (attempts += 1) {
+    while (result != user_result_value and attempts < 10_000_000) : (attempts += 1) {
         cpu.halt();
     }
 
-    if (marker.* != user_program_value) {
+    if (marker != user_program_value) {
         serial.printLine("[VNK] user: the page of the user mode holds 0x{x}, expected 0x{x}", .{
-            marker.*,
+            marker,
             user_program_value,
         });
     } else {
-        serial.printLine("[VNK] user: the program of the user mode wrote 0x{x} in its page", .{marker.*});
+        serial.printLine("[VNK] user: the program of the user mode wrote 0x{x} in its page", .{marker});
     }
 
-    if (result.* != user_result_value) {
+    if (result != user_result_value) {
         serial.printLine("[VNK] user: the result of the call is 0x{x}, expected 0x{x}", .{
-            result.*,
+            result,
             user_result_value,
         });
     } else {
-        serial.printLine("[VNK] user: the result of the call came back, 0x{x}", .{result.*});
+        serial.printLine("[VNK] user: the result of the call came back, 0x{x}", .{result});
     }
 
     // The write reads a buffer of the user after checking the range in the
     // page tables, and the answer is the number of bytes written.
-    if (written.* != user_write_length) {
+    if (written != user_write_length) {
         serial.printLine("[VNK] user: the write wrote 0x{x} bytes, expected {d}", .{
-            written.*,
+            written,
             user_write_length,
         });
     } else {
-        serial.printLine("[VNK] user: the write of the user mode wrote {d} bytes", .{written.*});
+        serial.printLine("[VNK] user: the write of the user mode wrote {d} bytes", .{written});
     }
 
     // A call with an address that is not of the user has to be refused,
     // and the answer is the negative value of the error.
-    const refused: *volatile u64 = @ptrFromInt(userRefusedAddress());
-    if (refused.* != syscall.failure(syscall.Error.invalid_address)) {
+    const refused = userWord(space, userRefusedAddress());
+    if (refused != syscall.failure(syscall.Error.invalid_address)) {
         serial.printLine("[VNK] user: the refused call answered 0x{x}, expected 0x{x}", .{
-            refused.*,
+            refused,
             syscall.failure(syscall.Error.invalid_address),
         });
     } else {
         serial.printLine("[VNK] user: the kernel refused the call of an address of the kernel", .{});
     }
 
-    // The channel: the task of the user mode sends a message, and the
-    // kernel answers with another one. The task of the user mode waits
-    // for the answer in a loop, porque a chamada que toma uma mensagem
-    // não bloqueia.
-    const channel_id: u64 = 0;
+    // O canal: o processo de papel zero manda uma mensagem, e o processo
+    // de papel um a responde. O valor na página de dados do processo de
+    // papel zero prova que a mensagem voltou pelo canal, e a latência que
+    // o canal relata é o intervalo entre a mensagem sair e a mensagem
+    // chegar, e não a espera do escalonador.
+    var answer: u64 = 0;
     attempts = 0;
-    while (syscall.channelIsEmpty(channel_id, syscall.Side.kernel) and attempts < 10_000_000) : (attempts += 1) {
+    while (attempts < 10_000_000) : (attempts += 1) {
+        answer = userWord(space, userAnswerAddress());
+        if (answer == user_answer_value) break;
         cpu.halt();
     }
 
-    if (syscall.receiveMessage(channel_id, syscall.Side.kernel)) |message| {
-        // The latency is the interval between a mensagem sair e ela
-        // chegar, e o núcleo a relata no instante em que a recebe.
-        const latency = syscall.channelLatency(channel_id, syscall.Side.kernel);
-        serial.printLine("[VNK] channel: the message of the type {d} arrived in {d} cycles", .{
-            message.kind,
-            latency,
-        });
-
-        // The answer of the kernel, com o valor invertido, e a mensagem
-        // espera na fila do lado do usuário.
-        _ = syscall.sendMessage(
-            channel_id,
-            syscall.Side.user,
-            2,
-            message.value ^ 0xFFFF_FFFF_FFFF_FFFF,
-        );
-    } else {
-        serial.printLine("[VNK] channel: no message arrived", .{});
-    }
-
-    // A resposta do núcleo tem de chegar ao usuário, e o valor na
-    // página de dados prova que a mensagem voltou pelo canal.
-    const answer: *volatile u64 = @ptrFromInt(userAnswerAddress());
-    attempts = 0;
-    while (answer.* != user_answer_value and attempts < 10_000_000) : (attempts += 1) {
-        cpu.halt();
-    }
-
-    if (answer.* != user_answer_value) {
+    if (answer != user_answer_value) {
         serial.printLine("[VNK] channel: the answer of the user mode is 0x{x}, expected 0x{x}", .{
-            answer.*,
+            answer,
             user_answer_value,
         });
     } else {
-        serial.printLine("[VNK] channel: the answer of the kernel came back, 0x{x}", .{answer.*});
+        serial.printLine("[VNK] channel: the answer of the other process came back, 0x{x}", .{answer});
+    }
+
+    const latency = syscall.channelLatency(0, syscall.Side.user);
+    if (latency == 0) {
+        serial.printLine("[VNK] channel: the latency of the delivery was not measured", .{});
+    } else {
+        serial.printLine("[VNK] channel: the message arrived in {d} cycles", .{latency});
     }
 
     // The copy moves a block of the page of code to the page of data, and
     // the content proves that the copy happened.
-    if (copied.* != user_copy_length) {
+    if (copied != user_copy_length) {
         serial.printLine("[VNK] user: the copy copied 0x{x} bytes, expected {d}", .{
-            copied.*,
+            copied,
             user_copy_length,
         });
-    } else if (content.* != code.*) {
-        serial.printLine("[VNK] user: the copy holds 0x{x}, expected 0x{x}", .{ content.*, code.* });
+    } else if (content != code) {
+        serial.printLine("[VNK] user: the copy holds 0x{x}, expected 0x{x}", .{ content, code });
     } else {
-        serial.printLine("[VNK] user: the copy of the user mode moved {d} bytes", .{copied.*});
+        serial.printLine("[VNK] user: the copy of the user mode moved {d} bytes", .{copied});
+    }
+
+    // The second process: it has an address space of its own, and the
+    // marker of its page of data carries its role. Two processes that write
+    // different values in the same virtual address prove that the pages of
+    // the two processes are not the same pages.
+    const second = second_space orelse return;
+    const second_marker = userWord(second, userDataAddress());
+    if (second_marker != user_program_value + 1) {
+        serial.printLine("[VNK] user: the page of the second process holds 0x{x}, expected 0x{x}", .{
+            second_marker,
+            user_program_value + 1,
+        });
+    } else {
+        serial.printLine("[VNK] user: the second process wrote 0x{x} in its own page", .{second_marker});
+    }
+
+    // The copy between the dois processos: o processo de papel zero copiou
+    // um bloco da sua página para a página do processo de papel um. A
+    // página do processo de papel zero tem de continuar com o bloco
+    // original, e a página do processo de papel um tem o bloco copiado.
+    const copy_result = userWord(space, userCopyResultAddress());
+    const target = userWord(second, userCopyTargetAddress());
+    const origin_target = userWord(space, userCopyTargetAddress());
+    if (copy_result != user_copy_length) {
+        serial.printLine("[VNK] user: the copy to the other process copied 0x{x} bytes, expected {d}", .{
+            copy_result,
+            user_copy_length,
+        });
+    } else if (target != user_program_value) {
+        serial.printLine("[VNK] user: the copy to the other process wrote 0x{x}, expected 0x{x}", .{
+            target,
+            user_program_value,
+        });
+    } else if (origin_target != 0) {
+        serial.printLine("[VNK] user: the copy to the other process wrote 0x{x} in the space of the caller", .{
+            origin_target,
+        });
+    } else {
+        serial.printLine("[VNK] user: the copy between the two processes moved {d} bytes", .{copy_result});
     }
 
     // A copy whose ranges overlap has to be answered with the length of the
@@ -830,12 +947,12 @@ fn reportUserTask() void {
     // The two blocks are compared byte by byte, because the destination is
     // four bytes above the origin and a word of eight bytes would not be
     // aligned there.
-    const overlap: *volatile u64 = @ptrFromInt(userOverlapAddress());
-    const origin = readUserBytes(userOverlapOriginAddress());
-    const destination = readUserBytes(userOverlapDestinationAddress());
-    if (overlap.* != user_copy_length) {
+    const overlap = userWord(space, userOverlapAddress());
+    const origin = userBytes(space, userOverlapOriginAddress());
+    const destination = userBytes(space, userOverlapDestinationAddress());
+    if (overlap != user_copy_length) {
         serial.printLine("[VNK] user: the copy that overlaps copied 0x{x} bytes, expected {d}", .{
-            overlap.*,
+            overlap,
             user_copy_length,
         });
     } else if (!std.mem.eql(u8, &destination, &pattern_bytes) or
@@ -848,9 +965,43 @@ fn reportUserTask() void {
         });
     } else {
         serial.printLine("[VNK] user: the copy of the user mode with overlapping ranges moved {d} bytes", .{
-            overlap.*,
+            overlap,
         });
     }
+}
+
+/// Reads a word of the memory of a process.
+///
+/// The pages of the user mode live in the space of the process and in no
+/// other, therefore the kernel activates the space of the process to read
+/// them, and restores the space that was active afterwards.
+fn userWord(space: *paging.AddressSpace, address: u64) u64 {
+    const saved_cr3 = cpu.readCr3();
+    const saved_space = paging.activeSpace();
+
+    paging.activateSpace(space);
+    const value = @as(*volatile u64, @ptrFromInt(address)).*;
+
+    cpu.writeCr3(saved_cr3);
+    paging.setActiveSpace(saved_space);
+
+    return value;
+}
+
+/// Reads eight bytes of the memory of a process.
+fn userBytes(space: *paging.AddressSpace, address: u64) [8]u8 {
+    const saved_cr3 = cpu.readCr3();
+    const saved_space = paging.activeSpace();
+
+    var bytes: [8]u8 = undefined;
+    paging.activateSpace(space);
+    const source: [*]const u8 = @ptrFromInt(address);
+    @memcpy(&bytes, source[0..8]);
+
+    cpu.writeCr3(saved_cr3);
+    paging.setActiveSpace(saved_space);
+
+    return bytes;
 }
 
 /// Reads eight bytes of the page of data of the user mode.

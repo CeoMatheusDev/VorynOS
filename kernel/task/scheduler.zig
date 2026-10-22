@@ -17,6 +17,7 @@ const std = @import("std");
 const voryn = @import("voryn_shared");
 
 const context = @import("context.zig");
+const paging = @import("../arch/x86_64/paging.zig");
 const segment = @import("../arch/x86_64/segment.zig");
 
 /// The context of a task.
@@ -63,6 +64,11 @@ pub const Task = struct {
     /// frame of a task that runs in the user mode would otherwise live in
     /// a page that the user owns and can rewrite.
     kernel_rsp: u64 = 0,
+    /// The address space of the task, when the task is a process.
+    ///
+    /// A null value means the space of the kernel, which is the space of
+    /// the tasks of the kernel.
+    space: ?*paging.AddressSpace = null,
     /// The state of the task.
     state: State = .ready,
     /// The code with which the task ended.
@@ -187,6 +193,8 @@ pub const Scheduler = struct {
         user_stack_length: u64,
         kernel_stack: []u8,
         window_base: u64,
+        space: ?*paging.AddressSpace,
+        role: u64,
     ) ?*Task {
         if (user_stack_length < 1024) return null;
 
@@ -196,6 +204,7 @@ pub const Scheduler = struct {
 
         task.context = .{
             .rbx = window_base,
+            .rcx = role,
             .rsp = user_top,
             .rflags = 0x202,
             .rip = entry,
@@ -206,6 +215,7 @@ pub const Scheduler = struct {
         // The handlers of the task run on the stack of the kernel that the
         // kernel gave it, and not on the stack of the user.
         task.kernel_rsp = stackTop(kernel_stack);
+        task.space = space;
         task.state = .ready;
 
         return task;
@@ -237,6 +247,24 @@ pub const Scheduler = struct {
 
         voryn_current_context = &current.context;
         voryn_next_context = &next.context;
+
+        // The address space travels with the task: a process runs in the
+        // space of its own, and the switch of the space happens together
+        // with the switch of the context. The value is the root table of
+        // the space that the entering task runs in, and zero means that the
+        // space does not change.
+        voryn_next_cr3 = 0;
+        if (next.space != current.space) {
+            if (next.space) |space| {
+                voryn_next_cr3 = paging.spaceRoot(space);
+            } else {
+                voryn_next_cr3 = paging.rootAddress();
+            }
+            // The module of the tables has to know which space is the
+            // active one, because the checks of the ranges of the user mode
+            // walk the tables of the active space.
+            paging.setActiveSpace(next.space);
+        }
 
         return true;
     }
@@ -348,6 +376,12 @@ pub extern var voryn_switch_minimum: u64;
 
 /// The stack of the kernel of the task that is running.
 pub extern var voryn_kernel_stack_pointer: u64;
+
+/// The root table of the address space of the task that is entering.
+///
+/// The value is zero when the address space does not change, and the switch
+/// reads it to know whether it has to write the register of the tables.
+pub extern var voryn_next_cr3: u64;
 
 /// Captures the context of the task that is running.
 extern fn voryn_capture_context(task_context: *Context) callconv(.c) void;

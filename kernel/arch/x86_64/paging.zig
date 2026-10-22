@@ -65,6 +65,55 @@ const level2_count = 8;
 /// kernel unable to boot, so the pool is sized with room to grow.
 const level1_count = 32;
 
+/// Number of address spaces of the processes that the kernel supports.
+pub const max_process_spaces = 4;
+
+/// The root tables of the address spaces of the processes.
+///
+/// A process has an address space of its own: the root table of the space
+/// holds the tables of the kernel — copied from the tables of the kernel, so
+/// that the image and the framebuffer stay visible in both directions of the
+/// switch — and a private chain that reaches the window of the user mode.
+/// Two processes therefore never share a mapping of the pages of the user,
+/// and that is what makes the copy between two processes a real copy.
+var process_root_pool: [max_process_spaces]PageTable align(4096) = @splat(.{});
+
+/// The private third level tables of the address spaces of the processes.
+var process_level3_pool: [max_process_spaces]PageTable align(4096) = @splat(.{});
+
+/// The private second level tables of the address spaces of the processes.
+var process_level2_pool: [max_process_spaces]PageTable align(4096) = @splat(.{});
+
+/// The private first level tables with the pages of the user mode.
+var process_level1_pool: [max_process_spaces]PageTable align(4096) = @splat(.{});
+
+/// The address spaces that the kernel handed out.
+var process_spaces: [max_process_spaces]AddressSpace = @splat(.{});
+
+/// The number of address spaces that the kernel handed out.
+var process_spaces_used: usize = 0;
+
+/// An address space of a process.
+///
+/// The space holds the tables of the kernel and the private chain of the
+/// window of the user mode. The address of the space is stable, because the
+/// root table is referred to by pointer.
+pub const AddressSpace = struct {
+    /// The root table of the space.
+    root: *PageTable = undefined,
+    /// The private table of the third level.
+    level3: *PageTable = undefined,
+    /// The private table of the second level, the one of the window.
+    level2: *PageTable = undefined,
+    /// The private table of the first level, the one of the window.
+    level1: *PageTable = undefined,
+    /// The identifier of the process that owns the space.
+    id: u32 = 0,
+};
+
+/// The number of pages of the window of the user mode of a process.
+pub const window_pages: u64 = 4;
+
 /// The level 4 table, the root of the hierarchy.
 var level4: PageTable align(4096) = .{};
 
@@ -277,12 +326,182 @@ pub fn setup(
 
 /// Makes the tables of the kernel the active ones.
 pub fn activate() void {
+    active_space = null;
     cpu.writeCr3(addressOf(&level4));
 }
 
 /// The address of the root table, used for the diagnostics.
 pub fn rootAddress() u64 {
     return addressOf(&level4);
+}
+
+/// Creates an address space for a process.
+///
+/// The space starts as a copy of the space of the kernel: the image of the
+/// kernel and the framebuffer stay mapped in the space of the process,
+/// because the kernel runs in the space of the process that it interrupted,
+/// and because the stack of the kernel of the task lives in the image. The
+/// window of the user mode is the only region that the process owns, and it
+/// starts empty.
+///
+/// The window has to live in the first gigabyte of the address space, the
+/// same region where the image of the kernel is mapped, and it has to use a
+/// table of the second level of its own. The kernel checks the placement
+/// before it calls the function, and the function refuses a window that
+/// does not satisfy the requirement.
+pub fn createAddressSpace(window: u64) ?*AddressSpace {
+    if (process_spaces_used >= max_process_spaces) return null;
+
+    // The window lives in the first gigabyte, and the table of the second
+    // level of the first gigabyte holds the image of the kernel. The window
+    // needs a table of the first level of its own, and the table of the
+    // second level of the space is a copy of the one of the kernel.
+    const level3_index = (window >> 30) & 511;
+    const level2_index = (window >> 21) & 511;
+    if (level3_index != 0) return null;
+
+    const index = process_spaces_used;
+    process_spaces_used += 1;
+
+    const space = &process_spaces[index];
+    const root = &process_root_pool[index];
+    const private_level3 = &process_level3_pool[index];
+    const private_level2 = &process_level2_pool[index];
+    const private_level1 = &process_level1_pool[index];
+
+    // The private tables start as a copy of the tables of the kernel, so
+    // that the image of the kernel and the framebuffer stay mapped in the
+    // space of the process.
+    root.* = level4;
+    private_level3.* = level3;
+    private_level2.* = tableOf(level3.entries[0]).*;
+
+    // The window of the user mode has a table of the first level of its
+    // own, and the entry of the table of the second level of the space
+    // points at it.
+    private_level1.* = .{};
+    private_level2.entries[level2_index] = addressOf(private_level1) | table_flags;
+
+    // The root table of the space points at the private table of the third
+    // level, and the private table of the third level at the private table
+    // of the second level.
+    root.entries[0] = addressOf(private_level3) | table_flags;
+    private_level3.entries[0] = addressOf(private_level2) | table_flags;
+
+    space.* = .{
+        .root = root,
+        .level3 = private_level3,
+        .level2 = private_level2,
+        .level1 = private_level1,
+        .id = @intCast(index),
+    };
+
+    return space;
+}
+
+/// Maps a page of the user mode in the space of a process.
+///
+/// The page is mapped with the bit that allows the access from the third
+/// level of privilege, and the table of the first level of the space is the
+/// one that receives the entry.
+pub fn mapUserPageIn(space: *AddressSpace, virtual: u64, physical: u64) Error!void {
+    const level2_index = (virtual >> 21) & 511;
+    const level1_index = (virtual >> 12) & 511;
+
+    if (space.level2.entries[level2_index] & Flags.present == 0) {
+        return error.OutOfTables;
+    }
+
+    space.level1.entries[level1_index] =
+        (physical & ~@as(u64, 0xFFF)) | Flags.present | Flags.writable | Flags.user;
+}
+
+/// Makes the space of a process the active one.
+pub fn activateSpace(space: *const AddressSpace) void {
+    active_space = space;
+    cpu.writeCr3(addressOf(space.root));
+}
+
+/// The address space that is active.
+///
+/// The function returns null when the space of the kernel is the active one,
+/// which is the space of the tasks of the kernel.
+pub fn activeSpace() ?*const AddressSpace {
+    return active_space;
+}
+
+/// Records the address space that is active, without writing the register
+/// of the tables.
+///
+/// The scheduler uses the function when it hands the space of the entering
+/// task to the switch: the switch writes the register of the tables, and
+/// the module has to know which space is the active one.
+pub fn setActiveSpace(space: ?*const AddressSpace) void {
+    active_space = space;
+}
+
+/// The address space that is active.
+var active_space: ?*const AddressSpace = null;
+
+/// The address of the root table of the space of a process.
+pub fn spaceRoot(space: *const AddressSpace) u64 {
+    return addressOf(space.root);
+}
+
+/// The address space of a process, by its identifier.
+///
+/// The identifier of a space is the order in which the kernel handed it
+/// out, and the function returns null when the identifier does not exist.
+pub fn spaceById(id: u64) ?*AddressSpace {
+    if (id >= process_spaces_used) return null;
+    return &process_spaces[@intCast(id)];
+}
+
+/// Checks whether a range of virtual addresses belongs to the user mode in
+/// the space of a process.
+///
+/// The function walks the private tables of the space and verifies that
+/// every page of the range is present, that the page carries the bit of
+/// user, and that the page is writable when the range has to be written.
+pub fn isUserRangeIn(
+    space: *const AddressSpace,
+    virtual: u64,
+    length: u64,
+    writable: bool,
+) bool {
+    if (length == 0) return false;
+
+    const end = std.math.add(u64, virtual, length) catch return false;
+    if (end < virtual) return false;
+
+    var address = virtual;
+    while (address < end) {
+        if (!isUserPageIn(space, address, writable)) return false;
+
+        const next = std.math.add(u64, address, page_size) catch return false;
+        if (next <= address) return false;
+        address = next;
+    }
+
+    return true;
+}
+
+/// Checks whether a virtual address is in a page of the user mode in the
+/// space of a process.
+fn isUserPageIn(space: *const AddressSpace, virtual: u64, writable: bool) bool {
+    const level2_index = (virtual >> 21) & 511;
+    const level1_index = (virtual >> 12) & 511;
+
+    const entry2 = space.level2.entries[level2_index];
+    if (entry2 & Flags.present == 0) return false;
+    if (entry2 & Flags.large != 0) return false;
+
+    const entry1 = space.level1.entries[level1_index];
+    if (entry1 & Flags.present == 0) return false;
+    if (entry1 & Flags.user == 0) return false;
+    if (writable and entry1 & Flags.writable == 0) return false;
+
+    return true;
 }
 
 /// Describes the mapping of a virtual address.
@@ -336,10 +555,16 @@ pub fn mappedEntries() u32 {
 /// that the page is writable when the range has to be written. A range of
 /// zero length is never valid.
 ///
-/// The kernel uses the function before it touches a buffer that the user
-/// mode handed over: a user program can point to any address, and the
+/// When a process is running, the check walks the tables of the space of the
+/// process, because the pages of the user mode live in that space and in no
+/// other. The kernel uses the function before it touches a buffer that the
+/// user mode handed over: a user program can point to any address, and the
 /// kernel may not trust it.
 pub fn isUserRange(virtual: u64, length: u64, writable: bool) bool {
+    if (active_space) |space| {
+        return isUserRangeIn(space, virtual, length, writable);
+    }
+
     if (length == 0) return false;
 
     // The end of the range is exclusive, and the addition is checked
