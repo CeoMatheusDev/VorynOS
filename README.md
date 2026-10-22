@@ -52,7 +52,7 @@ O projeto encontra-se em desenvolvimento inicial e **ainda não constitui um sis
 > **Linguagem principal:** Zig 0.17.0  
 > **Firmware de inicialização:** UEFI  
 > **Licença:** GPL-3.0-only  
-> **Última revisão documental:** 21/10/2026
+> **Última revisão documental:** 22/10/2026
 
 O desenvolvimento está organizado em marcos incrementais, com critérios técnicos de aceitação e documentação das evidências de funcionamento.
 
@@ -127,18 +127,34 @@ O núcleo possui uma infraestrutura inicial funcional para gerenciamento do proc
 **Execução de tarefas**
 
 - Escalonador preemptivo acionado pelo temporizador.
-- Contexto de tarefa com o quadro completo do processador.
+- Contexto de tarefa com o quadro completo do processador: os quinze
+  registradores de uso geral são preservados a cada troca.
 - Política circular, que não produz fome entre tarefas.
-- Tarefas do kernel em pilhas próprias.
+- Tarefas do kernel em pilhas próprias, e pilha do núcleo separada da
+  pilha do código, para que o quadro do processador nunca fique em uma
+  página que o usuário mode possa reescrever.
 - Estrutura de tarefa preparada para o terceiro nível de privilégio.
 - Mapeamento de páginas de usuário nas tabelas de página próprias.
 - Chamada de sistema pela instrução `syscall`, com o tratador em Zig.
-- Contrato da chamada de sistema com quatro chamadas, e conferência das
-  faixas do usuário nas tabelas de página antes de o núcleo tocar a memória
-  do usuário.
-- Pilha do núcleo por tarefa, e o tratador da chamada nunca roda sobre a
-  pilha do usuário.
+- Contrato da chamada de sistema com sete chamadas, e conferência das
+  faixas do usuário nas tabelas de página do espaço do processo antes de o
+  núcleo tocar a memória do usuário.
 - Medição do custo da troca de contexto pelo contador de tempo.
+
+**Processos**
+
+- Espaço de endereço próprio por processo, com as tabelas do núcleo
+  copiadas para dentro dele, e a janela do modo de usuário como única
+  região que o processo possui.
+- Troca do espaço de endereço junto com a troca do contexto da tarefa.
+- Isolamento entre processos: dois processos usam o mesmo endereço virtual
+  e não veem as mesmas páginas.
+- Janela do modo de usuário sem endereço fixo, escolhida fora da imagem do
+  núcleo e entregue à tarefa no momento de sua criação.
+- Cópia de um bloco de memória de um processo para outro, com a leitura da
+  origem e a escrita do destino feitas no espaço de cada um.
+- Canal de mensagens do VNX com a entrega entre dois processos, e a
+  latência da entrega medida no relógio do processador.
 
 **Gerenciamento de memória**
 
@@ -146,7 +162,8 @@ O núcleo possui uma infraestrutura inicial funcional para gerenciamento do proc
 - Controle inicial de páginas físicas.
 - Construção de tabelas de páginas próprias.
 - Substituição das tabelas de páginas por meio de CR3.
-- Mapeamento do kernel e do framebuffer.
+- Mapeamento do kernel e do framebuffer, com a imagem do(kernel descrita
+  inteira, e não só os seus primeiros dois megabytes.
 - Heap com metadados de blocos.
 - Divisão e fusão de blocos de memória.
 - Verificação básica de corrupção do heap.
@@ -198,20 +215,22 @@ As seguintes limitações são conhecidas e documentadas:
 |---|---|
 | Memória física | Bitmap com cobertura de até 4 GiB |
 | Heap | Região fixa de 256 KiB |
-| Memória virtual | Mapeamentos iniciais do kernel e framebuffer |
+| Memória virtual | Imagem do núcleo e framebuffer mapeados, com a janela de cada processo |
+| Processos | Dois processos, e o limite de espaços de endereço é uma constante do módulo de paginação |
 | TSS | Estrutura do modo de 64 bits, com o layout verificado em tempo de compilação |
 | Exceções | Tratamento fatal, sem recuperação |
-| Execução | Escalonador publicado, sem processos publicados |
-| Proteção | Modo de usuário verificado, sem processos publicados |
-| Syscalls | Instrução `syscall` e tratador implementados, a volta ao usuário é verificada |
-| IPC | Canal de mensagens do VNX verificado entre a tarefa de usuário e o núcleo |
-| Capacidades | Não implementadas |
+| Syscalls | Sete chamadas, e a volta ao usuário é verificada |
+| IPC | Canal de mensagens do VNX verificado entre dois processos, sem chamada que bloqueie |
+| Capacidades | Não implementadas, e o processo tem acesso a todo o seu espaço |
 | Armazenamento | Sem sistema de arquivos operacional no kernel |
 | Drivers | Sem infraestrutura geral de drivers |
 | Interface gráfica | Não implementada |
 | Hardware físico | Sem validação documentada |
 
-A tarefa de usuário executa no terceiro nível de privilégio, escreve na sua própria página de dados, chama o núcleo pela instrução `syscall` e recebe a resposta de volta no mesmo registrador. O canal de mensagens do VNX entrega a mensagem da tarefa ao núcleo, e a resposta do núcleo volta para a tarefa. O que ainda não existe são os processos, as threads, e a entrega de mensagens entre dois processos.
+O processo de usuário executa no terceiro nível de privilégio, escreve na sua própria página de dados, chama o núcleo pela instrução `syscall` e recebe a resposta de volta no mesmo registrador. Cada processo tem um espaço de endereço próprio, e dois processos que usam o mesmo endereço virtual não veem as mesmas páginas. O canal de mensagens do VNX entrega uma mensagem de um processo para outro, e a resposta volta pelo mesmo canal. A cópia de memória entre os dois processos é uma cópia de verdade: o espaço de quem chamou não muda.
+
+O que ainda não existe são as threads, a chamada que bloqueia à espera de uma
+mensagem, o modelo de capacidades do VNC, e a validação em hardware físico.
 
 Esses recursos pertencem aos próximos incrementos de desenvolvimento.
 
@@ -495,9 +514,22 @@ Entre eles:
 
 A inicialização é testada em uma máquina virtual x86_64 com firmware OVMF.
 
-O teste automatizado verifica marcadores de progresso emitidos pelo bootloader e pelo kernel.
+O teste automatizado verifica **33 marcadores** de progresso emitidos pelo
+bootloader e pelo kernel, e identifica condições de falha durante a
+inicialização.
 
-Também identifica condições de falha durante a inicialização.
+Os marcadores do núcleo verificam o **conteúdo** e não só a execução: o
+marcador da página de dados de cada processo é conferido, e os dois
+processos escrevem valores diferentes no mesmo endereço virtual, o que
+prova o isolamento; o conteúdo da cópia com faixas sobrepostas é conferido
+byte a byte; e o espaço de endereço de quem chamou a cópia entre processos
+é conferido depois da cópia, o que prova que a cópia é uma cópia e não um
+compartilhamento de página.
+
+O console serial é o canal verificado, e a escrita nele é atômica: uma
+tarefa que escreve desliga as interrupções enquanto a mensagem é montada.
+Sem essa garantia, o console deixaria de ser uma evidência, porque
+relataria linhas que ninguém escreveu.
 
 ### Integração contínua
 
@@ -530,18 +562,21 @@ O estado de cada marco é registrado no:
 
 ## Próximos passos
 
-O próximo grande objetivo arquitetural é o **F3 — Execução**.
+O objetivo arquitetural em curso é o **F3 — Execução**, e ele tem três
+partes: o modo de usuário, os processos, e a comunicação entre eles. As
+duas primeiras estão implementadas e verificadas, e a terceira está
+implementada na forma da entrega de uma mensagem entre dois processos.
 
-Esse marco introduzirá progressivamente os mecanismos necessários para executar múltiplas tarefas e iniciar a separação entre kernel e aplicações.
+Os objetivos que faltam no marco são:
 
-Os principais objetivos são:
-
-1. Corrigir a entrega de exceções originadas em tarefas de usuário.
-2. Habilitar a execução em modo de usuário e a primeira chamada de sistema.
-3. Implementar processos com espaço de endereçamento próprio.
-4. Desenvolver comunicação entre processos.
-5. Introduzir mecanismos de controle por capacidades.
-6. Medir o custo de troca de contexto sob carga representativa.
+1. A chamada que **bloqueia** à espera de uma mensagem, com o
+   escalonador escolhendo outra tarefa enquanto a espera.
+2. O modelo de **capacidades** do VNC, que decide o que um processo pode
+   alcançar, e que a pergunta aberta do ADR-0001 deixou em suspenso.
+3. O **tratamento por tipo** das exceções, com um teste de recuperação, e
+   o **heap dinâmico** com o VNM.
+4. A medição do custo de troca de contexto sob **carga representativa**,
+   com mais tarefas e mais processos.
 
 A implementação desses recursos deverá respeitar os contratos arquiteturais e os critérios de validação definidos pelo projeto.
 
@@ -561,7 +596,10 @@ O VorynOS mantém documentação técnica junto ao código-fonte.
 | [ADR-0002](docs/adr/ADR-0002-boot-chain-and-uefi-abi.md) | Cadeia de inicialização e ABI UEFI |
 | [ADR-0003](docs/adr/ADR-0003-toolchain-and-build.md) | Toolchain e sistema de compilação |
 | [ADR-0004](docs/adr/ADR-0004-x86_64-abi-pitfalls.md) | Particularidades e problemas de ABI x86_64 |
+| [ADR-0005](docs/adr/ADR-0005-task-model-and-user-mode.md) | Modelo de tarefa e modo de usuário |
+| [ADR-0006](docs/adr/ADR-0006-address-spaces-and-processes.md) | Espaços de endereço por processo e o quadro do processador |
 | [Boot Handoff](docs/specs/boot-handoff-spec.md) | Especificação do contrato de inicialização |
+| [Syscall ABI](docs/specs/syscall-abi.md) | Contrato da chamada de sistema |
 | [Roadmap](docs/roadmap/phase-status.md) | Estado e planejamento dos marcos |
 | [Testing Strategy](docs/testing/testing-strategy.md) | Estratégia de validação |
 | [VVS-0001](docs/standards/VVS-0001.md) | Política de versionamento |

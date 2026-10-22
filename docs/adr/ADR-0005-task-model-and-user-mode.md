@@ -380,3 +380,24 @@ bytes, e o programa do usuário mode continua ✓.
 **A regra:** uma chamada que trabalha com faixas escolhidas por quem chama
 tem de tolerar a sobreposição, ou tem de recusar a chamada com um erro
 próprio. Levantar um pânico no núcleo não é uma das duas.
+
+## 8. Nota do incremento seguinte
+
+O incremento dos processos, registrado em
+[`ADR-0006-address-spaces-and-processes.md`](ADR-0006-address-spaces-and-processes.md),
+encontrou **três defeitos mais profundos** no modelo de tarefa que este
+documento descreve, e que o diagnóstico aqui não tinha alcançado:
+
+1. o contexto da tarefa guardava apenas os registradores que a
+   arquitetura preserva entre chamadas, e o resultado de uma chamada de
+   sistema se perdia a cada troca de contexto;
+2. o quadro do processador da volta era montado sobre a pilha do código
+   interrompido, e portanto, para uma tarefa do modo de usuário, sobre uma
+   página que o usuário possui;
+3. a janela do modo de usuário tinha endereço fixo dentro da imagem do
+   núcleo, que é mapeada por identidade e cresce.
+
+As decisões e as medições estão no ADR-0006. Este documento continua
+válido como o registro do diagnóstico do defeito do segmento de tarefa, e
+as suas regras — a inicialização antes do temporizador e a tolerância da
+sobreposição — continuam valendo.

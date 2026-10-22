@@ -42,8 +42,9 @@ O modelo de componentes e seus custos estão em
 | `handoff.zig` | Estrutura do contrato VNB → VNK e sua validação |
 | `memmap.zig` | Operações sobre o mapa de memória (busca, resumo, região de carga) |
 | `elf64.zig` | Leitor ELF64: cabeçalho, segmentos, realocações relativas, plano de carga |
+| `usermode.zig` | Desenho da janela do modo de usuário, compartilhado com o programa do usuário |
 | `arch/x86_64/port.zig` | Primitivas de E/S de porta (in, out, cli, hlt, rdtsc) |
-| `arch/x86_64/serial.zig` | Driver da UART 16550 (COM1) e escritor formatado |
+| `arch/x86_64/serial.zig` | Driver da UART 16550 (COM1) e escritor formatado, com escrita atômica |
 
 `shared/` é compilado para três alvos diferentes: UEFI (loader), freestanding
 (kernel) e host (testes). Nenhum módulo depende de sistema operacional.
@@ -69,10 +70,15 @@ O modelo de componentes e seus custos estão em
 | `arch/x86_64/cpu.zig` | Registradores de controle, `CPUID`, registradores de modelo |
 | `arch/x86_64/segment.zig` e `.s` | Tabela de segmentos, segmento de tarefa, recarga dos registradores |
 | `arch/x86_64/interrupt.zig` e `.s` | Tabela de interrupções, tratadores de exceção e de interrupção |
-| `arch/x86_64/paging.zig` | Tabelas de página do núcleo e a troca de `CR3` |
+| `arch/x86_64/paging.zig` | Tabelas de página do núcleo, espaços de endereço dos processos e a troca de `CR3` |
+| `arch/x86_64/syscall.zig` e `.s` | Entrada da chamada de sistema e o tratador em Zig |
+| `arch/x86_64/task.s` | Troca de contexto, captura de contexto e o programa do modo de usuário |
 | `arch/x86_64/timer.zig` | Temporizador 8254, controllers 8259, contagem de interrupções |
 | `memory/physical.zig` | Gerenciador de memória física sobre o mapa do contrato |
 | `memory/heap.zig` | Heap do núcleo com etiquetas de limite e verificação de corrupção |
+| `task/context.zig` | Contexto completo de uma tarefa: todos os registradores do processador |
+| `task/scheduler.zig` | Escalonador preemptivo, criação de tarefas e de processos, troca de espaço |
+| `ipc/channel.zig` | Canal de mensagens do VNX: duas filas por canal e a latência da entrega |
 
 ### `tools/` — ferramentas de desenvolvimento
 
@@ -94,6 +100,9 @@ O modelo de componentes e seus custos estão em
 | Handoff VNB → VNK | estrutura `extern` versionada | `shared/handoff.zig` |
 | Mapa de memória | array de `MemoryDescriptor` (40 bytes) | `shared/handoff.zig` |
 | Imagem do kernel | ELF64 relocável (`ET_DYN`) | `shared/elf64.zig` |
+| Janela do modo de usuário | constantes de deslocamento, compartilhadas com o assembly | `shared/usermode.zig` |
+| Contrato da chamada de sistema | versão `syscall_abi = 2`, sete chamadas | `docs/specs/syscall-abi.md` |
+| Contexto da tarefa | `extern struct` com os quinze registradores | `kernel/task/context.zig` |
 | Console | escritor `std.Io.Writer` sobre a UART | `shared/arch/x86_64/serial.zig` |
 
 Nenhum contrato usa ponteiro opaco sem descrição: todo campo tem layout
@@ -115,6 +124,14 @@ explícito e documentado.
 6. A sonda de escrita no framebuffer só é executada quando o mapa de memória
    **não** reporta a região do framebuffer como RAM comum, para não
    corromper a memória que o kernel vai usar.
+7. A pilha do núcleo de cada tarefa é uma memória diferente da pilha do
+   código da tarefa, e o quadro do processador da volta é montado na pilha
+   do núcleo. Um processo do modo de usuário, portanto, não tem nenhum
+   controle sobre o quadro que decide o nível de privilégio da volta.
+8. Cada processo tem um espaço de endereço próprio, e as faixas de memória
+   que o núcleo confere são as do espaço do processo que chamou.
+9. A janela do modo de usuário fica fora da imagem do núcleo, e o seu
+   endereço é entregue à tarefa no momento da criação.
 
 ## 5. Limitações conhecidas
 
@@ -130,6 +147,10 @@ explícito e documentado.
 6. O volume de teste usa nomes FAT 8.3; não há suporte a nomes longos.
 7. O sistema é single processor; não há suporte a SMP.
 8. Não há detecção de hardware além do framebuffer: VNH ainda não existe.
+9. O número de espaços de endereço é uma constante do módulo de paginação,
+   e o número de processos é fixo no núcleo.
+10. A chamada que toma uma mensagem não bloqueia: o programa repete a
+    chamada até a mensagem chegar.
 9. O kernel é carregado a partir de um volume FAT através do protocolo de
    sistema de arquivos simples do firmware; não há driver de bloco próprio.
 

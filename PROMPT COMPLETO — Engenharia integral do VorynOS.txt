@@ -22,6 +22,17 @@
 
 **Repositório pretendido:** `https://github.com/CeoMatheusDev/VorynOS`
 
+**Estado do projeto:** a fundação, o bootloader, o núcleo, o modo de
+usuário, os processos e o canal de mensagens entre processos já existem
+e são verificados. O marco em curso é o **F3 — Execução**, e o estado
+verificado de cada item, com a sua evidência, está em
+`docs/roadmap/phase-status.md`. As decisões e os diagnósticos dos
+incrementos estão em `docs/adr/`, do ADR-0001 ao ADR-0006.
+
+**Regra de estado:** o roadmap é a única fonte da verdade sobre o que
+existe, e o `AGENTS.md` é o protocolo normativo do projeto. Quando este
+prompt e o `AGENTS.md` divergirem, o `AGENTS.md` prevalece.
+
 ---
 
 # PARTE I — MISSÃO

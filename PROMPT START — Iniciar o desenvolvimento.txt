@@ -26,6 +26,36 @@ Ambiente principal:
 
 Fedora Linux 44, KDE Plasma, Wayland.
 
+## ESTADO ATUAL DO PROJETO
+
+O projeto **já tem** fundação, bootloader, núcleo, modo de usuário,
+processos e canal de mensagens. Não recomece o que existe.
+
+| Marco | Estado |
+|-------|--------|
+| F0 — Fundação | concluído |
+| F1 — Boot (VNB) | concluído |
+| F2 — Kernel (VNK) | testado localmente |
+| F3 — Execução | em desenvolvimento: modo de usuário, processos e IPC entre processos prontos; faltam a chamada que bloqueia e as capacidades do VNC |
+
+O estado **verificado** de cada marco, com a evidência de cada item, está em
+`docs/roadmap/phase-status.md`. As decisões e os diagnósticos dos
+incrementos estão em `docs/adr/`, do ADR-0001 ao ADR-0006.
+
+Antes de escrever qualquer código:
+
+1. Leia `AGENTS.md`, que é o protocolo normativo do projeto.
+2. Leia `docs/roadmap/phase-status.md`, e escolha o **primeiro item
+   pendente** do marco em curso, e não um item já concluído.
+3. Leia o ADR do subsistema que você vai mexer, porque ele registra os
+   defeitos que já foram encontrados e as regras que vieram deles.
+4. Rode `zig build check`, e confirme que a base está verde antes de
+   mudar alguma coisa.
+
+O que já **não** existe, e que ninguém deve prometer: threads, a chamada
+que bloqueia à espera de uma mensagem, o modelo de capacidades do VNC, o
+sistema de arquivos, a interface gráfica, e a validação em hardware físico.
+
 ## OBJETIVO DESTA EXECUÇÃO
 
 Estabelecer a fundação técnica do VorynOS e iniciar a implementação funcional do bootloader nativo.

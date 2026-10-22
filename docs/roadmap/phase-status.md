@@ -3,7 +3,7 @@
 | Campo | Valor |
 |-------|-------|
 | **Estado** | VIVO |
-| **Data** | 2026-10-21 |
+| **Data** | 2026-10-22 |
 
 O estado abaixo reflete o **código existente e verificado**, não a
 intenção. Um item só é marcado como concluído quando atende a todos os
@@ -54,7 +54,7 @@ critérios de "definição de concluído" do `AGENTS.md`.
 | Memória física | CONCLUÍDO | `kernel/memory/physical.zig`, bitmap de 4 GiB, 51551 páginas |
 | Memória virtual | CONCLUÍDO | `kernel/arch/x86_64/paging.zig`, tabelas próprias, `CR3` trocado |
 | Heap do kernel | CONCLUÍDO | `kernel/memory/heap.zig`, etiquetas de limite, fusão de blocos, verificação de corrupção |
-| Isolamento | PARCIAL | só o núcleo e o framebuffer estão mapeados; o resto da memória não é acessível |
+| Isolamento | CONCLUÍDO | cada processo tem um espaço de endereço próprio; o núcleo e o framebuffer são mapeados em todos os espaços, e o resto da memória não é acessível |
 
 Sequência verificada no console serial:
 
@@ -92,19 +92,25 @@ capacidades.
 |----------|--------|-----------|
 | Escalonador preemptivo | CONCLUÍDO | alternância verificada pelo temporizador |
 | Tarefas do kernel | CONCLUÍDO | duas tarefas de trabalho, 20 trocas medidas |
-| Custo de troca de contexto | CONCLUÍDO | 358 ciclos no melhor caso, média de 8 mil |
+| Custo de troca de contexto | CONCLUÍDO | medido a cada troca, com o menor e a média no console |
 | Política sem fome | CONCLUÍDO | a visita continua depois da tarefa atual |
 | Preparação do coprocessor | CONCLUÍDO | o firmware o deixa desabilitado |
 | Tabelas de página com modo de usuário | CONCLUÍDO | o bit de usuário existe em todos os níveis |
+| Contexto completo da tarefa | CONCLUÍDO | os quinze registradores são preservados a cada troca |
+| Pilha do núcleo separada da pilha do código | CONCLUÍDO | o quadro do processador nunca fica em uma página do usuário |
 | Chamada de sistema | CONCLUÍDO | a instrução `syscall`, com o tratador em Zig |
-| Contrato da chamada de sistema | CONCLUÍDO | quatro chamadas, com o contrato em `docs/specs/syscall-abi.md` |
+| Contrato da chamada de sistema | CONCLUÍDO | sete chamadas, com o contrato em `docs/specs/syscall-abi.md` |
 | Conferência das faixas do usuário | CONCLUÍDO | uma chamada com um endereço do núcleo é recusada |
 | Modo de usuário | CONCLUÍDO | a tarefa escreve na sua página e a resposta da chamada volta |
 | Segmento de tarefa do modo de 64 bits | CONCLUÍDO | o layout é verificado em tempo de compilação |
-| Pilha do núcleo por tarefa | CONCLUÍDO | o tratador nunca roda sobre a pilha do usuário |
 | Tolerância da sobreposição na cópia | CONCLUÍDO | uma cópia com faixas sobrepostas é respondida, e não levanta um pânico |
-| Canal do VNX | CONCLUÍDO | a mensagem da tarefa chega ao núcleo, e a resposta volta para a tarefa |
-| Processos | PROPOSTO | — |
+| Verificação do conteúdo da cópia | CONCLUÍDO | o conteúdo é conferido byte a byte, e não só o comprimento |
+| Janela do usuário mode | CONCLUÍDO | o endereço é escolhido fora da imagem do núcleo e entregue à tarefa |
+| Espaços de endereço por processo | CONCLUÍDO | cada processo tem tabelas próprias, e o escalonador troca o espaço |
+| Isolamento entre processos | CONCLUÍDO | dois processos escrevem valores diferentes no mesmo endereço virtual |
+| Cópia entre processos | CONCLUÍDO | o bloco vai de um processo para o outro, e o espaço de quem chamou não muda |
+| Canal do VNX | CONCLUÍDO | a mensagem sai de um processo e chega ao outro, e a resposta volta |
+| Latência da entrega | CONCLUÍDO | o intervalo entre a mensagem sair e a mensagem chegar, medido no relógio do processador |
 | Capacidades do VNC | PROPOSTO | — |
 
 O modo de usuário está **implementado e verificado**. A tarefa de usuário
@@ -126,6 +132,14 @@ arquitetura para o modo de 64 bits, porque a porta de interrupção é um
 caminho herdado e porque o tratador passa a rodar na pilha do núcleo da
 tarefa, e não na pilha do usuário.
 
+O incremento dos processos corrigiu três defeitos que vinham do desenho
+anterior, e que o diagnóstico do ADR-0005 não tinha alcançado: a troca de
+contexto não guardava os registradores que a arquitetura não salva entre
+chamadas, o quadro do processador da volta era montado sobre a pilha do
+código interrompido, e a janela do usuário mode tinha endereço fixo dentro
+da imagem do núcleo. O diagnóstico completo, com as medições e a
+conclusão, está em ADR-0006.
+
 Critérios de aceite do restante do marco:
 
 1. Uma tarefa em modo de usuário executa, o que prova a tabela de segmentos,
@@ -133,15 +147,28 @@ Critérios de aceite do restante do marco:
 2. A primeira chamada de sistema copia um bloco de memória do usuário.
    **Cumprido:** a chamada `memcpy` copia um bloco entre duas páginas do
    usuário, depois de conferir as duas faixas nas tabelas de página, e uma
-   chamada com um endereço do núcleo é recusada. O que ainda falta é a
-   cópia **entre processos**, porque os processos ainda não existem.
+   chamada com um endereço do núcleo é recusada. A cópia **entre processos**
+   também existe: a chamada `copy_to` leva um bloco do espaço de um
+   processo para o espaço de outro, e o espaço de quem chamou não muda.
 3. O canal de mensagens do VNX entrega uma mensagem entre dois processos e
-   mede a latência. **Parcialmente cumprido:** a mensagem da tarefa do
-   usuário mode chega ao núcleo, o núcleo responde, e a resposta volta para
-   a tarefa, e a latência é medida. O que ainda falta é a entrega entre
-   dois **processos**, porque os processos ainda não existem, e a
-   latência medida ainda é a de um turno do escalonador, e não a da
-   entrega.
+   mede a latência. **Cumprido:** o processo de papel zero manda a
+   mensagem, o processo de papel um a recebe e responde, e a resposta volta
+   pelo mesmo canal. A latência medida é o intervalo entre a mensagem sair
+   e a mensagem chegar, lido no relógio do processador, e não a espera de um
+   turno do escalonador.
+
+O que ainda falta no marco:
+
+1. **A chamada que bloqueia.** A chamada que toma uma mensagem devolve o
+   erro de fila vazia, e o programa repete a chamada. A versão que
+   bloqueia exige que a chamada consiga continuar depois que a mensagem
+   chega, e que o escalonador escolha outra tarefa enquanto a espera.
+2. **As capacidades do VNC.** A pergunta aberta do ADR-0001 continua
+   aberta: a chamada não carrega capacidades, e o processo tem acesso ao
+   espaço inteiro do modo de usuário.
+3. **Mais de dois processos.** O núcleo cria dois processos, e o número de
+   espaços de endereço é limitado por uma constante do módulo de
+   paginação.
 
 O canal de mensagens ensinou uma regra de inicialização que vale para o
 núcleo inteiro: tudo o que as tarefas podem usar tem de existir **antes**
@@ -166,8 +193,8 @@ primeiro turno. O diagnóstico e a regra estão em ADR-0005.
 
 | Risco | Impacto | Tratamento |
 |-------|---------|------------|
-| Ausência de processos | Alto | Primeiro incremento do F3 depois do modo de usuário |
+| Ausência de capacidades | Alto | O modelo de capacidade do ADR-0001 continua aberto |
 | Heap fixo na imagem do núcleo | Médio | Heap dinâmico com o VNM no F3 |
 | Exceções fatais | Médio | Tratamento por tipo no F3, com teste de recuperação |
-| Ausência de medição de desempenho | Médio | Latência de troca de contexto e de syscall no F3 |
+| Número fixo de processos | Médio | O limite de espaços de endereço é uma constante do módulo de paginação |
 | Ausência de teste de hardware | Médio | Marcado como não verificado até existir máquina de referência |
