@@ -146,45 +146,40 @@ eles afirmavam.
 
 ## 7. Comparação de integridade do código
 
-A reorganização alterou apenas **documentação e referências de versão**. Os
-arquivos funcionais de `boot/`, `kernel/`, `shared/`, `tools/`, `scripts/` e
-`tests/` permaneceram idênticos, com uma única exceção declarada: as
-**constantes de versão**, que passam a identificar o novo marco.
+A reorganização **não** alterou nenhuma lógica. As diferenças nos arquivos
+funcionais de `boot/`, `kernel/`, `shared/`, `tools/`, `scripts/` e `tests/`
+são de duas naturezas, e as duas estão declaradas:
+
+1. **As constantes de versão**, que passam a identificar o novo marco:
+
+   ```diff
+   -const loader_version = "0.1.0-dev.3";
+   +const loader_version = "0.1.0-dev.1";
+   ```
+
+   ```diff
+   -const kernel_version = "0.1.0-dev.3";
+   +const kernel_version = "0.1.0-dev.1";
+   ```
+
+   E, fora do conjunto verificado, o manifesto do pacote:
+
+   ```diff
+   -    .version = "0.1.0-dev.3",
+   +    .version = "0.1.0-dev.1",
+   ```
+
+2. **O cabeçalho visual padronizado** dos 29 arquivos Zig, que veio do
+   trabalho paralelo da branch `main` remota e foi **preservado** pela
+   integração. A correção aplicada nele foi apenas a forma do comentário,
+   de bloco para de linha, porque a forma de bloco quebrava a compilação
+   (seção 5, item 3).
 
 A verificação é feita pela comparação das somas de verificação SHA-256 de
-todos os arquivos desses diretórios, antes e depois da operação. O
-resultado obtido foi:
-
-| Arquivo | Antes | Depois |
-|---|---|---|
-| `boot/uefi/main.zig` | `0941dab2…3e435` | `bf2dfb31…6742` |
-| `kernel/main.zig` | `7aa542e0…c3f70` | `55c1413d…8ec` |
-| os outros 34 arquivos | inalterados | inalterados |
-
-A diferença em cada um dos dois arquivos é **exclusivamente** a constante
-de versão:
-
-```diff
--const loader_version = "0.1.0-dev.3";
-+const loader_version = "0.1.0-dev.1";
-```
-
-```diff
--const kernel_version = "0.1.0-dev.3";
-+const kernel_version = "0.1.0-dev.1";
-```
-
-E, fora do conjunto verificado, o manifesto do pacote:
-
-```diff
--    .version = "0.1.0-dev.3",
-+    .version = "0.1.0-dev.1",
-```
-
-Nenhuma instrução de máquina, nenhuma lógica, nenhuma tabela, nenhum
-contrato e nenhum teste foi alterado. O código funcional do projeto é
-**byte a byte** o mesmo que estava antes da reorganização, com a
-identificação de versão corrigida.
+todos os 36 arquivos desses diretórios. O **conjunto de arquivos** é
+idêntico ao estado anterior à reorganização, e a diferença de conteúdo
+está limitada às duas naturezas acima. Nenhuma instrução de máquina, nenhuma
+lógica, nenhuma tabela, nenhum contrato e nenhum teste foi alterado.
 
 ## 8. Referência Git original
 
