@@ -182,6 +182,10 @@ pub const AddressSpace = struct {
     level4: *PageTable,
     /// The private table with the pages of the user mode of the space.
     level1: *PageTable,
+    /// The private second level table of the chain of the window.
+    window_level2: *PageTable,
+    /// The index of the window inside the private second level table.
+    window_level2_index: usize = 0,
 };
 
 /// The address space that is active.
@@ -210,6 +214,8 @@ pub const Error = error{
     RangeTooLarge,
     /// The kernel does not have enough tables for the requested mapping.
     OutOfTables,
+    /// The physical allocator has no frame to hand out.
+    OutOfMemory,
 };
 
 /// Maps a page of the kernel, with the same address in the physical and in
@@ -241,6 +247,18 @@ fn mapPage(virtual: u64, physical: u64, flags: u64) Error!void {
     // The kernel only uses the first gigabyte of the address space for the
     // tables of the hierarchy, which covers 512 gigabytes.
     if (level4_index != 0) return error.RangeTooLarge;
+
+    // The window of the user mode of a process lives inside the range that
+    // the chain of the image describes: writing an entry there would hide
+    // a page of a process behind the table of the image, and reading one
+    // would follow the frame of a process as if it were a table. The
+    // private chain of each space answers for those addresses instead.
+    if (window_frames_ok and
+        virtual >= user_window_base and
+        virtual < user_window_base + user_window_size)
+    {
+        return error.RangeTooLarge;
+    }
 
     if (level4.entries[level4_index] & Flags.present == 0) {
         level4.entries[level4_index] = addressOf(&level3) | table_flags;
@@ -785,14 +803,19 @@ fn isUserPageWith(space: ?*const AddressSpace, virtual: u64, writable: bool) boo
 pub fn prepareBouncePages(allocate: *const fn (limit: u64) ?u64) Error!void {
     if (bounce_ready) return;
 
+    // The frames have to sit below the image of the kernel, so the limit
+    // has to be known; without it every candidate frame would collide with
+    // a page that the tables of the kernel already map by identity.
+    const limit = kernel_lowest_address orelse return error.RangeTooLarge;
+
     var index: usize = 0;
     while (index < bounce_page_count) : (index += 1) {
-        const frame = allocate(kernel_lowest_address) orelse return error.OutOfTables;
+        const frame = allocate(limit) orelse return error.OutOfMemory;
         // A frame at or above the image would collide with a page that the
         // tables of the kernel already map by identity, and the collision
         // would give two virtual addresses to one frame — or worse, hide a
         // page of the kernel behind a bounce page.
-        if (frame >= kernel_lowest_address or frame % page_size != 0) {
+        if (frame >= limit or frame % page_size != 0) {
             return error.RangeTooLarge;
         }
         try mapKernelIdentityPage(frame);
