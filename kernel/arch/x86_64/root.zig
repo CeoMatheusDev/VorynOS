@@ -17,6 +17,7 @@
 
 pub const segment = @import("segment.zig");
 pub const frame = @import("frame.zig");
+pub const paging = @import("paging.zig");
 
 // The unit tests of the modules live in the modules themselves, and this
 // block is what brings them into the test binary.
@@ -27,4 +28,5 @@ pub const frame = @import("frame.zig");
 test {
     _ = @import("segment.zig");
     _ = @import("frame.zig");
+    _ = @import("paging.zig");
 }

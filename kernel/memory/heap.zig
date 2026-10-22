@@ -123,6 +123,15 @@ pub const Heap = struct {
                 // hold a header and a minimal payload.
                 const remainder = current.size - wanted;
                 if (remainder >= header_size + alignment) {
+                    // The successor of the block is the one that comes
+                    // after the new block, and it has to be found
+                    // **before** the size of the block changes: the size
+                    // is what says where the next block is.
+                    const following = if (self.last != current)
+                        self.nextBlock(current)
+                    else
+                        null;
+
                     const next: *BlockHeader = @ptrFromInt(@intFromPtr(current) + header_size + wanted);
                     next.* = .{
                         .size = remainder - header_size,
@@ -131,11 +140,11 @@ pub const Heap = struct {
                     };
                     current.size = wanted;
 
-                    // The block that follows the new one has to know the
-                    // size of its new predecessor.
-                    if (self.last != current) {
-                        const following = self.nextBlock(current).?;
-                        following.previous = current.size;
+                    // The successor has to know the size of its new
+                    // predecessor, and the new predecessor is the block
+                    // that was just created.
+                    if (following) |successor| {
+                        successor.previous = next.size;
                     } else {
                         self.last = next;
                     }
@@ -239,6 +248,40 @@ test "the heap hands out aligned memory and tracks its use" {
     const statistics = test_heap.statistics();
     try testing.expectEqual(@as(u32, 2), statistics.allocations);
     try testing.expect(statistics.used_bytes >= 300);
+}
+
+test "the heap splits a block that is not the last one" {
+    var test_heap: Heap = .{};
+    var buffer: [64 * 1024]u8 align(4096) = undefined;
+    test_heap.init(&buffer);
+
+    // Three blocks, so that the first one is not the last of the region.
+    const first = test_heap.alloc(1024).?;
+    const second = test_heap.alloc(1024).?;
+    const third = test_heap.alloc(1024).?;
+
+    // The first block is freed and it is split again: the block that
+    // follows it has to know the size of its new predecessor.
+    test_heap.free(first);
+    const split = test_heap.alloc(512).?;
+    try testing.expect(split == first);
+
+    // The block that follows the split one is freed, and it has to be
+    // merged with the block that the split created. The merge walks back
+    // to the predecessor, and the predecessor is found by the size that
+    // the successor holds: a size that is out of date sends the merge to
+    // the wrong address, and the merge does not happen.
+    test_heap.free(second);
+    try testing.expectEqual(@as(u32, 2), test_heap.statistics().allocations);
+
+    // The merged block holds the payload of the block that the split
+    // created and the payload of the block that was freed, and the
+    // allocation of that size comes back from it.
+    const merged = test_heap.alloc(1536).?;
+    try testing.expect(merged == first + header_size + 512);
+
+    test_heap.free(third);
+    try testing.expectEqual(@as(u32, 2), test_heap.statistics().allocations);
 }
 
 test "the heap merges a freed block with its neighbours" {

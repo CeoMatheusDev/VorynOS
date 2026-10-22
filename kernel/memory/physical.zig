@@ -86,14 +86,22 @@ pub const Manager = struct {
         for (map) |region| {
             if (!region.isUsableRam()) continue;
 
-            const first_page = @as(u32, @intCast(region.physical_start / page_size));
-            const last_page = @as(u32, @intCast((region.endAddress() + page_size - 1) / page_size));
+            // The bitmap describes the managed space, and a region that
+            // reaches above it is cut at the end of the space: a page that
+            // the bitmap cannot describe is not a page that the manager
+            // can hand out, and counting it would break the account.
+            const start = region.physical_start;
+            const end = @min(region.endAddress(), managed_address_space);
+            if (end <= start) continue;
+
+            const first_page = @as(u32, @intCast(start / page_size));
+            const last_page = @as(u32, @intCast((end + page_size - 1) / page_size));
 
             self.statistics.total_pages += last_page - first_page;
             self.markRange(first_page, last_page, false);
 
-            if (region.endAddress() > self.statistics.highest_address) {
-                self.statistics.highest_address = region.endAddress();
+            if (end > self.statistics.highest_address) {
+                self.statistics.highest_address = end;
             }
         }
 
@@ -102,8 +110,12 @@ pub const Manager = struct {
         for (map) |region| {
             if (region.isUsableRam()) continue;
 
-            const first_page = @as(u32, @intCast(region.physical_start / page_size));
-            const last_page = @as(u32, @intCast((region.endAddress() + page_size - 1) / page_size));
+            const start = region.physical_start;
+            const end = @min(region.endAddress(), managed_address_space);
+            if (end <= start) continue;
+
+            const first_page = @as(u32, @intCast(start / page_size));
+            const last_page = @as(u32, @intCast((end + page_size - 1) / page_size));
 
             self.markRange(first_page, last_page, true);
         }
@@ -128,11 +140,18 @@ pub const Manager = struct {
     /// The page that was already in use is not counted again, and a page
     /// that is **not** ordinary memory is not counted either: the count is
     /// the one of the ordinary memory pages that were free and became
-    /// em uso.
+    /// used.
     pub fn reserve(self: *Manager, address: u64, length: u64) void {
         if (length == 0) return;
+
+        // The end of the range is computed with the check of the overflow,
+        // and the range is cut at the end of the managed space: the bitmap
+        // has no page above it.
+        const end = std.math.add(u64, address, length) catch managed_address_space;
+        if (end <= address) return;
+
         const first_page = @as(u32, @intCast(address / page_size));
-        const last_page = @as(u32, @intCast((address + length + page_size - 1) / page_size));
+        const last_page = @as(u32, @intCast((@min(end, managed_address_space) + page_size - 1) / page_size));
 
         var page = first_page;
         while (page < last_page and page < managed_pages) : (page += 1) {

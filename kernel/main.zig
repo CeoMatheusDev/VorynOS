@@ -753,11 +753,24 @@ fn installUserTask() void {
 /// role one answers it.
 fn installProcess(role: u64) ?*paging.AddressSpace {
     _ = role;
-    // The window of the user mode is placed right below the image of the
-    // kernel. The image is mapped by identity, and a window inside the
-    // image would replace the pages of the kernel with the pages of the
-    // user.
-    const window = boot_info.kernel_base - usermode.window_size;
+    // The window of the user mode is placed below the **block of two
+    // megabytes** that holds the image of the kernel, and not right below
+    // the image itself.
+    //
+    // The reason is the table of the second level of the space of the
+    // process: the window needs a table of the first level of its own, and
+    // the entry of the second level that holds the window is replaced by
+    // that table. The entry covers the whole block of two megabytes, and
+    // therefore the pages of the kernel that the block holds would be lost
+    // in the space of the process.
+    //
+    // The block below the block of the kernel holds no page of the kernel,
+    // whatever the alignment of the image is: the loader falls back to an
+    // address that is aligned to the page when the machine has no region
+    // that is aligned to two megabytes, and in that case the block that
+    // holds the image also holds the window.
+    const kernel_block = boot_info.kernel_base & ~(paging.large_page_size - 1);
+    const window = kernel_block - usermode.window_size;
     if (window < handoff.page_size) {
         serial.printLine("[VNK] FATAL: there is no room for the window of the user mode", .{});
         port.haltForever();

@@ -200,13 +200,30 @@ const table_flags: u64 = Flags.present | Flags.writable | Flags.user;
 
 /// Maps a range of large pages of the kernel.
 fn mapLargeRange(virtual: u64, length: u64, flags: u64) Error!void {
+    if (length == 0) return;
+
+    // The end of the range is computed with the check of the overflow: a
+    // range that wraps would describe the pages before the start, and the
+    // loop would write them.
+    const end = std.math.add(u64, virtual, length) catch return error.RangeTooLarge;
+    if (end <= virtual) return error.RangeTooLarge;
+
+    const last_end = std.math.add(u64, end, large_page_size - 1) catch
+        return error.RangeTooLarge;
     const first = virtual / large_page_size;
-    const last = (virtual + length + large_page_size - 1) / large_page_size;
+    const last = last_end / large_page_size;
 
     const level4_index = (virtual >> 39) & 511;
     const level3_index = (virtual >> 30) & 511;
 
     if (level4_index != 0) return error.RangeTooLarge;
+
+    // The table of the second level is the one of the gigabyte of the
+    // start, and every entry of the loop is written in that table. A range
+    // that crosses the boundary of a gigabyte would write the entries of
+    // the second gigabyte in the table of the first one, and the mapping
+    // would land in the wrong address: the range is refused.
+    if (level3_index != ((end - 1) >> 30) & 511) return error.RangeTooLarge;
 
     if (level4.entries[level4_index] & Flags.present == 0) {
         level4.entries[level4_index] = addressOf(&level3) | table_flags;
@@ -417,7 +434,15 @@ pub fn mapUserPageIn(space: *AddressSpace, virtual: u64, physical: u64) Error!vo
     const level2_index = (virtual >> 21) & 511;
     const level1_index = (virtual >> 12) & 511;
 
-    if (space.level2.entries[level2_index] & Flags.present == 0) {
+    const entry = space.level2.entries[level2_index];
+    if (entry & Flags.present == 0) return error.OutOfTables;
+    if (entry & Flags.large != 0) return error.OutOfTables;
+
+    // The entry of the second level has to point at the table of the first
+    // level of the space. A virtual address outside the window lands in a
+    // table of the kernel, and writing the entry in the private table would
+    // report a success for a page that the space does not describe.
+    if ((entry & ~@as(u64, 0xFFF)) != addressOf(space.level1)) {
         return error.OutOfTables;
     }
 
@@ -504,6 +529,12 @@ fn isUserPageIn(space: *const AddressSpace, virtual: u64, writable: bool) bool {
     const entry2 = space.level2.entries[level2_index];
     if (entry2 & Flags.present == 0) return false;
     if (entry2 & Flags.large != 0) return false;
+
+    // The address is only in the space of the process when the entry of
+    // the second level is the private table of the window: the entry of
+    // another table belongs to the kernel, and the same index of the
+    // private table would answer for a page that the space does not have.
+    if ((entry2 & ~@as(u64, 0xFFF)) != addressOf(space.level1)) return false;
 
     const entry1 = space.level1.entries[level1_index];
     if (entry1 & Flags.present == 0) return false;
@@ -639,4 +670,56 @@ fn tableOf(entry: u64) *PageTable {
 /// The physical address of a table.
 fn addressOf(table: *const PageTable) u64 {
     return @intFromPtr(table);
+}
+
+const testing = std.testing;
+
+test "the mapping of the window refuses an address outside the window" {
+    try setup(0x200000, 0x300000, 0, 0);
+    process_spaces_used = 0;
+
+    const window: u64 = 0x200000 - 0x4000;
+    const space = createAddressSpace(window).?;
+
+    // The three pages of the window.
+    try mapUserPageIn(space, window, 0x400000);
+    try mapUserPageIn(space, window + page_size, 0x401000);
+    try mapUserPageIn(space, window + 2 * page_size, 0x402000);
+
+    try testing.expect(isUserRangeIn(space, window, 3 * page_size, true));
+
+    // The address two megabytes above the window is in the block of the
+    // kernel, and the space does not describe it: the entry of the second
+    // level is a table of the kernel, and the check may not read the
+    // private table of the window for it.
+    try testing.expect(!isUserRangeIn(space, window + large_page_size, page_size, true));
+
+    // The mapping of a page outside the window is refused as well, and the
+    // page of the window is not touched.
+    try testing.expectError(error.OutOfTables, mapUserPageIn(
+        space,
+        window + large_page_size,
+        0x403000,
+    ));
+    try testing.expect(isUserRangeIn(space, window, page_size, true));
+}
+
+test "a large mapping that crosses a gigabyte is refused" {
+    try setup(0x200000, 0x300000, 0, 0);
+
+    // A range that starts at the end of the first gigabyte and ends in the
+    // second one would write the entries of the second gigabyte in the
+    // table of the first one.
+    try testing.expectError(error.RangeTooLarge, mapLargeRange(
+        0x40000000 - large_page_size,
+        2 * large_page_size,
+        Flags.present | Flags.writable,
+    ));
+
+    // A range that wraps the address space is refused, and not walked.
+    try testing.expectError(error.RangeTooLarge, mapLargeRange(
+        std.math.maxInt(u64) - page_size,
+        2 * page_size,
+        Flags.present | Flags.writable,
+    ));
 }
