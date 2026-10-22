@@ -10,202 +10,208 @@
 // SPDX-License-Identifier: GPL-3.0-only                                  //
 //************************************************************************//
 
-# ADR-0008 — A exceção de um processo mata o processo, e não a máquina
+# ADR-0008 — The exception of a process kills the process, and not the machine
 
-| Campo | Valor |
+| Field | Value |
 |-------|-------|
-| **Estado** | ACEITO |
-| **Data** | 2026-10-22 |
-| **Escopo** | O tratamento das exceções e a recuperação dos processos |
+| **State** | ACCEPTED |
+| **Date** | 2026-10-22 |
+| **Scope** | The handling of exceptions and the recovery of the processes |
 
-## 1. Contexto
+## 1. Context
 
-O núcleo tratava **toda** exceção da mesma forma: imprimia o diagnóstico e
-parava a máquina. O modo de usuário existia e funcionava, mas um processo
-que escrevesse em um endereço não mapeado derrubava o sistema inteiro.
+The kernel treated **every** exception in the same way: it printed the
+diagnosis and stopped the machine. The user mode existed and worked, but a
+process that wrote in an address that was not mapped brought the whole
+system down.
 
-Isso é errado por três razões:
+That is wrong for three reasons:
 
-1. **Um defeito de um processo não é um defeito do núcleo.** O processo que
-   escreve fora da sua janela tem um defeito, e o defeito é dele. A
-   máquina tem outros processos, e derrubá-los por causa de um é
-   transformar um erro local em um erro geral.
-2. **O sistema perde a evidência do defeito.** Com a máquina parada, o
-   diagnóstico é o que fica, e não há como comparar o comportamento do
-   processo que falhou com o dos que continuaram.
-3. **O limite do privilégio vira decorativo.** O terceiro nível de
-   privilégio isola a **memória**, e não o **comportamento**: um processo
-   pode, com uma instrução só, parar o sistema.
+1. **A defect of a process is not a defect of the kernel.** The process
+   that writes outside its window has a defect, and the defect is its own.
+   The machine has other processes, and bringing them down because of one
+   is turning a local error into a general one.
+2. **The system loses the evidence of the defect.** With the machine
+   stopped, the diagnosis is what remains, and there is no way to compare
+   the behavior of the process that failed with the one of the ones that
+   continued.
+3. **The limit of privilege becomes decorative.** The third privilege level
+   isolates the **memory**, and not the **behavior**: a process can, with a
+   single instruction, stop the system.
 
-O item pendente do marco F3 era exatamente este: o **tratamento por tipo**
-das exceções, com um teste de recuperação.
+The pending item of the F3 milestone was exactly this: the **handling by
+type** of the exceptions, with a test of recovery.
 
-### 1.1 O defeito que escondia o problema
+### 1.1 The defect that hid the problem
 
-O quadro que o processador deixa quando uma exceção acontece tem **dois
-formatos**, e a diferença é a presença do código de erro.
+The frame that the processor leaves when an exception happens has **two
+shapes**, and the difference is the presence of the error code.
 
-O processador empurra, nesta ordem: o código de erro (só nas exceções que
-têm um), o `RIP`, o `CS`, as flags, o `RSP` e o `SS`. O stub da exceção
-empurra, por cima disso: um marcador, o número do vetor e os quinze
-registradores.
+The processor pushes, in this order: the error code (only on the
+exceptions that have one), the `RIP`, the `CS`, the flags, the `RSP` and
+the `SS`. The stub of the exception pushes, on top of that: a marker, the
+vector number and the fifteen registers.
 
-O resultado é que o quadro das exceções que **têm** código de erro é
-**oito bytes maior** do que o das que não têm. O código de erro fica
-entre o número do vetor e o `RIP`, e todos os deslocamentos depois dele mudam.
+The result is that the frame of the exceptions that **have** an error code
+is **eight bytes larger** than the one of the ones that do not have it. The
+error code sits between the vector number and the `RIP`, and every offset
+after it changes.
 
-O tratador e o switch do contexto liam as posições do quadro de **uma das
-duas formas**, e a escolha dependia do vetor. Um switch que leu o quadro
-na forma errada lê o `SS` no lugar do `RFLAGS`, e o processador volta
-para o código do usuário com um segmento de pilha que não é segmento de
-pilha nenhum: o resultado é a exceção 13, a falta de segmento de pilha,
-com um `SS` igual a zero.
+The handler and the context switch read the positions of the frame in **one
+of the two shapes**, and the choice depended on the vector. A switch that
+read the frame in the wrong shape reads the `SS` where the `RFLAGS` is, and
+the processor returns to the code of the user with a stack segment that is
+not a stack segment at all: the result is the exception 13, the stack
+segment fault, with an `SS` equal to zero.
 
-Este defeito **já existia** antes do incremento. Ele não aparecia porque
-nenhuma exceção com código de erro tinha acontecido no caminho de
-recuperação: até aqui, toda exceção parava a máquina de qualquer forma.
+This defect **already existed** before the increment. It did not show
+because no exception with an error code had happened in the path of
+recovery: until then, every exception stopped the machine anyway.
 
-### 1.2 A forma do quadro é um contrato, e não um detalhe
+### 1.2 The shape of the frame is a contract, and not a detail
 
-A correção estrutural não é "ler o quadro na forma certa em cada
-chamada". A correção é **uma forma só**.
+The structural correction is not "read the frame in the right shape in each
+call". The correction is **one single shape**.
 
-O stub de uma exceção **com** código de erro **normaliza** o quadro: ele
-salva o código de erro em uma posição conhecida e move as cinco palavras
-do retorno do processador **oito bytes para baixo**. O stub de uma
-exceção **sem** código de erro já produz o quadro nessa forma.
+The stub of an exception **with** an error code **normalizes** the frame:
+it saves the error code in a known position and moves the five words of the
+return of the processor **eight bytes down**. The stub of an exception
+**without** an error code already produces the frame in that shape.
 
-Depois da normalização, o tratador, o switch do contexto e a volta do
-processador leem **as mesmas posições**, e o formato do quadro deixa de
-ser uma preocupação de cada chamada. É a mesma regra que o ADR-0007
-estabeleceu para o quadro da chamada de sistema: um quadro, um switch.
+After the normalization, the handler, the context switch and the return of
+the processor read **the same positions**, and the shape of the frame stops
+being a concern of each call. It is the same rule that ADR-0007 established
+for the frame of the system call: one frame, one switch.
 
-## 2. A decisão
+## 2. The decision
 
-### 2.1 A exceção é classificada pelo segmento de código
+### 2.1 The exception is classified by the code segment
 
-A classificação é feita pelo `CS` do quadro do processador, que é a
-evidência mais direta do nível de privilégio em que o erro aconteceu:
+The classification is done by the `CS` of the frame of the processor, which
+is the most direct evidence of the privilege level in which the error
+happened:
 
-| Origem | `CS` | Tratamento |
+| Origin | `CS` | Handling |
 |--------|------|------------|
-| Modo de usuário | `0x1b` | O processo é morto, e o núcleo continua |
-| Modo de núcleo | `0x08` | A máquina para |
+| User mode | `0x1b` | The process is killed, and the kernel continues |
+| Kernel mode | `0x08` | The machine stops |
 
-A exceção no núcleo é fatal **por princípio**, e não por falta de
-alternativa: o estado do núcleo é desconhecido depois de um erro, e
-continuar a partir dele é pior do que parar. Um núcleo que continua com
-o estado corrompido produz erros que não têm relação com a causa.
+The exception in the kernel is fatal **by principle**, and not for lack of
+an alternative: the state of the kernel is unknown after an error, and
+continuing from it is worse than stopping. A kernel that continues with the
+corrupted state produces errors that have no relation to the cause.
 
-### 2.2 O processo morto não volta para o código que falhou
+### 2.2 The killed process does not go back to the code that failed
 
-O processo morto não pode voltar para a instrução que levantou a
-exceção: a instrução que levantou a falta de página levanta a falta de
-página **de novo**, e o núcleo entra num laço de exceções.
+The killed process cannot go back to the instruction that raised the
+exception: the instruction that raised the page fault raises the page fault
+**again**, and the kernel enters a loop of exceptions.
 
-O quadro do processador é **reescrito** no caminho de volta:
+The frame of the processor is **rewritten** on the way back:
 
-- o `RIP` aponta para o **laço da tarefa morta**, no núcleo;
-- o `CS` e o `SS` são os segmentos do núcleo;
-- o `RSP` é a pilha do núcleo da tarefa.
+- the `RIP` points to the **loop of the killed task**, in the kernel;
+- the `CS` and the `SS` are the segments of the kernel;
+- the `RSP` is the kernel stack of the task.
 
-As flags **não** são tocadas. O laço espera por uma interrupção com o
-`hlt`, e o temporizador é o que tira a tarefa de lá. Um laço com o `cli`
-pararia a máquina inteira, porque a tarefa morta estaria esperando com as
-interrupções desligadas.
+The flags are **not** touched. The loop waits for an interrupt with the
+`hlt`, and the timer is what takes the task out of there. A loop with the
+`cli` would stop the whole machine, because the killed task would be
+waiting with the interrupts disabled.
 
-O escalonador **não** escolhe a tarefa de novo, porque a tarefa foi
-marcada como terminada. O próximo tique do temporizador escolhe a
-primeira tarefa pronta, e a tarefa morta continua no laço, sem rodar.
+The scheduler **does not** choose the task again, because the task was
+marked as terminated. The next tick of the timer chooses the first ready
+task, and the killed task stays in the loop, without running.
 
-### 2.3 A tarefa morta é contada
+### 2.3 The killed task is counted
 
-O escalonador conta as tarefas mortas, e o relatório do núcleo mostra o
-número. Um número que é zero em toda execução é um número que não diz
-nada; o número é a evidência de que a recuperação aconteceu.
+The scheduler counts the killed tasks, and the report of the kernel shows
+the number. A number that is zero on every run is a number that says
+nothing; the number is the evidence that the recovery happened.
 
-## 3. O que foi descartado
+## 3. What was discarded
 
-### 3.1 Deixar o processo repetir a exceção
+### 3.1 Letting the process repeat the exception
 
-Descartado. A instrução que falhou falha de novo, e o console enche de
-relatórios de exceção até o núcleo parar. O laço de exceções é um
-sintoma, e não uma política de recuperação.
+Discarded. The instruction that failed fails again, and the console fills
+with reports of exception until the kernel stops. The loop of exceptions is
+a symptom, and not a recovery policy.
 
-### 3.2 A recuperação dentro do processo, com um sinal
+### 3.2 The recovery inside the process, with a signal
 
-Descartado **por agora**. A entrega de um sinal ao processo, com um
-tratador no espaço do usuário, é o modelo do POSIX e é o modelo certo
-para um sistema que vai ter bibliotecas. Ele exige, antes: uma forma de
-o processo instalar o tratador, um quadro de entrega no espaço do
-usuário, e a preservação do estado da tarefa para o retorno. É o
-incremento seguinte, e não este.
+Discarded **for now**. The delivery of a signal to the process, with a
+handler in the user space, is the model of POSIX and is the right model
+for a system that will have libraries. It requires, before: a way for the
+process to install the handler, a delivery frame in the user space, and the
+preservation of the state of the task for the return. It is the next
+increment, and not this one.
 
-### 3.3 Matar a máquina e reiniciar
+### 3.3 Killing the machine and rebooting
 
-Descartado. O objetivo do marco é que um processo possa falhar sem
-derrubar o sistema, e reiniciar a máquina não é isso.
+Discarded. The goal of the milestone is that a process can fail without
+bringing the system down, and rebooting the machine is not that.
 
-### 3.4 A exceção com o tratamento no switch
+### 3.4 The exception with the handling in the switch
 
-Descartado. O switch do contexto é chamado em dois momentos: a preempção
-e o bloqueio de uma tarefa. Ele não sabe de onde veio, e tornar o switch
-inteligente sobre a origem do quadro mistura duas responsabilidades que
-estão separadas de propósito.
+Discarded. The context switch is called in two moments: the preemption and
+the blocking of a task. It does not know where it came from, and making the
+switch aware of the origin of the frame mixes two responsibilities that
+are separated on purpose.
 
-## 4. A consequência para o escalonador
+## 4. The consequence for the scheduler
 
-O escalonador ganhou uma operação, `killCurrent`, que marca a tarefa
-corrente como terminada, conta a morte e **não** devolve a tarefa para a
-fila das prontas.
+The scheduler gained one operation, `killCurrent`, which marks the current
+task as terminated, counts the death and **does not** return the task to
+the queue of the ready ones.
 
-A regra que já existia no `prepareNext` — a tarefa que sai só volta para
-pronta se ela **estava** rodando — é a que torna a operação segura: uma
-tarefa bloqueada e uma tarefa terminada não voltam para a fila por
-acidente. O incremento **não** precisou mudar essa regra, e é por isso
-que a regra existia.
+The rule that already existed in `prepareNext` — the task that leaves only
+comes back to ready if it **was** running — is the one that makes the
+operation safe: a blocked task and a terminated task do not come back to
+the queue by accident. The increment **did not** need to change that rule,
+and that is why the rule existed.
 
-## 5. A consequência para o contrato
+## 5. The consequence for the contract
 
-O contrato da chamada de sistema **não muda**: nenhuma chamada nova, e
-nenhuma chamada muda de número ou de significado.
+The contract of the system call **does not change**: no new call, and no
+call changes its number or its meaning.
 
-O contrato da **chamada** não muda porque a morte do processo é um
-evento do núcleo, e não um resultado de chamada. O processo que provocou
-a exceção não recebe um código de erro: ele não recebe nada, porque ele
-não continua.
+The contract of the **call** does not change because the death of the
+process is an event of the kernel, and not a result of a call. The process
+that provoked the exception does not receive an error code: it receives
+nothing, because it does not continue.
 
-A única mudança visível é a **forma do quadro**, e ela é interna ao
-núcleo: os stubs, o tratador e o switch leem a mesma forma. O quadro
-continua sendo o mesmo objeto — o contexto salvo da tarefa, com os
-quinze registradores, o vetor e as palavras do retorno do processador.
+The only visible change is the **shape of the frame**, and it is internal to
+the kernel: the stubs, the handler and the switch read the same shape. The
+frame continues to be the same object — the context saved of the task, with
+the fifteen registers, the vector and the words of the return of the
+processor.
 
-## 6. A verificação
+## 6. The verification
 
-O teste de boot automatizado verifica, além do que já era verificado:
+The automated boot test verifies, in addition to what was already verified:
 
-- que um terceiro processo, que escreve em um endereço que não está
-  mapeado, **provoca** a exceção 14, com o código de erro 6, e o
-  relatório mostra o `RIP` do usuário e o `CS` do usuário;
-- que o processo é **morto**, e o console diz que o núcleo continua;
-- que o número de tarefas mortas é **relatado**;
-- que a máquina **continua**: o temporizador continua contando, a
-  conversa entre os outros dois processos **completa** o ida e volta, e
-  a máquina chega à marca `VORYN-KERNEL-READY`.
+- that a third process, which writes in an address that is not mapped,
+  **provokes** the exception 14, with the error code 6, and that the report
+  shows the `RIP` of the user and the `CS` of the user;
+- that the process is **killed**, and that the console says that the kernel
+  continues;
+- that the number of killed tasks is **reported**;
+- that the machine **continues**: the timer keeps counting, the conversation
+  between the other two processes **completes** the round trip, and the
+  machine reaches the `VORYN-KERNEL-READY` marker.
 
-O teste roda em `zig build qemu-test`, e o conjunto completo roda em
+The test runs in `zig build qemu-test`, and the complete set runs in
 `zig build check`.
 
-## 7. O estado
+## 7. The state
 
-| Item | Estado |
+| Item | State |
 |------|--------|
-| Quadro do processador com uma forma só | IMPLEMENTADO — TESTADO LOCALMENTE |
-| Exceção do modo de usuário mata o processo | IMPLEMENTADO — TESTADO LOCALMENTE |
-| Exceção do modo de núcleo é fatal | IMPLEMENTADO — TESTADO LOCALMENTE |
-| O núcleo continua depois da morte do processo | IMPLEMENTADO — TESTADO LOCALMENTE |
-| A tarefa morta não volta para o código que falhou | IMPLEMENTADO — TESTADO LOCALMENTE |
-| Contagem das tarefas mortas | IMPLEMENTADO — TESTADO LOCALMENTE |
-| Sinal no processo, com tratador no espaço do usuário | PROPOSTO |
-| Exceção por tipo, com política diferente por vetor | PROPOSTO |
-| Relatório do estado do processo no momento da morte | PROPOSTO |
+| Processor frame with one single shape | IMPLEMENTED — LOCALLY TESTED |
+| Exception of the user mode kills the process | IMPLEMENTED — LOCALLY TESTED |
+| Exception of the kernel is fatal | IMPLEMENTED — LOCALLY TESTED |
+| The kernel continues after the death of the process | IMPLEMENTED — LOCALLY TESTED |
+| The killed task does not go back to the code that failed | IMPLEMENTED — LOCALLY TESTED |
+| Count of the killed tasks | IMPLEMENTED — LOCALLY TESTED |
+| Signal in the process, with a handler in the user space | PROPOSED |
+| Exception by type, with a different policy per vector | PROPOSED |
+| Report of the state of the process at the moment of the death | PROPOSED |

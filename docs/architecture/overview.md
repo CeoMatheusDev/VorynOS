@@ -1,177 +1,182 @@
-# Visão geral da arquitetura
+# Architecture overview
 
-Este documento descreve o estado **real** da arquitetura do VorynOS neste
-incremento. Ele não descreve o sistema final: descreve o que existe, como as
-partes se conectam e o que ainda não existe.
+This document describes the **real** state of the architecture of the
+VorynOS in this increment. It does not describe the final system: it
+describes what exists, how the parts connect and what does not exist yet.
 
-O modelo de componentes e seus custos estão em
+The model of the components and their costs are in
 [`../adr/ADR-0001-voryn-fabric.md`](../adr/ADR-0001-voryn-fabric.md).
 
-## 1. Cadeia de boot
+## 1. Boot chain
 
 ```text
-   Firmware UEFI (OVMF)
+   UEFI Firmware (OVMF)
             │
             │  ExitBootServices
             ▼
    ┌──────────────────────┐
-   │  VNB — Voryn Native  │   aplicação UEFI (Zig, sem libc)
-   │        Boot          │   1. console serial + console do firmware
+   │  VNB — Voryn Native  │   UEFI application (Zig, without libc)
+   │        Boot          │   1. serial console + firmware console
    └──────────┬───────────┘   2. framebuffer (GOP)
-              │               3. mapa de memória
-              │               4. leitura da imagem do kernel
-              │               5. validação ELF64 + realocações
-              │               6. contrato de handoff
-              │               7. ExitBootServices e salto
+              │               3. memory map
+              │               4. reading of the kernel image
+              │               5. ELF64 validation + relocations
+              │               6. handoff contract
+              │               7. ExitBootServices and jump
               ▼
    ┌──────────────────────┐
-   │  VNK — Voryn Nucleus │   núcleo mínimo (Zig + Assembly)
-   │        Kernel        │   1. validação do handoff
-   └──────────┬───────────┘   2. relatório do estado da máquina
-              │               3. prova de escrita no framebuffer
+   │  VNK — Voryn Nucleus │   minimal kernel (Zig + Assembly)
+   │        Kernel        │   1. validation of the handoff
+   └──────────┬───────────┘   2. report of the state of the machine
+              │               3. write probe in the framebuffer
               ▼
-          F2: GDT, IDT, memória, timer
+          F2: GDT, IDT, memory, timer
 ```
 
-## 2. Módulos
+## 2. Modules
 
-### `shared/` — contratos e primitivas compartilhadas
+### `shared/` — shared contracts and primitives
 
-| Arquivo | Responsabilidade |
+| File | Responsibility |
 |---------|------------------|
-| `handoff.zig` | Estrutura do contrato VNB → VNK e sua validação |
-| `memmap.zig` | Operações sobre o mapa de memória (busca, resumo, região de carga) |
-| `elf64.zig` | Leitor ELF64: cabeçalho, segmentos, realocações relativas, plano de carga |
-| `usermode.zig` | Desenho da janela do modo de usuário, compartilhado com o programa do usuário |
-| `arch/x86_64/port.zig` | Primitivas de E/S de porta (in, out, cli, hlt, rdtsc) |
-| `arch/x86_64/serial.zig` | Driver da UART 16550 (COM1) e escritor formatado, com escrita atômica |
+| `handoff.zig` | Structure of the VNB → VNK contract and its validation |
+| `memmap.zig` | Operations over the memory map (search, summary, load region) |
+| `elf64.zig` | ELF64 reader: header, segments, relative relocations, load plan |
+| `usermode.zig` | Layout of the user mode window, shared with the user program |
+| `arch/x86_64/port.zig` | Port I/O primitives (in, out, cli, hlt, rdtsc) |
+| `arch/x86_64/serial.zig` | Driver of the 16550 UART (COM1) and formatted writer, with atomic write |
 
-`shared/` é compilado para três alvos diferentes: UEFI (loader), freestanding
-(kernel) e host (testes). Nenhum módulo depende de sistema operacional.
+`shared/` is compiled for three different targets: UEFI (loader),
+freestanding (kernel) and host (tests). No module depends on an operating
+system.
 
-### `boot/uefi/` — o loader VNB
+### `boot/uefi/` — the VNB loader
 
-| Arquivo | Responsabilidade |
+| File | Responsibility |
 |---------|------------------|
-| `main.zig` | Orquestração do boot e transição para o kernel |
-| `vnb/protocols.zig` | Estruturas de protocolo UEFI e detecção de layout em tempo de execução |
-| `vnb/console.zig` | Console duplo: serial e console do firmware |
-| `vnb/framebuffer.zig` | Descoberta e seleção de modo gráfico |
-| `vnb/memory.zig` | Leitura e normalização do mapa de memória do firmware |
-| `vnb/fs.zig` | Acesso ao volume de boot e leitura do arquivo do kernel |
-| `vnb/loader.zig` | Posicionamento da imagem e aplicação de realocações |
+| `main.zig` | Orchestration of the boot and transition to the kernel |
+| `vnb/protocols.zig` | UEFI protocol structures and detection of layout at run time |
+| `vnb/console.zig` | Dual console: serial and firmware console |
+| `vnb/framebuffer.zig` | Discovery and selection of the graphic mode |
+| `vnb/memory.zig` | Reading and normalization of the memory map of the firmware |
+| `vnb/fs.zig` | Access to the boot volume and reading of the kernel file |
+| `vnb/loader.zig` | Placement of the image and application of relocations |
 
-### `kernel/` — o núcleo VNK
+### `kernel/` — the VNK kernel
 
-| Arquivo | Responsabilidade |
+| File | Responsibility |
 |---------|------------------|
-| `main.zig` | Entrada do kernel, sequência de inicialização, validação do handoff |
-| `arch/x86_64/entry.s` | Trampolim de entrada, pilha de boot, regras de ABI |
-| `arch/x86_64/cpu.zig` | Registradores de controle, `CPUID`, registradores de modelo |
-| `arch/x86_64/segment.zig` e `.s` | Tabela de segmentos, segmento de tarefa, recarga dos registradores |
-| `arch/x86_64/interrupt.zig` e `.s` | Tabela de interrupções, tratadores de exceção e de interrupção |
-| `arch/x86_64/paging.zig` | Tabelas de página do núcleo, espaços de endereço dos processos e a troca de `CR3` |
-| `arch/x86_64/syscall.zig` e `.s` | Entrada da chamada de sistema e o tratador em Zig |
-| `arch/x86_64/task.s` | Troca de contexto, captura de contexto e o programa do modo de usuário |
-| `arch/x86_64/timer.zig` | Temporizador 8254, controllers 8259, contagem de interrupções |
-| `memory/physical.zig` | Gerenciador de memória física sobre o mapa do contrato |
-| `memory/heap.zig` | Heap do núcleo com etiquetas de limite e verificação de corrupção |
-| `task/context.zig` | Contexto completo de uma tarefa: todos os registradores do processador |
-| `task/scheduler.zig` | Escalonador preemptivo, criação de tarefas e de processos, troca de espaço |
-| `ipc/channel.zig` | Canal de mensagens do VNX: duas filas por canal, a espera e a latência da entrega |
+| `main.zig` | Kernel entry, initialization sequence, validation of the handoff |
+| `arch/x86_64/entry.s` | Entry trampoline, boot stack, ABI rules |
+| `arch/x86_64/cpu.zig` | Control registers, `CPUID`, model specific registers |
+| `arch/x86_64/segment.zig` and `.s` | Segment table, task segment, reload of the registers |
+| `arch/x86_64/interrupt.zig` and `.s` | Interrupt table, exception and interrupt handlers |
+| `arch/x86_64/frame.zig` | The contract of the frame that the stubs build |
+| `arch/x86_64/paging.zig` | Page tables of the kernel, address spaces of the processes and the switch of `CR3` |
+| `arch/x86_64/syscall.zig` and `.s` | Entry of the system call and the handler in Zig |
+| `arch/x86_64/task.s` | Context switch, context capture and the user mode program |
+| `arch/x86_64/timer.zig` | 8254 timer, 8259 controllers, interrupt counting |
+| `memory/physical.zig` | Physical memory manager over the map of the contract |
+| `memory/heap.zig` | Kernel heap with boundary tags and corruption detection |
+| `task/context.zig` | Complete context of a task: all the registers of the processor |
+| `task/scheduler.zig` | Preemptive scheduler, creation of tasks and of processes, switch of space |
+| `ipc/channel.zig` | Message channel of the VNX: two queues per channel, the wait and the latency of the delivery |
 
-### `tools/` — ferramentas de desenvolvimento
+### `tools/` — development tools
 
-| Arquivo | Responsabilidade |
+| File | Responsibility |
 |---------|------------------|
-| `fatimg.zig` | Construtor de volume FAT16 com o loader e o kernel |
+| `fatimg.zig` | Builder of the FAT16 volume with the loader and the kernel |
 
-### `scripts/` — automação de teste
+### `scripts/` — test automation
 
-| Arquivo | Responsabilidade |
+| File | Responsibility |
 |---------|------------------|
-| `qemu-boot-test.sh` | Teste automatizado de boot: captura o console serial e verifica marcadores |
-| `qemu-run.sh` | Boot interativo no QEMU |
+| `qemu-boot-test.sh` | Automated boot test: captures the serial console and verifies markers |
+| `qemu-run.sh` | Interactive boot in QEMU |
 
-## 3. Contratos entre módulos
+## 3. Contracts between modules
 
-| Contrato | Tipo | Onde |
+| Contract | Type | Where |
 |---------|------|------|
-| Handoff VNB → VNK | estrutura `extern` versionada | `shared/handoff.zig` |
-| Mapa de memória | array de `MemoryDescriptor` (40 bytes) | `shared/handoff.zig` |
-| Imagem do kernel | ELF64 relocável (`ET_DYN`) | `shared/elf64.zig` |
-| Janela do modo de usuário | constantes de deslocamento, compartilhadas com o assembly | `shared/usermode.zig` |
-| Contrato da chamada de sistema | versão `syscall_abi = 3`, oito chamadas | `docs/specs/syscall-abi.md` |
-| Contexto da tarefa | `extern struct` com os quinze registradores | `kernel/task/context.zig` |
-| Console | escritor `std.Io.Writer` sobre a UART | `shared/arch/x86_64/serial.zig` |
+| VNB → VNK handoff | versioned `extern` structure | `shared/handoff.zig` |
+| Memory map | array of `MemoryDescriptor` (40 bytes) | `shared/handoff.zig` |
+| Kernel image | relocatable ELF64 (`ET_DYN`) | `shared/elf64.zig` |
+| User mode window | offset constants, shared with the assembly | `shared/usermode.zig` |
+| System call contract | version `syscall_abi = 3`, eight calls | `docs/specs/syscall-abi.md` |
+| Task context | `extern struct` with the fifteen registers | `kernel/task/context.zig` |
+| Console | `std.Io.Writer` writer over the UART | `shared/arch/x86_64/serial.zig` |
 
-Nenhum contrato usa ponteiro opaco sem descrição: todo campo tem layout
-explícito e documentado.
+No contract uses an opaque pointer without a description: every field has
+an explicit and documented layout.
 
-## 4. Propriedades de segurança do incremento
+## 4. Security properties of the increment
 
-1. O loader valida a imagem do kernel antes de executá-la: magic, classe,
-   endianness, máquina, tipo, tabela de program headers, segmentos dentro do
-   arquivo, entry point dentro de um segmento, e RAM convencional por trás de
-   cada segmento.
-2. A imagem é relocável, e as realocações aplicadas são apenas do tipo
-   `R_X86_64_RELATIVE`; qualquer outro tipo é recusado.
-3. O endereço de carga é escolhido acima de 1 MiB, para não sobrescrever as
-   estruturas de dados do firmware na área baixa da PC.
-4. O kernel verifica magic, versão e coerência do mapa de memória antes de
-   usar qualquer campo.
-5. O console do firmware é desacoplado antes de `ExitBootServices`.
-6. A sonda de escrita no framebuffer só é executada quando o mapa de memória
-   **não** reporta a região do framebuffer como RAM comum, para não
-   corromper a memória que o kernel vai usar.
-7. A pilha do núcleo de cada tarefa é uma memória diferente da pilha do
-   código da tarefa, e o quadro do processador da volta é montado na pilha
-   do núcleo. Um processo do modo de usuário, portanto, não tem nenhum
-   controle sobre o quadro que decide o nível de privilégio da volta.
-8. Cada processo tem um espaço de endereço próprio, e as faixas de memória
-   que o núcleo confere são as do espaço do processo que chamou.
-9. A janela do modo de usuário fica fora da imagem do núcleo, e o seu
-   endereço é entregue à tarefa no momento da criação.
-10. A tarefa que espera por uma mensagem **não é executada**, e o quadro
-    que ela deixa é o mesmo quadro do processador que a preempção deixa,
-    e por isso o mesmo switch serve aos dois casos.
-11. O quadro do processador tem **uma forma só**: o stub de uma exceção
-    que tem código de erro salva o código e move as cinco palavras do
-    retorno para baixo, e o tratador, o switch e a volta do processador
-    leem as mesmas posições.
-12. A exceção que vem do **modo de usuário** mata o processo, e não a
-    máquina: o processo é marcado como terminado, o quadro do processador
-    é reescrito para um laço do núcleo, e o escalonador não o escolhe de
-    novo. A exceção que vem do **núcleo** é fatal, porque o estado do
-    núcleo depois do erro é desconhecido.
+1. The loader validates the kernel image before executing it: magic, class,
+   endianness, machine, type, table of program headers, segments inside the
+   file, entry point inside a segment, and conventional RAM behind each
+   segment.
+2. The image is relocatable, and the applied relocations are only of the
+   type `R_X86_64_RELATIVE`; any other type is refused.
+3. The load address is chosen above 1 MiB, so as not to overwrite the data
+   structures of the firmware in the low area of the PC.
+4. The kernel verifies the magic, the version and the coherence of the
+   memory map before using any field.
+5. The console of the firmware is decoupled before `ExitBootServices`.
+6. The write probe in the framebuffer only runs when the memory map does
+   **not** report the region of the framebuffer as common RAM, so as not to
+   corrupt the memory that the kernel is going to use.
+7. The kernel stack of each task is a different memory from the code stack
+   of the task, and the processor frame of the way back is built in the
+   kernel stack. A process of the user mode, therefore, has no control
+   over the frame that decides the privilege level of the way back.
+8. Each process has its own address space, and the ranges of memory that
+   the kernel checks are the ones of the space of the process that called.
+9. The user mode window is outside the kernel image, and its address is
+   delivered to the task at the moment of the creation.
+10. The task that waits for a message **is not run**, and the frame that it
+    leaves is the same processor frame that the preemption leaves, and
+    therefore the same switch serves the two cases.
+11. The processor frame has **one single shape**: the stub of an exception
+    that has an error code saves the code and moves the five words of the
+    return down, and the handler, the switch and the return of the
+    processor read the same positions.
+12. The exception that comes from the **user mode** kills the process, and
+    not the machine: the process is marked as terminated, the frame of the
+    processor is rewritten to a loop of the kernel, and the scheduler does
+    not choose it again. The exception that comes from the **kernel** is
+    fatal, because the state of the kernel after the error is unknown.
 
-## 5. Limitações conhecidas
+## 5. Known limitations
 
-1. O heap do núcleo é uma região fixa de 256 KiB dentro da imagem, porque
-   a região precisa continuar mapeada depois da troca das tabelas de página.
-2. O bitmap do gerenciador de memória física cobre 4 GiB do espaço físico.
-3. O tratador de exceções é fatal **quando o erro acontece no núcleo**: a
-   execução para, porque o estado do núcleo depois do erro é desconhecido.
-   A exceção que vem do modo de usuário mata o processo, e o núcleo
-   continua.
-4. O índice de pilha de interrupção do segmento de tarefa está preparado,
-   mas as portas da tabela de interrupções ainda não o usam.
-5. O loader não localiza o RSDP do ACPI; o campo existe no contrato mas
-   vale zero.
-6. O volume de teste usa nomes FAT 8.3; não há suporte a nomes longos.
-7. O sistema é single processor; não há suporte a SMP.
-8. Não há detecção de hardware além do framebuffer: VNH ainda não existe.
-9. O número de espaços de endereço é uma constante do módulo de paginação,
-   e o número de processos é fixo no núcleo.
-11. A chamada que bloqueia espera para sempre, e não existe um prazo de
-    espera.
-9. O kernel é carregado a partir de um volume FAT através do protocolo de
-   sistema de arquivos simples do firmware; não há driver de bloco próprio.
+1. The heap of the kernel is a fixed region of 256 KiB inside the image,
+   because the region has to stay mapped after the switch of the page
+   tables.
+2. The bitmap of the physical memory manager covers 4 GiB of the physical
+   address space.
+3. The exception handler is fatal **when the error happens in the kernel**:
+   the execution stops, because the state of the kernel after the error is
+   unknown. The exception that comes from the user mode kills the process,
+   and the kernel continues.
+4. The index of the interrupt stack of the task segment is prepared, but
+   the entries of the interrupt table do not use it yet.
+5. The loader does not locate the ACPI RSDP; the field exists in the
+   contract but holds zero.
+6. The test volume uses FAT 8.3 names; there is no support for long names.
+7. The system is single processor; there is no support for SMP.
+8. There is no hardware detection beyond the framebuffer: VNH does not
+   exist yet.
+9. The number of address spaces is a constant of the paging module, and
+   the number of processes is fixed in the kernel.
+10. The call that blocks waits forever, and there is no timeout of the
+    wait.
+11. The kernel is loaded from a FAT volume through the simple file system
+    protocol of the firmware; there is no block driver of its own.
 
-## 6. O que vem a seguir
+## 6. What comes next
 
-O marco F3 (execução) implementa, nesta ordem: alternância entre tarefas
-medida pelo temporizador, modo de usuário com a pilha de usuário e a
-comutação de privilégio, a primeira chamada de sistema, o canal de
-mensagens do VNX e as capacidades do VNC. Cada etapa tem critério de aceite
-verificável e teste automatizado no QEMU.
+The F3 milestone (execution) implements, in this order: the alternation
+between tasks measured by the timer, the user mode with the user stack and
+the switch of privilege, the first system call, the message channel of the
+VNX and the capabilities of the VNC. Every step has a verifiable
+acceptance criterion and an automated test in QEMU.

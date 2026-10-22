@@ -1,149 +1,149 @@
 # ADR-0001 — Voryn Fabric
 
-| Campo | Valor |
+| Field | Value |
 |-------|-------|
-| **Estado** | RASCUNHO (DRAFT) — aceito como direção de trabalho, não como arquitetura congelada |
-| **Data** | 2026-10-21 |
-| **Autoria** | Engenharia VorynOS |
-| **Substitui** | — |
-| **Substituído por** | — |
+| **Status** | DRAFT — accepted as a working direction, not as a frozen architecture |
+| **Date** | 2026-10-21 |
+| **Authored by** | VorynOS Engineering |
+| **Supersedes** | — |
+| **Superseded by** | — |
 
-## 1. Contexto
+## 1. Context
 
-O VorynOS precisa de uma arquitetura de sistema que atenda a usuários
-domésticos, gamers, desenvolvedores, profissionais, criadores de conteúdo,
-usuários avançados e aplicações com inteligência artificial, sem depender de
-kernel externo em execução nativa.
+The VorynOS needs a system architecture that serves home users, gamers,
+developers, professionals, content creators, advanced users, and AI
+applications, without depending on any external kernel running
+natively.
 
-Restrições estruturantes:
+Structural constraints:
 
-- O kernel deve conter **mecanismos privilegiados mínimos**; políticas
-  complexas pertencem a serviços isolados.
-- A segurança deve ser construída por capacidades, com menor privilégio e
-  revogação.
-- Drivers complexos não podem derrubar o sistema; o objetivo é isolamento de
-  falhas.
-- O desempenho precisa ser medido, não prometido.
+- The kernel must contain **minimal privileged mechanisms**; complex
+  policies belong to isolated services.
+- Security must be built on capabilities, with least privilege and
+  revocation.
+- Complex drivers must not be able to bring the system down; the goal is
+  fault isolation.
+- Performance must be measured, not promised.
 
-## 2. Direcionadores
+## 2. Directives
 
-- **D1** Reduzir a superfície privilegiada do kernel.
-- **D2** Permitir isolamento de falhas em drivers e serviços.
-- **D3** Controlar a comunicação entre processos de forma explícita e
-  auditável.
-- **D4** Manter o caminho crítico (syscall, troca de contexto, IPC) previsível
-  e de baixo custo.
-- **D5** Evitar abstrações prematuras e dependências desnecessárias.
+- **D1** Reduce the kernel's privileged surface.
+- **D2** Enable fault isolation in drivers and services.
+- **D3** Control interprocess communication in an explicit and
+  auditable way.
+- **D4** Keep the critical path (system call, context switch, IPC)
+  predictable and low-cost.
+- **D5** Avoid premature abstractions and unnecessary dependencies.
 
-## 3. Opções consideradas
+## 3. Considered Options
 
-### Opção A — Monólito modular
+### Option A — Modular monolith
 
-Um único kernel com subsistemas internos bem separados, tudo em modo kernel.
+A single kernel with well-separated internal subsystems, everything in kernel mode.
 
-- Prós: simplicidade, caminho rápido, fácil de depurar.
-- Contras: uma falha de driver derruba o sistema; a superfície privilegiada é
-  grande; políticas infiltram o kernel.
+- Pros: simplicity, fast path, easy to debug.
+- Cons: a driver failure brings the system down; the privileged surface is
+  large; policies leak into the kernel.
 
-### Opção B — Microkernel com serviços em user mode
+### Option B — Microkernel with services in user mode
 
-Tudo que não é mecanismo mínimo vira um processo de usuário.
+Everything that is not a minimal mechanism becomes a user process.
 
-- Prós: isolamento máximo, superfície privilegiada mínima.
-- Contras: custo de IPC em todo caminho crítico, complexidade de
-  inicialização e de recuperação, risco de overhead desproporcional para
-  um sistema que ainda não tem IPC definido.
+- Pros: maximum isolation, minimal privileged surface.
+- Cons: IPC cost on every critical path, complexity of initialization and
+  recovery, risk of disproportionate overhead for a system that does not
+  yet have IPC defined.
 
-### Opção C — Voryn Fabric (híbrido modular)
+### Option C — Voryn Fabric (modular hybrid)
 
-**Escolhida.** Mecanismos mínimos no kernel; políticas e drivers
-complexos em processos isolados, comunicando-se por canais tipados com
-transferência de capacidades; escrita em Zig, com C23 e Assembly apenas onde
-houver justificativa técnica.
+**Chosen.** Minimal mechanisms in the kernel; complex policies and drivers
+in isolated processes, communicating through typed channels with capability
+transfer; written in Zig, with C23 and Assembly only where there is
+technical justification.
 
-## 4. Decisão
+## 4. Decision
 
-Adotar o **Voryn Fabric**: um modelo híbrido modular com nove componentes.
+Adopt the **Voryn Fabric**: a modular hybrid model with nine components.
 
-| Sigla | Nome | Escopo | Onde executa |
+| Acronym | Name | Scope | Where it runs |
 |-------|------|--------|--------------|
-| VNB | Voryn Native Boot | Loader UEFI, fronteira firmware/kernel | Firmware |
-| VNK | Voryn Nucleus Kernel | Mecanismos privilegiados mínimos | Kernel |
-| VNH | Voryn Hardware Nexus | Descoberta e interface de hardware | Kernel (dados) / serviço (política) |
-| VNM | Voryn Nexus Memory | Memória física, virtual, alocadores, proteções | Kernel |
-| VNT | Voryn Task Fabric | Tarefas, escalonamento, afinidade | Kernel |
-| VNX | Voryn Exchange | Comunicação entre processos | Kernel (mecanismo) / serviços (política) |
-| VNC | Voryn Capability Fabric | Capacidades, revogação, auditoria | Kernel |
-| VND | Voryn Device Fabric | Drivers, isolamento de falhas | Kernel (registro) / user mode (driver) |
-| VSN | Voryn Service Node | Ciclo de vida, supervisão, recuperação | User mode |
+| VNB | Voryn Native Boot | UEFI loader, firmware/kernel boundary | Firmware |
+| VNK | Voryn Nucleus Kernel | Minimal privileged mechanisms | Kernel |
+| VNH | Voryn Hardware Nexus | Hardware discovery and interface | Kernel (data) / service (policy) |
+| VNM | Voryn Nexus Memory | Physical memory, virtual memory, allocators, protections | Kernel |
+| VNT | Voryn Task Fabric | Tasks, scheduling, affinity | Kernel |
+| VNX | Voryn Exchange | Interprocess communication | Kernel (mechanism) / services (policy) |
+| VNC | Voryn Capability Fabric | Capabilities, revocation, audit | Kernel |
+| VND | Voryn Device Fabric | Drivers, fault isolation | Kernel (registry) / user mode (driver) |
+| VSN | Voryn Service Node | Lifecycle, supervision, recovery | User mode |
 
-### 4.1 Fronteiras de confiança
+### 4.1 Trust boundaries
 
-1. **Firmware → VNB → VNK**: única fronteira com código de terceiros em
-   execução privilegiada. O contrato é uma estrutura versionada, validada
-   nos dois lados, com verificação de magic, versão e coerência.
-2. **VNK → serviços**: o kernel entrega capacidades, nunca ponteiros
-   globais nem acesso irrestrito.
-3. **Driver → VNK**: um driver em processo isolado recebe capacidades
-   específicas de dispositivo; exceções existem apenas para o caminho de
-   bootstrap (VNH mínimo).
-4. **Aplicação → VNX**: mensagens tipadas, com esquema versionado, limites
-   de recurso e transferência explícita de capacidades.
+1. **Firmware → VNB → VNK**: the only boundary with third-party code
+   running privileged. The contract is a versioned structure, validated
+   on both sides, with magic, version, and coherence verification.
+2. **VNK → services**: the kernel hands out capabilities, never global
+   pointers nor unrestricted access.
+3. **Driver → VNK**: a driver in an isolated process receives
+   device-specific capabilities; exceptions exist only for the bootstrap
+   path (minimal VNH).
+4. **Application → VNX**: typed messages, with a versioned schema,
+   resource limits, and explicit capability transfer.
 
-### 4.2 Onde a política NÃO entra
+### 4.2 Where policy does NOT go
 
-- Escalonamento: VNT implementa o mecanismo (filas, contexto, prioridade);
-  a política (latência interativa, perfis de jogo) fica em VSN.
-- Memória: VNM implementa alocadores e proteções; VSN decide quotas.
-- Armazenamento: VFSX implementa semântica de arquivos; VSN decide cache,
-  quotas e políticas de retenção.
+- Scheduling: VNT implements the mechanism (queues, context, priority);
+  the policy (interactive latency, game profiles) lives in VSN.
+- Memory: VNM implements allocators and protections; VSN decides quotas.
+- Storage: VFSX implements file semantics; VSN decides cache, quotas, and
+  retention policies.
 
-## 5. Justificativa
+## 5. Rationale
 
-A Opção C é escolhida porque satisfaz D1 e D2 sem pagar o custo de D4 que a
-Opção B impõe no estágio atual: o sistema ainda não possui IPC definido, e
-colocar todo o sistema em user mode antes de existir um canal de comunicação
-eficiente criaria um beco sem saída de desempenho.
+Option C is chosen because it satisfies D1 and D2 without paying the D4
+cost that Option B imposes at the current stage: the system still has no
+IPC defined, and placing the whole system in user mode before an
+efficient communication channel exists would create a performance dead end.
 
-O risco da Opção C é Known: a fronteira entre "mecanismo" e "política" pode
-ser mal desenhada e concentrada no kernel. Mitigação: cada regra que entrar
-no kernel precisa de uma justificativa registrada, e o critério de revisão é
-"esta regra é necessária para manter a segurança ou a corretude do mecanismo,
-ou poderia viver em um serviço com a mesma garantia?".
+The risk of Option C is known: the boundary between "mechanism" and
+"policy" may be poorly drawn and concentrated in the kernel. Mitigation:
+every rule that enters the kernel needs a recorded justification, and the
+review criterion is "is this rule necessary to maintain the safety or the
+correctness of the mechanism, or could it live in a service with the same guarantee?".
 
-## 6. Custos e riscos
+## 6. Costs and Risks
 
-| Risco | Impacto | Mitigação |
+| Risk | Impact | Mitigation |
 |-------|---------|-----------|
-| Superfície privilegiada excessiva | Alto | Revisão por ADR; regra no kernel exige justificativa |
-| IPC com custo alto | Médio | Medir latência de VNX antes de decidir políticas de escalonamento |
-| Isolamento de driver incompleto | Alto | Exceções de bootstrap documentadas e auditáveis |
-| Complexidade de inicialização | Médio | VSN com dependências explícitas e reinício supervisionado |
-| "Voryn Fabric" como nome sem conteúdo | Alto | Cada componente precisa de implementação e critério de aceite |
+| Excessive privileged surface | High | Review via ADR; a rule in the kernel requires justification |
+| High-cost IPC | Medium | Measure VNX latency before deciding scheduling policies |
+| Incomplete driver isolation | High | Documented and auditable bootstrap exceptions |
+| Initialization complexity | Medium | VSN with explicit dependencies and supervised restart |
+| "Voryn Fabric" as a name without content | High | Each component needs an implementation and acceptance criteria |
 
-## 7. Consequências
+## 7. Consequences
 
-- O repositório passa a organizar-se por componente, e não por camada
-  horizontal.
-- Toda fronteira nova precisa de um contrato versionado.
-- O kernel não cresce por conveniência: cresce por justificativa.
-- O desempenho de IPC e de troca de contexto precisa ser medido antes de
-  qualquer afirmação sobre adequação a jogos.
+- The repository begins to be organized by component, and not by horizontal
+  layer.
+- Every new boundary needs a versioned contract.
+- The kernel does not grow out of convenience: it grows out of justification.
+- IPC and context switch performance must be measured before any claim
+  about suitability for games.
 
-## 8. Estado de validação
+## 8. Validation Status
 
-Nenhum dos componentes além de VNB e do núcleo inicial de VNK está
-implementado. Este documento é **RASCUNHO**: a arquitetura será reavaliada
-quando VNM, VNX e VNC existirem, porque a forma final depende de decisões
-que ainda não foram tomadas (formato de mensagem, modelo de capacidade,
-granularidade de page table).
+None of the components beyond VNB and the initial kernel core of VNK is
+implemented. This document is a **DRAFT**: the architecture will be
+reassessed when VNM, VNX, and VNC exist, because the final shape depends
+on decisions that have not yet been made (message format, capability
+model, page table granularity).
 
-## 9. Perguntas em aberto
+## 9. Open Questions
 
-1. O canal de VNX será orientado a mensagem (fila por par) ou baseado em
-   registro compartilhado com notificação? Impacto direto na latência de
-   comunicação entre serviços.
-2. As capacidades do VNC serão derivadas do processo (tipo Rust) ou referências
-   a tabelas paginadas (tipo Capsicum)? Impacto direto no custo de uma syscall.
-3. O VND roda drivers em user mode desde o primeiro driver, ou apenas a
-   partir de um subconjunto mínimo? Impacto direto no marco F7.
+1. Will the VNX channel be message-oriented (one queue per pair) or based
+   on a shared register with notification? Direct impact on the latency of
+   communication between services.
+2. Will the VNC capabilities be derived from the process (Rust-style) or
+   be references to paginated tables (Capsicum-style)? Direct impact on system call cost.
+3. Does VND run drivers in user mode from the first driver, or only from
+   a minimal subset onward? Direct impact on the F7 milestone.

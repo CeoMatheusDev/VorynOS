@@ -121,7 +121,7 @@ voryn_exception_\number:
      * and the five words of the return of the processor are moved down by
      * eight bytes. The handler, the switch of the context and the return of
      * the processor read the same offsets in the two cases, and the shape of
-     * the frame stops being uma preocupação de cada chamada. */
+     * the frame stops being a concern of each call. */
     movq 136(%rsp), %rax
     movq %rax, voryn_exception_error_code(%rip)
     movq 144(%rsp), %rax

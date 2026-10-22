@@ -53,8 +53,8 @@ pub const State = enum {
     running,
     /// The task is waiting for an event.
     ///
-    /// A tarefa bloqueada espera por uma mensagem, e ela não é escolhida
-    /// pelo escalonador até que a mensagem chegue.
+    /// The blocked task waits for a message, and the scheduler does not
+    /// choose it until the message arrives.
     blocked,
     /// The task finished.
     terminated,
@@ -249,20 +249,21 @@ pub const Scheduler = struct {
         return self.prepareNext();
     }
 
-    /// Prepara a troca para a próxima tarefa que pode ser escolhida.
+    /// Prepares the switch to the next task that can be chosen.
     ///
-    /// A função é usada pelo temporizador e pelo bloqueio de uma tarefa: nos
-    /// dois casos a tarefa que sai é salva, e a próxima tarefa é escolhida
-    /// e preparada. A diferença é que o bloqueio não é um tique do
-    /// temporizador, e por isso o contador de tiques não anda.
+    /// The function is used by the timer and by the blocking of a task: in
+    /// both cases the task that leaves is saved, and the next task is
+    /// chosen and prepared. The difference is that the blocking is not a
+    /// tick of the timer, and therefore the tick counter does not move.
     fn prepareNext(self: *Scheduler) bool {
         const current = self.current orelse return false;
 
         const next = self.findNextReady(current) orelse return false;
 
-        // A tarefa que sai fica pronta para ser escolhida de novo, e
-        // **não** fica quando ela está bloqueada: uma tarefa que espera por
-        // uma mensagem só é escolhida de novo quando a mensagem chega.
+        // The task that leaves becomes ready to be chosen again, and
+        // **does not** become ready again when it is blocked: a task that
+        // waits for a message is only chosen again when the message
+        // arrives.
         if (current.state == .running) {
             current.state = .ready;
         }
@@ -302,17 +303,17 @@ pub const Scheduler = struct {
         return true;
     }
 
-    /// Bloqueia a tarefa corrente à espera de uma mensagem.
+    /// Blocks the current task waiting for a message.
     ///
-    /// A função registra a espera na fila do canal, marca a tarefa como
-    /// bloqueada e prepara a troca para outra tarefa. O resultado da
-    /// chamada é escrito no contexto salvo da tarefa quando a mensagem
-    /// chega, e a tarefa continua depois da chamada, como se a chamada
-    /// tivesse respondido.
+    /// The function registers the wait in the queue of the channel, marks
+    /// the task as blocked and prepares the switch to another task. The
+    /// result of the call is written in the context saved of the task when
+    /// the message arrives, and the task continues after the call, as if the
+    /// call had answered at once.
     ///
-    /// A função devolve falso quando não há outra tarefa para escolher, e
-    /// nesse caso a tarefa **não** é bloqueada: a chamada devolve o erro
-    /// da fila vazia, e a tarefa continua.
+    /// The function returns false when there is no other task to choose,
+    /// and in that case the task is **not** blocked: the call returns the
+    /// error of the empty queue, and the task continues.
     pub fn blockCurrent(self: *Scheduler, target: *channel.Channel, side: u64) bool {
         const task = self.current orelse return false;
 
@@ -325,32 +326,32 @@ pub const Scheduler = struct {
 
         if (!target.wait(side, waiter)) return false;
 
-        // A tarefa fica bloqueada, e o escalonador não a escolhe até que a
-        // mensagem chegue.
+        // The task stays blocked, and the scheduler does not choose it
+        // until the message arrives.
         task.state = .blocked;
         self.statistics.blocks += 1;
 
-        // Sem outra tarefa para executar, o bloqueio não faz sentido: a
-        // tarefa seria a única, e a espera seria um laço occupado.
+        // With no other task to run, the blocking makes no sense: the task
+        // would be the only one, and the wait would be a busy loop.
         if (!self.prepareNext()) {
             task.state = .running;
             _ = target.cancelWait(side, waiter);
             return false;
         }
 
-        // A entrada da chamada sabe que a tarefa não pode voltar para o
-        // modo de usuário, e entrega o controle ao escalonador.
+        // The entry of the call knows that the task cannot go back to the
+        // user mode, and hands the control to the scheduler.
         voryn_syscall_blocked = 1;
 
         return true;
     }
 
-    /// Mata a tarefa corrente.
+    /// Kills the current task.
     ///
-    /// A tarefa é marcada como terminada, e o escalonador não a escolhe de
-    /// novo. É o destino de uma exceção que veio do modo de usuário: o
-    /// processo tem um defeito, e o defeito de um processo não derruba a
-    /// máquina.
+    /// The task is marked as terminated, and the scheduler does not choose
+    /// it again. It is the fate of an exception that came from the user
+    /// mode: the process has a defect, and the defect of a process does not
+    /// bring the machine down.
     pub fn killCurrent(self: *Scheduler) void {
         const task = self.current orelse return;
         task.state = .terminated;
@@ -358,9 +359,10 @@ pub const Scheduler = struct {
         self.statistics.killed += 1;
     }
 
-    /// Acorda a tarefa que espera por uma mensagem.
+    /// Wakes the task that waits for a message.
     ///
-    /// A tarefa fica pronta, e o escalonador a escolhe no próximo tique.
+    /// The task becomes ready, and the scheduler chooses it on the next
+    /// tick.
     fn wakeTask(task: *anyopaque) void {
         const value: *Task = @ptrCast(@alignCast(task));
         if (value.state == .terminated) return;
@@ -486,9 +488,9 @@ pub extern var voryn_next_cr3: u64;
 
 /// The flag that tells the entry of the system call that the task blocked.
 ///
-/// O valor é um quando a tarefa corrente ficou esperando por uma mensagem,
-/// e a entrada da chamada entrega o controle ao escalonador em vez de
-/// voltar para o modo de usuário.
+/// The value is one when the current task was left waiting for a
+/// message, and the entry of the call hands the control to the scheduler
+/// instead of going back to the user mode.
 pub extern var voryn_syscall_blocked: u64;
 
 /// Captures the context of the task that is running.

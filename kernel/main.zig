@@ -115,19 +115,19 @@ var user_window_base: u64 = 0;
 /// The number of processes that the kernel creates.
 const process_count = 3;
 
-/// The address space of the process of the usuário mode.
+/// The address space of the process of the user mode.
 var user_space: ?*paging.AddressSpace = null;
 
-/// The address space of the segundo processo.
+/// The address space of the second process.
 var second_space: ?*paging.AddressSpace = null;
 
 /// The address space of the third process.
 ///
-/// O terceiro processo provoca uma falta de página, e ele existe para
-/// provar que uma exceção de um processo não derruba o núcleo.
+/// The third process provokes a page fault, and it exists to prove that an
+/// exception of a process does not bring the kernel down.
 var third_space: ?*paging.AddressSpace = null;
 
-/// The stack of the kernel do segundo processo.
+/// The stack of the kernel of the second process.
 var second_task_stack: [task_stack_size]u8 align(16) = undefined;
 
 /// The stack of the kernel of the third process.
@@ -199,7 +199,8 @@ fn userRefusedAddress() u64 {
 /// The address of the eighth word of the page of data of the user mode.
 ///
 /// The program of the user mode writes there the value of the answer of the
-/// channel, e o valor prova que a mensagem do núcleo chegou ao usuário.
+/// channel, and the value proves that the message of the kernel reached
+/// the user.
 fn userAnswerAddress() u64 {
     return userDataAddress() + usermode.data_answer;
 }
@@ -208,7 +209,8 @@ fn userAnswerAddress() u64 {
 ///
 /// The program of the user mode writes there the answer of the call that
 /// copies a block whose ranges overlap. The value proves that the kernel
-/// copied the block, e que a tarefa do usuário mode não derrubou a máquina.
+/// copied the block, and that the task of the user mode did not bring the
+/// machine down.
 fn userOverlapAddress() u64 {
     return userDataAddress() + usermode.data_overlap_result;
 }
@@ -258,8 +260,8 @@ const pattern_bytes: [8]u8 = @bitCast(user_overlap_pattern);
 
 /// The value that the kernel answers to the message of the user mode.
 ///
-/// The answer é o valor da mensagem com os bytes invertidos, e o núcleo
-/// confere o valor na página de dados do usuário.
+/// The answer is the value of the message with the bytes inverted, and the
+/// kernel checks the value in the page of data of the user.
 const user_answer_value: u64 = 0x5A5A_1234 ^ 0xFFFF_FFFF_FFFF_FFFF;
 
 /// The number of bytes that the program of the user mode writes.
@@ -802,9 +804,9 @@ fn installScheduler() void {
             second_task.context.rsp,
         });
 
-        // O terceiro processo é o que provoca a falta de página, e ele
-        // existe para provar que uma exceção de um processo não derruba o
-        // núcleo.
+        // The third process is the one that provokes the page fault, and
+        // it exists to prove that an exception of a process does not bring
+        // the kernel down.
         const third_task = scheduler.scheduler.spawnUser(
             userCodeAddress(),
             userStackAddress(),
@@ -894,11 +896,12 @@ fn reportUserTask() void {
         serial.printLine("[VNK] user: the kernel refused the call of an address of the kernel", .{});
     }
 
-    // O canal: o processo de papel zero manda uma mensagem, e o processo
-    // de papel um a responde. O valor na página de dados do processo de
-    // papel zero prova que a mensagem voltou pelo canal, e a latência que
-    // o canal relata é o intervalo entre a mensagem sair e a mensagem
-    // chegar, e não a espera do escalonador.
+    // The channel: the process of role zero sends a message, and the
+    // process of role one answers it. The value in the page of data of the
+    // process of role zero proves that the message came back through the
+    // channel, and the latency that the channel reports is the interval
+    // between the message leaving and the message arriving, and not the
+    // wait of the scheduler.
     var answer: u64 = 0;
     attempts = 0;
     while (attempts < 10_000_000) : (attempts += 1) {
@@ -923,8 +926,8 @@ fn reportUserTask() void {
         serial.printLine("[VNK] channel: the message arrived in {d} cycles", .{latency});
     }
 
-    // A entrega a uma tarefa que esperava é o que prova que o bloqueio
-    // funciona: a tarefa ficou esperando, e a mensagem a acordou.
+    // The delivery to a task that was waiting is what proves that the
+    // blocking works: the task was waiting, and the message woke it up.
     const deliveries = syscall.channelDeliveries(0, syscall.Side.user);
     serial.printLine("[VNK] channel: {d} deliveries to a task that was waiting", .{deliveries});
 
@@ -956,10 +959,10 @@ fn reportUserTask() void {
         serial.printLine("[VNK] user: the second process wrote 0x{x} in its own page", .{second_marker});
     }
 
-    // The copy between the dois processos: o processo de papel zero copiou
-    // um bloco da sua página para a página do processo de papel um. A
-    // página do processo de papel zero tem de continuar com o bloco
-    // original, e a página do processo de papel um tem o bloco copiado.
+    // The copy between the two processes: the process of role zero copied
+    // a block of its page into the page of the process of role one. The
+    // page of the process of role zero has to keep the original block, and
+    // the page of the process of role one has the copied block.
     const copy_result = userWord(space, userCopyResultAddress());
     const target = userWord(second, userCopyTargetAddress());
     const origin_target = userWord(space, userCopyTargetAddress());

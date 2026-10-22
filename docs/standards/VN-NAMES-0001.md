@@ -1,153 +1,155 @@
-# VN-NAMES-0001 — Convenções de nomes do VorynOS
+# VN-NAMES-0001 — VorynOS naming conventions
 
-| Campo | Valor |
+| Field | Value |
 |-------|-------|
-| **Estado** | ACEITO |
-| **Data** | 2026-10-21 |
-| **Escopo** | Código, diretórios, artefatos e formatos nativos |
+| **State** | ACCEPTED |
+| **Date** | 2026-10-21 |
+| **Scope** | Code, directories, artifacts and native formats |
 
-## 1. Princípio
+## 1. Principle
 
-O nome de um artefato do VorynOS deve permitir identificar, pela leitura do
-nome, **o que é**, **a qual componente pertence** e, quando aplicável, **em
-que formato ou camada vive**. Nomes não descrevem implementação: `VNC` é o
-componente, não a sua versão.
+The name of an artifact of the VorynOS has to allow the identification, by
+the reading of the name, of **what it is**, **to which component it
+belongs** and, when applicable, **in which format or layer it lives**.
+Names do not describe an implementation: `VNC` is the component, and not its
+version.
 
-## 2. Componentes do Voryn Fabric
+## 2. The components of the Voryn Fabric
 
-Siglas de três letras, prefixo `V` + inicial do nome em inglês:
+Three letter acronyms, prefix `V` + the initial of the name in English:
 
-| Sigla | Nome | Significado |
+| Acronym | Name | Meaning |
 |-------|------|-------------|
-| VNB | Voryn Native Boot | Loader UEFI |
-| VNK | Voryn Nucleus Kernel | Núcleo privilegiado |
-| VNH | Voryn Hardware Nexus | Descoberta de hardware |
-| VNM | Voryn Nexus Memory | Gerência de memória |
-| VNT | Voryn Task Fabric | Tarefas e escalonamento |
-| VNX | Voryn Exchange | Comunicação entre processos |
-| VNC | Voryn Capability Fabric | Capacidades |
+| VNB | Voryn Native Boot | UEFI loader |
+| VNK | Voryn Nucleus Kernel | Privileged kernel |
+| VNH | Voryn Hardware Nexus | Hardware discovery |
+| VNM | Voryn Nexus Memory | Memory management |
+| VNT | Voryn Task Fabric | Tasks and scheduling |
+| VNX | Voryn Exchange | Communication between processes |
+| VNC | Voryn Capability Fabric | Capabilities |
 | VND | Voryn Device Fabric | Drivers |
-| VSN | Voryn Service Node | Serviços |
+| VSN | Voryn Service Node | Services |
 
-A sigla de um componente não pode ser reutilizada por outro componente.
+The acronym of a component cannot be reused by another component.
 
-## 3. Formatos nativos
+## 3. Native formats
 
-| Formato | Extensão | Conteúdo |
+| Format | Extension | Content |
 |---------|----------|----------|
-| VEX | `.vex` | Executável |
-| VLIB | `.vlb` | Biblioteca |
-| VPK | `.vpk` | Pacote de aplicação |
-| VDRV | `.vdr` | Pacote de driver |
-| VCFG | `.vcfg` | Configuração estruturada |
-| VARC | `.varc` | Contêiner de arquivos |
-| VIMG | `.vimg` | Imagem de volume |
+| VEX | `.vex` | Executable |
+| VLIB | `.vlb` | Library |
+| VPK | `.vpk` | Application package |
+| VDRV | `.vdr` | Driver package |
+| VCFG | `.vcfg` | Structured configuration |
+| VARC | `.varc` | File container |
+| VIMG | `.vimg` | Volume image |
 
-## 4. Identificadores de código
+## 4. Code identifiers
 
-Em inglês técnico, para manter interoperabilidade com o ecossistema Zig e
-com ferramentas externas.
+In technical English, to keep the interoperability with the Zig ecosystem
+and with the external tools.
 
-| Elemento | Convenção | Exemplo |
+| Element | Convention | Example |
 |----------|-----------|---------|
-| Função, método | `camelCase` | `planLoad`, `exitBootServices` |
-| Variável local, campo | `camelCase` | `loadBias`, `memoryMapEntries` |
-| Constante de compilação | `snake_case` | `max_memory_descriptors` |
-| Tipo, estrutura, union | `PascalCase` | `BootHandoff`, `MemoryDescriptor` |
-| Enumeração | `PascalCase` | `PixelFormat` |
-| Variante de enumeração | `camelCase` | `runtimeServicesData` |
-| Sigla, tipo ou constante em CAIXA ALTA | `SCREAMING_SNAKE_CASE` | `PT_LOAD`, `EFI_REVISION` |
-| Módulo, arquivo | `snake_case` | `memmap.zig`, `loader.zig` |
-| Diretório | `snake_case` | `shared/`, `boot/uefi/` |
+| Function, method | `camelCase` | `planLoad`, `exitBootServices` |
+| Local variable, field | `camelCase` | `loadBias`, `memoryMapEntries` |
+| Compile time constant | `snake_case` | `max_memory_descriptors` |
+| Type, structure, union | `PascalCase` | `BootHandoff`, `MemoryDescriptor` |
+| Enumeration | `PascalCase` | `PixelFormat` |
+| Enumeration variant | `camelCase` | `runtimeServicesData` |
+| Acronym, type or constant in UPPER CASE | `SCREAMING_SNAKE_CASE` | `PT_LOAD`, `EFI_REVISION` |
+| Module, file | `snake_case` | `memmap.zig`, `loader.zig` |
+| Directory | `snake_case` | `shared/`, `boot/uefi/` |
 
-Regras adicionais:
+Additional rules:
 
-1. Um identificador que represente um valor do firmware ou de uma
-   especificação preserva a grafia original (`PT_LOAD`, `EFI_FILE_PROTOCOL`).
-2. Nomes de tipo não usam prefixo de módulo (`Memmap.MemoryDescriptor` e
-   `handoff.MemoryDescriptor` são o mesmo tipo).
-3. Funções públicas de um módulo têm o verbo no início: `open`, `read`,
-   `fetch`, `place`, `validate`, `summarize`.
+1. An identifier that represents a value of the firmware or of a
+   specification preserves the original spelling (`PT_LOAD`,
+   `EFI_FILE_PROTOCOL`).
+2. Type names do not use a module prefix (`Memmap.MemoryDescriptor` and
+   `handoff.MemoryDescriptor` are the same type).
+3. Public functions of a module have the verb at the beginning: `open`,
+   `read`, `fetch`, `place`, `validate`, `summarize`.
 
-## 5. Estrutura de diretórios
+## 5. Directory structure
 
 ```text
 VorynOS/
-├── boot/uefi/        loader VNB
-├── kernel/           núcleo VNK
-│   ├── arch/x86_64/  código específico da arquitetura
+├── boot/uefi/        VNB loader
+├── kernel/           VNK kernel
+│   ├── arch/x86_64/  architecture specific code
 │   ├── memory/       VNM
 │   ├── task/         VNT
 │   ├── ipc/          VNX
-│   ├── syscall/      interface de syscall
+│   ├── syscall/      syscall interface
 │   └── security/     VNC
 ├── drivers/          VND
 ├── services/         VSN
 ├── storage/          VNV
-├── formats/          leitores e escritores dos formatos nativos
-├── runtime/          runtime de usuário
-├── libraries/        bibliotecas nativas
+├── formats/          readers and writers of the native formats
+├── runtime/          user runtime
+├── libraries/        native libraries
 ├── graphics/         VGR
 ├── desktop/          VSH
-├── apps/             aplicações nativas
+├── apps/             native applications
 ├── ai/               VAI
 ├── compatibility/    VCB
-├── sdk/              SDK e Ferramentas de desenvolvimento
-├── shared/           contratos e código compartilhado entre loader e kernel
-├── tools/            ferramentas de desenvolvimento (executáveis de host)
-├── tests/            testes que não pertencem a um módulo
+├── sdk/              SDK and development tools
+├── shared/           contracts and code shared between the loader and the kernel
+├── tools/            development tools (host executables)
+├── tests/            tests that do not belong to a module
 ├── docs/
-│   ├── adr/          decisões de arquitetura
-│   ├── architecture/ visão geral da arquitetura
-│   ├── standards/    padrões (VVS, VN-NAMES)
-│   ├── specs/        especificações normativas
-│   ├── roadmap/      marcos e estado
-│   └── testing/      estratégia de teste
-└── scripts/          scripts de automação
+│   ├── adr/          architecture decisions
+│   ├── architecture/ overview of the architecture
+│   ├── standards/    standards (VVS, VN-NAMES)
+│   ├── specs/        normative specifications
+│   ├── roadmap/      milestones and state
+│   └── testing/      testing strategy
+└── scripts/          automation scripts
 ```
 
-`shared/` contém **apenas** o que é realmente compartilhado entre o loader
-e o kernel (contratos e primitivas de arquitetura). Reutilização acidental
-entre módulos de kernel não justifica uma dependência em `shared/`.
+`shared/` holds **only** what is really shared between the loader and the
+kernel (contracts and architecture primitives). An accidental reuse between
+kernel modules does not justify a dependency on `shared/`.
 
-## 6. Nomes de arquivo
+## 6. File names
 
-- `snake_case` com extensão de acordo com o conteúdo:
-  - `.zig` para Zig;
-  - `.c` / `.h` para C23;
-  - `.s` para Assembly (sem extensão específica de montador, para não
-    confundir o montador integrado do Zig com o GNU as);
-  - `.md` para documentação;
-  - `.sh` para scripts.
-- Um arquivo de teste acompanha o módulo testado: `elf64.zig` contém seus
-  próprios testes; testes de integração ficam em `tests/`.
-- Nomes de artefatos gerados usam o prefixo `voryn-`: `voryn-boot.efi`,
-  `voryn-kernel`, `voryn-fsimg`.
+- `snake_case` with the extension according to the content:
+  - `.zig` for Zig;
+  - `.c` / `.h` for C23;
+  - `.s` for Assembly (with no assembler specific extension, so as not to
+    confuse the integrated assembler of Zig with the GNU as);
+  - `.md` for documentation;
+  - `.sh` for scripts.
+- A test file accompanies the tested module: `elf64.zig` holds its own
+  tests; the integration tests live in `tests/`.
+- The names of the generated artifacts use the prefix `voryn-`:
+  `voryn-boot.efi`, `voryn-kernel`, `voryn-fsimg`.
 
-## 7. Nomes de volume de boot
+## 7. Boot volume names
 
-O volume EFI de inicialização do VorynOS usa nomes curtos, compatíveis com
-FAT 8.3, porque o firmware de muitas plataformas só garante a leitura de
-volume FAT com nomes curtos:
+The EFI boot volume of the VorynOS uses short names, compatible with FAT
+8.3, because the firmware of many platforms only guarantees the reading of
+a FAT volume with short names:
 
-| Caminho | Conteúdo |
+| Path | Content |
 |---------|----------|
-| `/EFI/BOOT/BOOTX64.EFI` | Loader VNB |
-| `/BOOT/VORYNK.ELF` | Imagem do kernel |
+| `/EFI/BOOT/BOOTX64.EFI` | VNB loader |
+| `/BOOT/VORYNK.ELF` | Kernel image |
 
-O VFSX (marco F4) substituirá esse volume por uma imagem **VIMG**, com
-suporte a nomes longos e metadados próprios.
+The VFSX (milestone F4) will replace that volume with a **VIMG** image,
+with support for long names and metadata of its own.
 
-## 8. Nomes de símbolos exportados
+## 8. Names of the exported symbols
 
-Símbolos globais exportados por um binfreware usam o prefixo do componente:
+Global symbols exported by a binary use the prefix of the component:
 
 ```text
-voryn_kernel_entry          trampolim de entrada do VNK
-voryn_kmain                 ponto de entrada em Zig do VNK
-voryn_boot_stack            pilha de boot do kernel
+voryn_kernel_entry          entry trampoline of the VNK
+voryn_kmain                 Zig entry point of the VNK
+voryn_boot_stack            boot stack of the kernel
 ```
 
-Nenhum símbolo exportado entra em conflito com o firmware, o que importa
-porque o loader e o kernel coexistem no mesmo espaço de endereços durante a
-transição.
+No exported symbol conflicts with the firmware, which matters because the
+loader and the kernel coexist in the same address space during the
+transition.

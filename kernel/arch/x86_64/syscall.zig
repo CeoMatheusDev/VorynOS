@@ -162,11 +162,11 @@ pub const Number = struct {
     /// channel that holds the message. The result is the type of the
     /// message, and the value of the message comes back in the `RDX`.
     ///
-    /// A chamada que bloqueia é diferente da que não bloqueia: a tarefa
-    /// que espera **não** fica acordada, e o escalonador escolhe outra
-    /// tarefa. A mensagem entrega o resultado direto no contexto salvo da
-    /// tarefa, e a tarefa continua depois da chamada, como se a chamada
-    /// tivesse respondido.
+    /// The call that blocks is different from the one that does not: the
+    /// task that waits **is not** kept awake, and the scheduler chooses
+    /// another one. The message delivers the result straight into the
+    /// context saved of the task, and the task continues after the call, as
+    /// if the call had answered at once.
     pub const receive_blocking: u64 = 8;
     /// The call that copies a block of memory from the process of the caller
     /// into the space of another process.
@@ -207,8 +207,8 @@ pub const Error = struct {
     pub const unknown_process: u64 = 8;
     /// The wait is impossible.
     ///
-    /// A tarefa esperou por uma mensagem e não havia outra tarefa para
-    /// executar, e a espera seria um laço ocupado.
+    /// The task waited for a message and there was no other task to run,
+    /// and the wait would be a busy loop.
     pub const wait_impossible: u64 = 9;
 };
 
@@ -252,8 +252,8 @@ pub fn initChannels() void {
 /// Sends a message to a channel of the kernel.
 ///
 /// The function is the interface of the kernel with the channel, e o
-/// módulo do canal é importado em um só lugar, para que o estado do canal
-/// não dependa do caminho de importação.
+/// module of the channel is imported in a single place, so that the state of
+/// the channel does not depend on the import path.
 pub fn sendMessage(channel_id: u64, side: u64, kind: u64, value: u64) bool {
     const channel = channel_module.get(channel_id) orelse return false;
     return channel.sendTo(side, .{ .kind = kind, .value = value });
@@ -365,8 +365,8 @@ pub fn verify() bool {
 /// of privilege of the caller, which tells the handler whether the call
 /// comes from the user mode or from the kernel.
 ///
-/// The result of the call is returned in the first register, e o valor
-/// negativo de um erro indica que a chamada falhou.
+/// The result of the call is returned in the first register, and the
+/// negative value of an error tells that the call failed.
 pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callconv(.c) void {
     const number = frame.rax;
 
@@ -445,8 +445,8 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
 
 /// The value of a call that failed.
 ///
-/// The value is a negative number, e o seu valor absoluto é o código do
-/// erro.
+/// The value is a negative number, and its absolute value is the code of
+/// the error.
 pub fn failure(code: u64) u64 {
     return -%code;
 }
@@ -475,11 +475,11 @@ fn write(buffer: u64, length: u64, descriptor: u64, privilege: u64) u64 {
 ///
 /// The copy tolerates ranges that overlap: the user chooses the two
 /// addresses, and a copy that refused the overlap would deny a call that
-/// is legitimate. The instruction of the copy is the one of a move, e
-/// não a de uma cópia, porque a cópia exige que as duas faixas não se
-/// sobreponham, e a exigência levanta um pânico no núcleo, que para a
-/// máquina: uma tarefa do usuário mode seria capaz de derrubar o sistema
-/// com dois argumentos.
+/// is legitimate. The instruction of the copy is the one of a move, and
+/// not the one of a copy, because a copy requires that the two ranges do
+/// not overlap, and the requirement raises a panic in the kernel, which
+/// stops the machine: a task of the user mode would be able to bring the
+/// system down with two arguments.
 fn memcpy(destination: u64, source: u64, length: u64, privilege: u64) u64 {
     if (privilege != Privilege.user) return failure(Error.not_allowed);
     if (length == 0 or length > max_block_length) return failure(Error.invalid_length);
@@ -520,11 +520,12 @@ fn send(channel_id: u64, side: u64, kind: u64, value: u64, privilege: u64) u64 {
 
     const message = channel_module.Message{ .kind = kind, .value = value };
 
-    // A mensagem vai direto para a tarefa que espera pela fila, e ela não
-    // fica na fila: a entrega escreve o resultado no contexto salvo da
-    // tarefa, e a tarefa acorda. Sem tarefa esperando, a mensagem fica na
-    // fila. O caminho é o mesmo nos dois casos, e por isso ele é o que
-    // marca o momento da saída da mensagem.
+    // The message goes straight to the task that waits for the queue, and
+    // it does not stay in the queue: the delivery writes the result into
+    // the context saved of the task, and the task wakes up. With no task
+    // waiting, the message stays in the queue. The path is the same in the
+    // two cases, and therefore it is what marks the moment the message
+    // leaves.
     const sent = channel.post(side, message);
     if (!sent) {
         return failure(Error.full_queue);
@@ -565,8 +566,8 @@ fn receive(frame: *SyscallFrame, channel_id: u64, side: u64, privilege: u64) u64
 /// the call in the same registers as a call that had answered at once.
 ///
 /// The function returns the type of the message when the queue already had
-/// one, and zero when the caller was left waiting: the result真正的 chega
-/// depois, no contexto salvo da tarefa.
+/// one, and zero when the caller was left waiting: the result really
+/// arrives later, in the context saved of the task.
 fn receiveBlocking(frame: *SyscallFrame, channel_id: u64, side: u64, privilege: u64) u64 {
     if (privilege != Privilege.user) return failure(Error.not_allowed);
 
@@ -580,14 +581,14 @@ fn receiveBlocking(frame: *SyscallFrame, channel_id: u64, side: u64, privilege: 
         return message.kind;
     }
 
-    // A fila está vazia: a tarefa espera pela mensagem.
+    // The queue is empty: the task waits for the message.
     const scheduler = @import("../../task/scheduler.zig");
     if (!scheduler.scheduler.blockCurrent(channel, side)) {
         return failure(Error.wait_impossible);
     }
 
-    // A tarefa ficou esperando: o resultado chega depois, no contexto
-    // salvo da tarefa, e o valor de retorno é irrelevante.
+    // The task is now waiting: the result arrives later, in the context
+    // saved of the task, and the return value is irrelevant.
     return 0;
 }
 

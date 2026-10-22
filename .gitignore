@@ -17,7 +17,7 @@ zig-cache/
 *.img
 serial.log
 
-# Arquivos de trabalho do emulador, usados no diagnóstico.
+# Work files of the emulator, used in the diagnosis.
 .qemu-run/
 
 # Release archives generated locally

@@ -97,7 +97,7 @@ voryn_syscall_instruction_entry:
     /* The word of the error code and the vector, as the stub of the
      * interruption does, so that the frame has the same shape in the two
      * cases: the switch of the interruption reads the frame with the same
-     * offsets, e o quadro da chamada é lido do mesmo jeito. The values are
+     * offsets, and the frame of the call is read the same way. The values are
      * not used by the call, and they exist for the shape of the frame. */
     pushq $0                                /* the word of the error code */
     pushq $0                                /* the vector */

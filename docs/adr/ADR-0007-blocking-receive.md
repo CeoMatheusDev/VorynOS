@@ -10,193 +10,189 @@
 // SPDX-License-Identifier: GPL-3.0-only                                  //
 //**************************************************************************
 
-# ADR-0007 — A chamada que bloqueia à espera de uma mensagem
+# ADR-0007 — The call that blocks waiting for a message
 
-| Campo | Valor |
+| Field | Value |
 |-------|-------|
-| **Estado** | ACEITO |
-| **Data** | 2026-10-22 |
-| **Escopo** | A comunicação entre processos e o escalonador |
+| **Status** | ACCEPTED |
+| **Date** | 2026-10-22 |
+| **Scope** | Interprocess communication and the scheduler |
 
-## 1. Contexto
+## 1. Context
 
-A entrega de uma mensagem entre dois processos existia desde o incremento
-anterior, e ela funcionava. O que **não** existia era a **espera**: a
-chamada que toma uma mensagem devolvia o erro de fila vazia, e o programa
-de usuário repetia a chamada até a mensagem chegar.
+The delivery of a message between two processes existed since the previous
+increment, and it worked. What did **not** exist was the **wait**: the
+call that takes a message returned the empty queue error, and the user
+program repeated the call until the message arrived.
 
-A repetição funciona, e ela tem três custos:
+The repetition works, and it has three costs:
 
-1. **A tarefa acordada ocupa o processador.** O laço de repetição é uma
-   espera ocupada: a tarefa chama, recebe o erro, chama de novo, e o
-   escalonador a escolhe de novo no próximo tique. O núcleo não tem
-   trabalho útil para fazer enquanto isso, e o atraso da entrega é o do
-   tique do temporizador, e não o do trabalho que a outra tarefa tinha
-   para fazer.
-2. **A latência medida não é a da entrega.** O que o canal media era o
-   intervalo entre a mensagem sair e a verificação seguinte, e não o
-   intervalo entre a mensagem sair e a mensagem chegar.
-3. **O programa de usuário precisa conhecer o protocolo da espera.** O
-   laço de repetição é uma convenção, e ela é diferente para cada forma de
-   espera.
+1. **The woken task occupies the processor.** The repetition loop is a
+   busy wait: the task calls, receives the error, calls again, and the
+   scheduler picks it again on the next tick. The kernel has no useful
+   work to do in the meantime, and the delivery delay is that of the timer
+   tick, and not that of the work the other task had to do.
+2. **The measured latency is not the delivery latency.** What the channel
+   measured was the interval between the message leaving and the next
+   check, and not the interval between the message leaving and the message
+   arriving.
+3. **The user program needs to know the wait protocol.** The repetition
+   loop is a convention, and it is different for each form of wait.
 
-O item pendente do marco F3 era, portanto, a **espera de verdade**: a
-tarefa que espera **não** é executada, e o escalonador escolhe outra.
+The pending item of the F3 milestone was, therefore, the **real wait**: the
+task that waits is **not** executed, and the scheduler picks another.
 
-## 2. A decisão
+## 2. The decision
 
-### 2.1 A chamada que bloqueia é uma chamada nova
+### 2.1 The blocking call is a new call
 
-A chamada que toma uma mensagem **não muda de significado**. A nova
-chamada, de número 8, é a que bloqueia, e ela recebe o contrato novo
+The call that takes a message **does not change meaning**. The new call,
+number 8, is the one that blocks, and it receives the new contract
 `syscall_abi = 3`.
 
-A razão de não mudar o significado da chamada antiga é a regra do
-próprio contrato: um programa compilado contra a versão anterior tem de
-continuar funcionando, e o significado de uma chamada publicada é
-identidade dele.
+The reason for not changing the meaning of the old call is a rule of the
+contract itself: a program compiled against the previous version has to
+keep working, and the meaning of a published call is its identity.
 
-### 2.2 A tarefa que espera não é executada
+### 2.2 The waiting task is not executed
 
-A tarefa que espera é marcada como bloqueada, e o escalonador não a
-escolhe. A tarefa **não** fica em um laço, e o processador executa outra
-tarefa.
+The waiting task is marked as blocked, and the scheduler does not pick it.
+The task **does not** stay in a loop, and the processor executes another
+task.
 
-O escalonador ganhou um cuidado: a tarefa que sai do processador é
-marcada como pronta **apenas quando ela estava rodando**. Uma tarefa
-bloqueada que sai do processador continua bloqueada, e ela só é escolhida
-de novo quando a mensagem chega. Sem esse cuidado, a tarefa bloqueada
-seria reescalonada no tique seguinte, e a espera seria um laço ocupado
-com um caminho mais comprido.
+The scheduler gained a precaution: the task that leaves the processor is
+marked as ready **only when it was running**. A blocked task that leaves
+the processor stays blocked, and it is picked again only when the message
+arrives. Without this precaution, the blocked task would be rescheduled on
+the next tick, and the wait would be a busy loop with a longer path.
 
-### 2.3 A entrega escreve o resultado no contexto salvo da tarefa
+### 2.3 The delivery writes the result into the saved task context
 
-A mensagem que chega a uma tarefa que espera **não fica na fila**. A
-entrega escreve o tipo e o valor **direto no contexto salvo da tarefa**,
-nos campos que a chamada devolveu, e acorda a tarefa.
+The message that arrives at a waiting task **does not stay in the queue**.
+The delivery writes the type and the value **directly into the saved task context**,
+in the fields the call returned, and wakes the task up.
 
-A tarefa continua **depois** da chamada, com o resultado nos mesmos
-registradores que uma chamada que tivesse respondido de imediato. O
-programa de usuário não sabe que houve uma espera: ele chamou, e o
-resultado está onde o contrato diz que ele estaria.
+The task continues **after** the call, with the result in the same
+registers as a call that had answered immediately. The user program does
+not know that there was a wait: it called, and the result is where the
+contract says it would be.
 
-O canal não conhece o escalonador. A espera é um par de ponteiros para as
-duas palavras do resultado, mais o endereço da tarefa e a rotina que a
-acorda, e o escalonador é quem entrega a rotina. O canal escreve
-apenas nos dois ponteiros.
+The channel does not know the scheduler. The wait is a pair of pointers to
+the two words of the result, plus the address of the task and the routine
+that wakes it up, and the scheduler is the one that delivers the routine.
+The channel writes only to the two pointers.
 
-### 2.4 O quadro da chamada tem o formato do quadro da interrupção
+### 2.4 The call frame has the format of the interrupt frame
 
-A tarefa bloqueada sai do núcleo pelo **mesmo caminho** pelo qual uma
-tarefa preemptada sai: a entrada da chamada entrega o controle ao
-escalonador, e a troca de contexto monta o quadro do processo que entra.
+The blocked task leaves the kernel through the **same path** through which
+a preempted task leaves: the entry of the call hands control to the
+scheduler, and the context switch builds the frame of the incoming process.
 
-Para que o mesmo switch sirva aos dois casos, o quadro da chamada de
-sistema tem de ter **exatamente** o formato do quadro do stub da
-interrupção: os quinze registradores, o vetor, a palavra do código de
-erro, e o quadro de retorno do processador. A entrada da chamada passou a
-montar as duas palavras do vetor e do código de erro, e a voltar para o
-modo de usuário ela pula as duas palavras, como o stub faz.
+For the same switch to serve both cases, the system call frame has to have
+**exactly** the format of the interrupt stub frame: the fifteen registers,
+the vector, the error code word, and the processor return frame. The entry
+of the call began to build the two words of the vector and of the error
+code, and on the way back to user mode it skips the two words, as the stub
+does.
 
-**O que essa unificação impede:** a entrada da chamada e o stub da
-interrupção leriam o quadro com deslocamentos diferentes, e o quadro
-salvo de uma tarefa bloqueada seria lido no lugar errado — o endereço de
-retorno trocado com as flags, por exemplo.
+**What this unification prevents:** the entry of the call and the interrupt
+stub would read the frame with different offsets, and the frame saved from
+a blocked task would be read in the wrong place — the return address
+swapped with the flags, for example.
 
-### 2.5 A entrega é direta, e a latência é a da entrega
+### 2.5 The delivery is direct, and the latency is the delivery latency
 
-O caminho único de uma mensagem que sai é o que marca o momento da saída.
-A entrega marca o momento da chegada, e a latência é a diferença entre os
-dois.
+The single path of a message that leaves is what marks the moment of the
+exit. The delivery marks the moment of the arrival, and the latency is the
+difference between the two.
 
-O resultado é uma medição de verdade: o tempo entre a mensagem sair e a
-tarefa que a esperava receber. A medição é lida no relógio do processador,
-e o valor reportado é de cerca de duzentos mil ciclos, o que é da ordem
-de dezenas de microssegundos.
+The result is a real measurement: the time between the message leaving and
+the task that was waiting for it receiving it. The measurement is read in
+the processor clock, and the reported value is about two hundred thousand
+cycles, which is on the order of tens of microseconds.
 
-### 2.6 A espera sem outra tarefa é um erro
+### 2.6 A wait with no other task is an error
 
-A chamada que bloqueia devolve o erro 9 quando não há outra tarefa para
-executar. Uma espera que seria a única tarefa do sistema seria um laço
-ocupado, e o núcleo tem de dizer isso em vez de esperar para sempre.
+The blocking call returns error 9 when there is no other task to execute.
+A wait that would be the only task in the system would be a busy loop, and
+the kernel has to say so instead of waiting forever.
 
-## 3. O que foi descartado
+## 3. What was discarded
 
-### 3.1 A espera por rotação
+### 3.1 The wait by rotation
 
-A tarefa que espera poderia continuar na fila de prontidão, e o
-escalonador a escolheria de novo, e ela verificaria de novo a fila. É a
-implementação simples, e é a que o programa de usuário já fazia na mão.
+The waiting task could stay in the readiness queue, and the scheduler would
+pick it again, and it would check the queue again. It is the simple
+implementation, and it is the one the user program already did by hand.
 
-Ela foi descartada porque a tarefa acordada ocupa o processador, e
-porque a latência da entrega continua sendo a do tique do temporizador.
+It was discarded because the woken task occupies the processor, and because
+the delivery latency remains that of the timer tick.
 
-### 3.2 A chamada que bloqueia com o mesmo número da que não bloqueia
+### 3.2 The blocking call with the same number as the non-blocking one
 
-A chamada que toma uma mensagem poderia ter ganhado um argumento que
-dissesse se ela bloqueia, e o contrato não mudaria de número.
+The call that takes a message could have gained an argument that said
+whether it blocks, and the contract would not change its number.
 
-Foi descartado porque o argumento teria de ter um valor padrão para os
-programas antigos, e a chamada teria dois comportamentos com o mesmo
-número. O contrato do projeto é explícito: o número é a identidade da
-chamada.
+It was discarded because the argument would have to have a default value
+for the old programs, and the call would have two behaviors with the same
+number. The contract of the project is explicit: the number is the identity
+of the call.
 
-### 3.3 O laço de espera no núcleo
+### 3.3 The wait loop in the kernel
 
-A espera poderia ser feita com um laço de `hlt` dentro do núcleo, e a
-tarefa seria acordada por um tique. Isso não é uma espera: a tarefa
-continua ocupando a pilha do núcleo, e o núcleo não pode fazer nada
-enquanto isso.
+The wait could be done with an `hlt` loop inside the kernel, and the task
+would be woken up by a tick. This is not a wait: the task keeps occupying
+the kernel stack, and the kernel cannot do anything in the meantime.
 
-## 4. A consequência para o escalonador
+## 4. The consequence for the scheduler
 
-O escalonador ganhou três estados com significado: pronta, bloqueada e
-terminada. A tarefa bloqueada não é escolhida, e a rotina que a acorda a
-devolve ao estado de pronta.
+The scheduler gained three states with meaning: ready, blocked, and
+terminated. The blocked task is not picked, and the routine that wakes it up
+returns it to the ready state.
 
-A troca de contexto ganhou um caminho novo, e o caminho antigo — a
-troca pelo temporizador — continua igual. Os dois caminos terminam no
-mesmo switch, e por isso o switch lê o mesmo formato de quadro.
+The context switch gained a new path, and the old path — the switch
+through the timer — stays the same. Both paths end in the same switch, and
+therefore the switch reads the same frame format.
 
-## 5. A consequência para o contrato
+## 5. The consequence for the contract
 
-O contrato da chamada de sistema passou para a versão 3, com a chamada 8.
-As chamadas 1 a 7 **não mudaram** de número nem de significado.
+The system call contract moved to version 3, with call 8. Calls 1 through 7
+**did not change** their number or their meaning.
 
-A chamada 8 tem duas propriedades que a contrato precisa declarar:
+Call 8 has two properties that the contract needs to declare:
 
-1. o resultado da chamada chega **depois**, no contexto salvo da tarefa,
-   e a tarefa continua depois da chamada;
-2. a chamada pode devolver o erro 9, e o erro 9 é o único que diz que a
-   espera **não** foi possível.
+1. the result of the call arrives **afterwards**, in the saved context of
+   the task, and the task continues after the call;
+2. the call can return error 9, and error 9 is the only one that says the
+   wait was **not** possible.
 
-## 6. A verificação
+## 6. The verification
 
-O teste de boot automatizado verifica, além do que já era verificado:
+The automated boot test verifies, in addition to what was already
+verified:
 
-- que as duas tarefas de usuário **bloquearam** e foram acordadas pela
-  mensagem, e não por um laço de repetição: o programa de usuário mode
-  **não** tem mais laço de repetição, e a resposta do outro processo
-  chegou;
-- que a entrega foi **direta**, com o contador de entregas a uma tarefa
-  que esperava;
-- que a latência relatada é a **da entrega**, e não a do tique do
-  temporizador;
-- que o número de tarefas prontas e o de tarefas bloqueadas são
-  relatados, com uma verificação por padrão, porque os números variam de
-  uma execução para a outra.
+- that the two user tasks **blocked** and were woken up by the message, and
+  not by a repetition loop: the user mode program **no longer** has a
+  repetition loop, and the reply from the other process arrived;
+- that the delivery was **direct**, with the delivery counter at a task
+  that was waiting;
+- that the reported latency is the **delivery** latency, and not that of the
+  timer tick;
+- that the number of ready tasks and the number of blocked tasks are
+  reported, with a pattern match check, because the numbers vary from one
+  run to the next.
 
-O teste roda em `zig build qemu-test`, e o conjunto completo roda em
+The test runs in `zig build qemu-test`, and the full suite runs in
 `zig build check`.
 
-## 7. O estado
+## 7. The status
 
-| Item | Estado |
+| Item | Status |
 |------|--------|
-| Espera de verdade, sem ocupar o processador | IMPLEMENTADO — TESTADO LOCALMENTE |
-| Entrega direta ao contexto da tarefa | IMPLEMENTADO — TESTADO LOCALMENTE |
-| Quadro da chamada com o formato do quadro da interrupção | IMPLEMENTADO — TESTADO LOCALMENTE |
-| Latência da entrega medida | IMPLEMENTADO — TESTADO LOCALMENTE |
-| Espera com prazo | PROPOSTO |
-| Várias esperas por tarefa | PROPOSTO |
-| Transferência de capacidades do VNC | PROPOSTO |
+| Real wait, without occupying the processor | IMPLEMENTED — LOCALLY TESTED |
+| Direct delivery into the task context | IMPLEMENTED — LOCALLY TESTED |
+| Call frame with the format of the interrupt frame | IMPLEMENTED — LOCALLY TESTED |
+| Delivery latency measured | IMPLEMENTED — LOCALLY TESTED |
+| Wait with timeout | PROPOSED |
+| Multiple waits per task | PROPOSED |
+| VNC capability transfer | PROPOSED |

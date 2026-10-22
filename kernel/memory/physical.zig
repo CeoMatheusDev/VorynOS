@@ -115,19 +115,19 @@ pub const Manager = struct {
 
         // The first megabyte is never handed out.
         //
-        // A reserva **conta** as páginas que ela marca, e a contagem é o
-        // que faz a conta fechar: `total = used + free` é uma verdade em
-        // todo momento, porque só uma página que estava **livre** é
-        // contada, e a única página livre é a de memória comum que
-        // ninguém está usando.
+        // The reservation **counts** the pages it marks, and the count is
+        // what makes the account close: `total = used + free` is a truth at
+        // every moment, because only a page that was **free** is counted,
+        // and the only free page is the one of ordinary memory that nobody
+        // is using.
         self.reserve(0, minimum_address);
     }
 
     /// Marks a range of pages as used.
     ///
-    /// A página que já estava em uso não é contada de novo, e uma página
-    /// que **não** é de memória comum também não é contada: a contagem é
-    /// a das páginas de memória comum que estavam livres e passaram a estar
+    /// The page that was already in use is not counted again, and a page
+    /// that is **not** ordinary memory is not counted either: the count is
+    /// the one of the ordinary memory pages that were free and became
     /// em uso.
     pub fn reserve(self: *Manager, address: u64, length: u64) void {
         if (length == 0) return;
@@ -217,8 +217,9 @@ const testing = std.testing;
 test "the bitmap marks the reserved regions and frees the ordinary memory" {
     var test_manager: Manager = .{};
 
-    // O mapa é o de uma máquina real: a memória comum começa **acima** do
-    // primeiro megabyte, que o firmware nunca entrega ao núcleo.
+    // The map is the one of a real machine: the ordinary memory starts
+    // **above** the first megabyte, which the firmware never hands to the
+    // kernel.
     const map = [_]handoff.MemoryDescriptor{
         .{
             .memory_type = .reserved,
@@ -256,8 +257,8 @@ test "the bitmap marks the reserved regions and frees the ordinary memory" {
 test "the first megabyte is never handed out" {
     var test_manager: Manager = .{};
 
-    // O firmware descreve a memória comum do primeiro megabyte, e o
-    // gerenciador recusa essa parte.
+    // The firmware describes the ordinary memory of the first megabyte,
+    // and the manager refuses that part.
     const map = [_]handoff.MemoryDescriptor{.{
         .memory_type = .conventional,
         .physical_start = 0,
@@ -269,7 +270,7 @@ test "the first megabyte is never handed out" {
     try testing.expect(test_manager.isUsed(0xFFFFF));
     try testing.expect(!test_manager.isUsed(0x100000));
 
-    // A primeira página entregue está **acima** do primeiro megabyte.
+    // The first page that is handed out is **above** the first megabyte.
     const page = test_manager.allocate().?;
     try testing.expectEqual(@as(u64, 0x100000), page);
 }
@@ -277,9 +278,9 @@ test "the first megabyte is never handed out" {
 test "the pages that the firmware did not describe are never handed out" {
     var test_manager: Manager = .{};
 
-    // O mapa descreve a memória comum, e o espaço acima dela não é
-    // descrito: ninguém sabe o que existe lá, e o gerenciador não entrega
-    // uma página que ninguém descreveu.
+    // The map describes the ordinary memory, and the space above it is not
+    // described: nobody knows what is there, and the manager does not hand
+    // out a page that nobody described.
     const map = [_]handoff.MemoryDescriptor{.{
         .memory_type = .conventional,
         .physical_start = 0x100000,
@@ -297,7 +298,7 @@ test "the pages that the firmware did not describe are never handed out" {
         try testing.expect(page < 0x110000);
     }
 
-    // Não há mais nenhuma página livre, e o gerenciador não inventa uma.
+    // There is no free page left, and the manager does not invent one.
     try testing.expect(test_manager.allocate() == null);
 }
 
@@ -311,7 +312,7 @@ test "the count of the pages always closes" {
     }};
     test_manager.init(&map);
 
-    // `total = used + free` é uma verdade em todo momento.
+    // `total = used + free` is a truth at every moment.
     try testing.expectEqual(
         test_manager.statistics.total_pages,
         test_manager.statistics.used_pages + test_manager.statistics.free_pages,

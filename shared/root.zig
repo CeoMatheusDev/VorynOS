@@ -34,11 +34,11 @@ pub const port = @import("arch/x86_64/port.zig");
 pub const serial = @import("arch/x86_64/serial.zig");
 
 // The unit tests of the modules live in the modules themselves, and this
-// block is what os traz para o binário de testes.
+// block is what brings them into the test binary.
 //
 // Without this reference, the test binary is built with **zero** tests,
-// and it passes no matter what: um teste que verde sem correr não é
-// evidência de nada.
+// and it passes no matter what: a test that is green without running is
+// not evidence of anything.
 test {
     _ = @import("handoff.zig");
     _ = @import("memmap.zig");

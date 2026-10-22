@@ -299,7 +299,8 @@ voryn_capture_context:
  * process arrives in the first register of the entry point: the process of
  * role zero starts the conversation on the channel, the process of role one
  * answers it, and the process of role two writes in an address that is not
- * mapped, para provar que uma exceção de um processo não derruba o núcleo.
+ * mapped, to prove that an exception of a process does not bring the kernel
+ * down.
  * The marker of the page of data carries the role, and two processes that
  * write different markers in the same virtual address prove that their
  * pages are not the same pages.
@@ -461,7 +462,7 @@ voryn_user_program:
 
     /* The answer of the other process may not have arrived yet, and the
      * call that takes a message **blocks** until it arrives: the task
-     * stays waiting, and o escalonador escolhe outra tarefa. */
+     * stays waiting, and the scheduler chooses another task. */
 2:  movq $0, %rdi             /* the channel */
     movq $0, %rsi             /* the side of the process that answers */
     movq $8, %rax             /* the number of the system call */

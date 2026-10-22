@@ -1,68 +1,68 @@
-# Roadmap e estado de implementação
+# Roadmap and implementation state
 
-| Campo | Valor |
+| Field | Value |
 |-------|-------|
-| **Estado** | VIVO |
-| **Data** | 2026-10-22 |
-| **Versão publicada** | `v0.1.0-dev.1` — marco inicial consolidado |
+| **State** | ALIVE |
+| **Date** | 2026-10-22 |
+| **Published version** | `v0.1.0-dev.1` — consolidated initial milestone |
 
-O estado abaixo reflete o **código existente e verificado**, não a
-intenção. Um item só é marcado como concluído quando atende a todos os
-critérios de "definição de concluído" do `AGENTS.md`.
+The state below reflects the **existing and verified code**, and not the
+intention. An item is only marked as completed when it meets every criterion
+of the "definition of done" of the `AGENTS.md`.
 
-A versão publicada é registrada aqui, e as notas oficiais da versão estão
-em [`../releases/v0.1.0-dev.1.md`](../releases/v0.1.0-dev.1.md). A
-reorganização dos marcos públicos de versionamento está registrada em
+The published version is registered here, and the official release notes are
+in [`../releases/v0.1.0-dev.1.md`](../releases/v0.1.0-dev.1.md). The
+reorganization of the public versioning milestones is registered in
 [`../releases/VERSIONING-RESET-2026.md`](../releases/VERSIONING-RESET-2026.md).
 
-## Marcos
+## Milestones
 
-### F0 — Fundação — CONCLUÍDO
+### F0 — Foundation — COMPLETED
 
-| Objetivo | Estado | Evidência |
+| Objective | State | Evidence |
 |----------|--------|-----------|
-| Auditoria de ambiente | CONCLUÍDO | Zig 0.17.0, QEMU 10.2.2, OVMF, Fedora 44 verificados |
-| Toolchain e convenções | CONCLUÍDO | ADR-0003, VN-NAMES-0001 |
-| Estrutura mínima | CONCLUÍDO | `boot/`, `kernel/`, `shared/`, `tools/`, `scripts/`, `docs/`, `tests/` |
-| Build reproduzível | CONCLUÍDO | `build.zig` + `build.zig.zon` |
-| Documentação | CONCLUÍDO | README, AGENTS, ADRs, especificações, roadmap, estratégia de teste |
-| ADRs | CONCLUÍDO | ADR-0001 a ADR-0004 |
-| Git | CONCLUÍDO | branch `main`, commits descritivos, sem publicação |
-| Testes iniciais | CONCLUÍDO | `zig build test` (unidade) e `zig build qemu-test` (boot) |
+| Environment audit | COMPLETED | Zig 0.17.0, QEMU 10.2.2, OVMF, Fedora 44 verified |
+| Toolchain and conventions | COMPLETED | ADR-0003, VN-NAMES-0001 |
+| Minimal structure | COMPLETED | `boot/`, `kernel/`, `shared/`, `tools/`, `scripts/`, `docs/`, `tests/` |
+| Reproducible build | COMPLETED | `build.zig` + `build.zig.zon` |
+| Documentation | COMPLETED | README, AGENTS, ADRs, specifications, roadmap, testing strategy |
+| ADRs | COMPLETED | ADR-0001 to ADR-0004 |
+| Git | COMPLETED | branch `main`, descriptive commits, no publication |
+| Initial tests | COMPLETED | `zig build test` (unit) and `zig build qemu-test` (boot) |
 
-### F1 — Boot — CONCLUÍDO
+### F1 — Boot — COMPLETED
 
-| Objetivo | Estado | Evidência |
+| Objective | State | Evidence |
 |----------|--------|-----------|
-| Aplicação UEFI mínima | CONCLUÍDO | `boot/uefi/main.zig`, alvo `x86_64-uefi` |
-| Entrada UEFI válida | CONCLUÍDO | `EfiMain` conforme ABI, `RDI` = contrato |
-| Diagnóstico por console | CONCLUÍDO | console do firmware, visível na tela do OVMF |
-| Saída serial | CONCLUÍDO | UART 16550 em COM1, `shared/arch/x86_64/serial.zig` |
-| Descoberta de framebuffer | CONCLUÍDO | GOP, seleção de modo 32 bpp, máscara e deslocamento de canal |
-| Mapa de memória | CONCLUÍDO | leitura e normalização, tolerante ao tamanho de descritor |
-| Carregamento da imagem do kernel | CONCLUÍDO | volume EFI, arquivo `VORYNK.ELF` |
-| Validação dos segmentos | CONCLUÍDO | `shared/elf64.zig`, com testes de unidade |
-| Contrato bootloader-kernel | CONCLUÍDO | `shared/handoff.zig`, especificado em `docs/specs/` |
-| `ExitBootServices` correto | CONCLUÍDO | mapa final capturado antes da chamada, repetição em caso de mapa alterado |
-| Transferência de controle | CONCLUÍDO | salto para `voryn_kernel_entry` com o contrato em `RDI` |
+| Minimal UEFI application | COMPLETED | `boot/uefi/main.zig`, target `x86_64-uefi` |
+| Valid UEFI entry | COMPLETED | `EfiMain` per the ABI, `RDI` = contract |
+| Diagnostic through the console | COMPLETED | firmware console, visible on the screen of the OVMF |
+| Serial output | COMPLETED | UART 16550 on COM1, `shared/arch/x86_64/serial.zig` |
+| Framebuffer discovery | COMPLETED | GOP, selection of the 32 bpp mode, mask and channel offset |
+| Memory map | COMPLETED | reading and normalization, tolerant to the descriptor size |
+| Loading of the kernel image | COMPLETED | EFI volume, file `VORYNK.ELF` |
+| Validation of the segments | COMPLETED | `shared/elf64.zig`, with unit tests |
+| Bootloader-kernel contract | COMPLETED | `shared/handoff.zig`, specified in `docs/specs/` |
+| Correct `ExitBootServices` | COMPLETED | final map captured before the call, repetition in case of an altered map |
+| Transfer of control | COMPLETED | jump to `voryn_kernel_entry` with the contract in `RDI` |
 
-### F2 — Kernel — TESTADO LOCALMENTE
+### F2 — Kernel — LOCALLY TESTED
 
-| Objetivo | Estado | Evidência |
+| Objective | State | Evidence |
 |----------|--------|-----------|
-| Entrada do kernel | CONCLUÍDO | `kernel/arch/x86_64/entry.s`, pilha própria, ABI documentada |
-| GDT | CONCLUÍDO | tabela própria com código e dados dos níveis 0 e 3, verificada por `sgdt` |
-| TSS | CONCLUÍDO | segmento de tarefa carregado, com pilha de interrupção para a falha dupla |
-| IDT | CONCLUÍDO | 256 portas, verificada por `sidt` |
-| Exceções | CONCLUÍDO | tratador com o vetor, o código de erro, o RIP e os registradores |
-| Interrupções de hardware | CONCLUÍDO | portas 32 a 47, controllers 8259 reprogramados |
-| Temporizador | CONCLUÍDO | 8254 no modo 3, 100 Hz, contagem verificada |
-| Memória física | CONCLUÍDO | `kernel/memory/physical.zig`, bitmap de 4 GiB, 51551 páginas |
-| Memória virtual | CONCLUÍDO | `kernel/arch/x86_64/paging.zig`, tabelas próprias, `CR3` trocado |
-| Heap do kernel | CONCLUÍDO | `kernel/memory/heap.zig`, etiquetas de limite, fusão de blocos, verificação de corrupção |
-| Isolamento | CONCLUÍDO | cada processo tem um espaço de endereço próprio; o núcleo e o framebuffer são mapeados em todos os espaços, e o resto da memória não é acessível |
+| Kernel entry | COMPLETED | `kernel/arch/x86_64/entry.s`, own stack, documented ABI |
+| GDT | COMPLETED | own table with the code and data of levels 0 and 3, verified by `sgdt` |
+| TSS | COMPLETED | task segment loaded, with the interrupt stack for the double fault |
+| IDT | COMPLETED | 256 entries, verified by `sidt` |
+| Exceptions | COMPLETED | handler with the vector, the error code, the RIP and the registers |
+| Hardware interrupts | COMPLETED | entries 32 to 47, 8259 controllers reprogrammed |
+| Timer | COMPLETED | 8254 in mode 3, 100 Hz, counting verified |
+| Physical memory | COMPLETED | `kernel/memory/physical.zig`, 4 GiB bitmap, 51551 pages |
+| Virtual memory | COMPLETED | `kernel/arch/x86_64/paging.zig`, own tables, `CR3` switched |
+| Kernel heap | COMPLETED | `kernel/memory/heap.zig`, boundary tags, block merging, corruption detection |
+| Isolation | COMPLETED | each process has its own address space; the kernel and the framebuffer are mapped in every space, and the rest of the memory is not reachable |
 
-Sequência verificada no console serial:
+Verified sequence on the serial console:
 
 ```text
 [VNK] segments: gdt installed and verified
@@ -77,159 +77,160 @@ VORYN-KERNEL-READY
 [VNK] EXCEPTION 6: invalid opcode
 ```
 
-Limitações conhecidas do marco:
+Known limitations of the milestone:
 
-- O heap é uma região fixa de 256 KiB dentro da imagem do núcleo, porque a
-  região precisa estar mapeada depois da troca das tabelas de página.
-- O bitmap do gerenciador de memória física cobre 4 GiB do espaço físico.
-- O segmento de tarefa é carregado, e o índice de pilha de interrupção é
-  usado pela pilha da falha dupla.
-- O modo de usuário existe: os segmentos de usuário estão na tabela, as
-  páginas do usuário têm o bit de usuário, e a tarefa de usuário executa,
-  chama o núcleo e recebe a resposta.
-- O tratador de exceções é fatal **no núcleo**: a execução para no primeiro
-  erro do núcleo, porque o estado do núcleo depois do erro é desconhecido.
-  A exceção que veio do modo de usuário mata o processo, e o núcleo
-  continua.
+- The heap is a fixed region of 256 KiB inside the kernel image, because the
+  region has to stay mapped after the switch of the page tables.
+- The bitmap of the physical memory manager covers 4 GiB of the physical
+  address space.
+- The task segment is loaded, and the index of the interrupt stack is used by
+  the stack of the double fault.
+- The user mode exists: the user segments are in the table, the user pages
+  have the user bit, and the user task runs, calls the kernel and receives
+  the answer.
+- The exception handler is fatal **in the kernel**: the execution stops at
+  the first kernel error, because the state of the kernel after the error is
+  unknown. The exception that came from the user mode kills the process, and
+  the kernel continues.
 
-### F3 — Execução — EM DESENVOLVIMENTO
+### F3 — Execution — IN DEVELOPMENT
 
-Objetivos: threads, scheduler, processos, user mode, syscalls, IPC,
-capacidades.
+Objectives: threads, scheduler, processes, user mode, syscalls, IPC,
+capabilities.
 
-| Objetivo | Estado | Evidência |
+| Objective | State | Evidence |
 |----------|--------|-----------|
-| Escalonador preemptivo | CONCLUÍDO | alternância verificada pelo temporizador |
-| Tarefas do kernel | CONCLUÍDO | duas tarefas de trabalho, 20 trocas medidas |
-| Custo de troca de contexto | CONCLUÍDO | medido a cada troca, com o menor e a média no console |
-| Política sem fome | CONCLUÍDO | a visita continua depois da tarefa atual |
-| Preparação do coprocessor | CONCLUÍDO | o firmware o deixa desabilitado |
-| Tabelas de página com modo de usuário | CONCLUÍDO | o bit de usuário existe em todos os níveis |
-| Contexto completo da tarefa | CONCLUÍDO | os quinze registradores são preservados a cada troca |
-| Pilha do núcleo separada da pilha do código | CONCLUÍDO | o quadro do processador nunca fica em uma página do usuário |
-| Chamada de sistema | CONCLUÍDO | a instrução `syscall`, com o tratador em Zig |
-| Contrato da chamada de sistema | CONCLUÍDO | oito chamadas, com o contrato em `docs/specs/syscall-abi.md` |
-| Conferência das faixas do usuário | CONCLUÍDO | uma chamada com um endereço do núcleo é recusada |
-| Modo de usuário | CONCLUÍDO | a tarefa escreve na sua página e a resposta da chamada volta |
-| Segmento de tarefa do modo de 64 bits | CONCLUÍDO | o layout é verificado em tempo de compilação |
-| Tolerância da sobreposição na cópia | CONCLUÍDO | uma cópia com faixas sobrepostas é respondida, e não levanta um pânico |
-| Verificação do conteúdo da cópia | CONCLUÍDO | o conteúdo é conferido byte a byte, e não só o comprimento |
-| Janela do usuário mode | CONCLUÍDO | o endereço é escolhido fora da imagem do núcleo e entregue à tarefa |
-| Espaços de endereço por processo | CONCLUÍDO | cada processo tem tabelas próprias, e o escalonador troca o espaço |
-| Isolamento entre processos | CONCLUÍDO | dois processos escrevem valores diferentes no mesmo endereço virtual |
-| Cópia entre processos | CONCLUÍDO | o bloco vai de um processo para o outro, e o espaço de quem chamou não muda |
-| Canal do VNX | CONCLUÍDO | a mensagem sai de um processo e chega ao outro, e a resposta volta |
-| Latência da entrega | CONCLUÍDO | o intervalo entre a mensagem sair e a mensagem chegar, medido no relógio do processador |
-| Espera que não ocupa o processador | CONCLUÍDO | a tarefa fica bloqueada, o escalonador escolhe outra, e a mensagem a acorda |
-| Entrega direta ao contexto da tarefa | CONCLUÍDO | a mensagem não fica na fila, e a tarefa continua depois da chamada |
-| Quadro da chamada com o formato do quadro da interrupção | CONCLUÍDO | o mesmo switch serve ao bloqueio e à preempção |
-| Quadro do processador com uma forma só | CONCLUÍDO | o stub normaliza o quadro, e o tratador e o switch leem a mesma forma |
-| Tratamento das exceções por tipo | CONCLUÍDO | a exceção do modo de usuário mata o processo, e a do núcleo para a máquina |
-| Recuperação do processo que falhou | CONCLUÍDO | o processo morre, os outros continuam, e a máquina chega ao fim do boot |
-| Capacidades do VNC | PROPOSTO | — |
+| Preemptive scheduler | COMPLETED | alternation verified by the timer |
+| Kernel tasks | COMPLETED | two worker tasks, 20 switches measured |
+| Cost of the context switch | COMPLETED | measured on every switch, with the smallest and the average on the console |
+| Policy without starvation | COMPLETED | the visit continues after the current task |
+| Preparation of the coprocessor | COMPLETED | the firmware leaves it disabled |
+| Page tables with user mode | COMPLETED | the user bit exists in every level |
+| Complete task context | COMPLETED | the fifteen registers are preserved on every switch |
+| Kernel stack separated from the code stack | COMPLETED | the processor frame is never in a page of the user |
+| System call | COMPLETED | the `syscall` instruction, with the handler in Zig |
+| Contract of the system call | COMPLETED | eight calls, with the contract in `docs/specs/syscall-abi.md` |
+| Checking of the user ranges | COMPLETED | a call with an address of the kernel is refused |
+| User mode | COMPLETED | the task writes in its page and the answer of the call comes back |
+| Task segment of the 64 bit mode | COMPLETED | the layout is verified at compile time |
+| Tolerance of the overlap in the copy | COMPLETED | a copy with overlapping ranges is answered, and does not raise a panic |
+| Verification of the content of the copy | COMPLETED | the content is checked byte by byte, and not only the length |
+| User mode window | COMPLETED | the address is chosen outside the kernel image and delivered to the task |
+| Address spaces per process | COMPLETED | each process has own tables, and the scheduler switches the space |
+| Isolation between processes | COMPLETED | two processes write different values in the same virtual address |
+| Copy between processes | COMPLETED | the block goes from one process to the other, and the space of the caller does not change |
+| VNX channel | COMPLETED | the message leaves one process and arrives at the other, and the answer comes back |
+| Latency of the delivery | COMPLETED | the interval between the message leaving and the message arriving, measured in the clock of the processor |
+| Wait that does not occupy the processor | COMPLETED | the task stays blocked, the scheduler chooses another one, and the message wakes it up |
+| Direct delivery to the context of the task | COMPLETED | the message does not stay in the queue, and the task continues after the call |
+| Frame of the call with the format of the interrupt frame | COMPLETED | the same switch serves the blocking and the preemption |
+| Processor frame with one single shape | COMPLETED | the stub normalizes the frame, and the handler and the switch read the same shape |
+| Handling of the exceptions by type | COMPLETED | the exception of the user mode kills the process, and the one of the kernel stops the machine |
+| Recovery of the process that failed | COMPLETED | the process dies, the others continue, and the machine reaches the end of the boot |
+| VNC capabilities | PROPOSED | — |
 
-O modo de usuário está **implementado e verificado**. A tarefa de usuário
-executa no terceiro nível de privilégio, escreve na sua própria página de
-dados, chama o núcleo pela instrução `syscall` e recebe a resposta no mesmo
-registrador. O traço de interrupções do emulador **não registra nenhuma
-exceção** durante a execução inteira.
+The user mode is **implemented and verified**. The user task runs in the
+third privilege level, writes in its own page of data, calls the kernel with
+the `syscall` instruction and receives the answer in the same register. The
+interrupt trace of the emulator **does not register any exception** during
+the whole execution.
 
-O defeito que bloqueava o marco era o **layout do segmento de tarefa**: o
-núcleo usava o layout do modo protegido, e no modo de 64 bits a pilha de
-ring 3 está no deslocamento 4, a tabela de pilhas de interrupção começa no
-36, e a estrutura tem 104 bytes. O processador lia o ponteiro de pilha no
-deslocamento errado, e a entrega de toda exceção vinda do usuário falhava
-com uma falta de pilha e uma falha dupla. O diagnóstico completo, com as
-medições e a conclusão que se mostrou errada, está em ADR-0005.
+The defect that blocked the milestone was the **layout of the task segment**:
+the kernel used the layout of the protected mode, and in the 64 bit mode the
+stack of ring 3 is at offset 4, the table of the interrupt stacks begins at
+36, and the structure has 104 bytes. The processor read the stack pointer at
+the wrong offset, and the delivery of every exception that came from the
+user failed with a stack fault and a double fault. The full diagnosis, with
+the measurements and the conclusion that proved to be wrong, is in ADR-0005.
 
-A chamada de sistema usa a instrução `syscall`, o caminho previsto pela
-arquitetura para o modo de 64 bits, porque a porta de interrupção é um
-caminho herdado e porque o tratador passa a rodar na pilha do núcleo da
-tarefa, e não na pilha do usuário.
+The system call uses the `syscall` instruction, the path that the
+architecture provides for the 64 bit mode, because the interrupt gate is a
+legacy path and because the handler runs on the kernel stack of the task,
+and not on the stack of the user.
 
-O incremento dos processos corrigiu três defeitos que vinham do desenho
-anterior, e que o diagnóstico do ADR-0005 não tinha alcançado: a troca de
-contexto não guardava os registradores que a arquitetura não salva entre
-chamadas, o quadro do processador da volta era montado sobre a pilha do
-código interrompido, e a janela do usuário mode tinha endereço fixo dentro
-da imagem do núcleo. O diagnóstico completo, com as medições e a
-conclusão, está em ADR-0006.
+The increment of the processes corrected three defects that came from the
+previous design, and that the diagnosis of ADR-0005 had not reached: the
+context switch did not save the registers that the architecture does not
+save between calls, the processor frame of the way back was built over the
+stack of the interrupted code, and the user mode window had a fixed address
+inside the kernel image. The full diagnosis, with the measurements and the
+conclusion, is in ADR-0006.
 
-Critérios de aceite do restante do marco:
+Acceptance criteria of the rest of the milestone:
 
-1. Uma tarefa em modo de usuário executa, o que prova a tabela de segmentos,
-   a pilha de usuário e a comutação de privilégio. **Cumprido.**
-2. A primeira chamada de sistema copia um bloco de memória do usuário.
-   **Cumprido:** a chamada `memcpy` copia um bloco entre duas páginas do
-   usuário, depois de conferir as duas faixas nas tabelas de página, e uma
-   chamada com um endereço do núcleo é recusada. A cópia **entre processos**
-   também existe: a chamada `copy_to` leva um bloco do espaço de um
-   processo para o espaço de outro, e o espaço de quem chamou não muda.
-3. O canal de mensagens do VNX entrega uma mensagem entre dois processos e
-   mede a latência. **Cumprido:** o processo de papel zero manda a
-   mensagem, o processo de papel um a recebe e responde, e a resposta volta
-   pelo mesmo canal. A latência medida é o intervalo entre a mensagem sair
-   e a mensagem chegar, lido no relógio do processador, e não a espera de um
-   turno do escalonador.
-4. A espera por uma mensagem **não ocupa o processador**. **Cumprido:** a
-   chamada que bloqueia marca a tarefa como bloqueada, o escalonador
-   escolhe outra, e a mensagem acorda a tarefa. O resultado da chamada
-   chega no contexto salvo da tarefa, e a tarefa continua depois da
-   chamada, como se ela tivesse respondido de imediato. A entrega é
-   direta, e por isso a latência relatada é a da entrega. O diagnóstico e
-   a medição estão em ADR-0007.
-5. Uma exceção do modo de usuário **mata o processo**, e não a máquina.
-   **Cumprido:** um terceiro processo escreve em um endereço que não está
-   mapeado, e a falta de página é tratada: o processo é morto, o console
-   diz que o núcleo continua, o temporizador continua contando, a
-   conversa entre os outros dois processos completa o ida e volta, e a
-   máquina chega à marca `VORYN-KERNEL-READY`. O incremento também
-   corrigiu um defeito que já existia: o quadro do processador tem duas
-   formas, e a que tem código de erro é oito bytes maior. O diagnóstico
-   está em ADR-0008.
+1. A task in user mode runs, which proves the segment table, the user stack
+   and the switch of privilege. **Fulfilled.**
+2. The first system call copies a block of memory of the user.
+   **Fulfilled:** the `memcpy` call copies a block between two pages of the
+   user, after checking the two ranges in the page tables, and a call with an
+   address of the kernel is refused. The copy **between processes** also
+   exists: the `copy_to` call carries a block from the space of one process
+   to the space of another, and the space of the caller does not change.
+3. The message channel of the VNX delivers a message between two processes
+   and measures the latency. **Fulfilled:** the process of role zero sends
+   the message, the process of role one receives it and answers, and the
+   answer comes back through the same channel. The measured latency is the
+   interval between the message leaving and the message arriving, read in
+   the clock of the processor, and not the wait of a turn of the scheduler.
+4. The wait for a message **does not occupy the processor**. **Fulfilled:**
+   the call that blocks marks the task as blocked, the scheduler chooses
+   another one, and the message wakes the task up. The result of the call
+   arrives in the context saved of the task, and the task continues after
+   the call, as if it had answered at once. The delivery is direct, and
+   therefore the latency that is reported is the one of the delivery. The
+   diagnosis and the measurement are in ADR-0007.
+5. An exception of the user mode **kills the process**, and not the machine.
+   **Fulfilled:** a third process writes in an address that is not mapped,
+   and the page fault is handled: the process is killed, the console says
+   that the kernel continues, the timer keeps counting, the conversation
+   between the other two processes completes the round trip, and the machine
+   reaches the `VORYN-KERNEL-READY` marker. The increment also corrected a
+   defect that already existed: the processor frame has two shapes, and the
+   one with an error code is eight bytes larger. The diagnosis is in
+   ADR-0008.
 
-O que ainda falta no marco:
+What is still missing in the milestone:
 
-1. **As capacidades do VNC.** A pergunta aberta do ADR-0001 continua
-   aberta: a chamada não carrega capacidades, e o processo tem acesso ao
-   espaço inteiro do modo de usuário.
-2. **Mais processos.** O núcleo cria três processos, e dois deles é que
-   conversam: o terceiro existe para provar que um processo que falha não
-   derruba os outros. O número de espaços de endereço é limitado por uma
-   constante do módulo de paginação.
-3. **A espera com prazo.** A chamada que bloqueia espera para sempre, e
-   não existe um prazo de espera.
-4. **O heap dinâmico** com o VNM, o **sinal no processo**, com um
-   tratador no espaço do usuário, e a **política por tipo de exceção**,
-   que hoje é a mesma para todas as exceções do modo de usuário.
-5. **A medição do custo de troca de contexto** sob carga representativa,
-   com mais tarefas e mais processos.
+1. **The capabilities of the VNC.** The open question of ADR-0001 remains
+   open: the call does not carry capabilities, and the process has access to
+   the whole space of the user mode.
+2. **More processes.** The kernel creates three processes, and it is two of
+   them that talk: the third exists to prove that a process that fails does
+   not bring the others down. The number of address spaces is limited by a
+   constant of the paging module.
+3. **The wait with a timeout.** The call that blocks waits forever, and
+   there is no timeout of the wait.
+4. **The dynamic heap** with the VNM, the **signal in the process**, with a
+   handler in the user space, and the **policy by type of exception**,
+   which today is the same for every exception of the user mode.
+5. **The measurement of the cost of the context switch** under a
+   representative load, with more tasks and more processes.
 
-O canal de mensagens ensinou uma regra de inicialização que vale para o
-núcleo inteiro: tudo o que as tarefas podem usar tem de existir **antes**
-do temporizador, porque o temporizador é o que começa a executar as
-tarefas. A inicialização dos canais vinha depois, e reiniciava as filas,
-e apagava a mensagem que a tarefa do usuário mode tinha mandado no seu
-primeiro turno. O diagnóstico e a regra estão em ADR-0005.
+The message channel taught an initialization rule that is valid for the whole
+kernel: everything that the tasks can use has to exist **before** the timer,
+because the timer is what starts to run the tasks. The initialization of the
+channels came after, and reset the queues, and erased the message that the
+task of the user mode had sent in its first turn. The diagnosis and the
+rule are in ADR-0005.
 
-### F4 a F10 — PROPOSTO
+### F4 to F10 — PROPOSED
 
-| Marco | Conteúdo | Estado |
+| Milestone | Content | State |
 |-------|----------|--------|
-| F4 | Drivers de bloco, VNV, VFSX inicial, persistência, recuperação | PROPOSTO |
-| F5 | VEX, VLIB, VPK, runtime, SDK, aplicações nativas | PROPOSTO |
-| F6 | Input, rasterizador, compositor, janelas, VSH | PROPOSTO |
-| F7 | Virtio, rede, áudio, hardware físico, GPU | PROPOSTO |
-| F8 | ELF, ABI Linux, PE, Win32, formatos externos | PROPOSTO |
-| F9 | VAI, backends, permissões, API, execução local | PROPOSTO |
-| F10 | Instalação, atualização, recuperação, hardening, benchmarks, outras arquiteturas | PROPOSTO |
+| F4 | Block drivers, VNV, initial VFSX, persistence, recovery | PROPOSED |
+| F5 | VEX, VLIB, VPK, runtime, SDK, native applications | PROPOSED |
+| F6 | Input, rasterizer, compositor, windows, VSH | PROPOSED |
+| F7 | Virtio, network, audio, physical hardware, GPU | PROPOSED |
+| F8 | ELF, Linux ABI, PE, Win32, external formats | PROPOSED |
+| F9 | VAI, backends, permissions, API, local execution | PROPOSED |
+| F10 | Installation, update, recovery, hardening, benchmarks, other architectures | PROPOSED |
 
-## Riscos em aberto
+## Open risks
 
-| Risco | Impacto | Tratamento |
+| Risk | Impact | Treatment |
 |-------|---------|------------|
-| Ausência de capacidades | Alto | O modelo de capacidade do ADR-0001 continua aberto |
-| Heap fixo na imagem do núcleo | Médio | Heap dinâmico com o VNM no F3 |
-| Exceções fatais | Médio | Resolvido no F3: a exceção do usuário mata o processo, e a do núcleo continua fatal |
-| Número fixo de processos | Médio | O limite de espaços de endereço é uma constante do módulo de paginação |
-| Ausência de teste de hardware | Médio | Marcado como não verificado até existir máquina de referência |
+| Absence of capabilities | High | The capability model of ADR-0001 remains open |
+| Fixed heap in the kernel image | Medium | Dynamic heap with the VNM in F3 |
+| Fatal exceptions | Medium | Resolved in F3: the exception of the user kills the process, and the one of the kernel remains fatal |
+| Fixed number of processes | Medium | The limit of address spaces is a constant of the paging module |
+| Absence of a hardware test | Medium | Marked as not verified until a reference machine exists |

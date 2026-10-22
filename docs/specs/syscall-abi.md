@@ -1,258 +1,261 @@
-# VSC-0001 — Contrato da chamada de sistema do VorynOS
+# VSC-0001 — VorynOS system call contract
 
-| Campo | Valor |
+| Field | Value |
 |-------|-------|
-| **Estado** | ACEITO |
-| **Data** | 2026-10-22 |
-| **Escopo** | A interface entre o modo de usuário e o núcleo |
-| **Versão do contrato** | `syscall_abi = 3` |
+| **State** | ACCEPTED |
+| **Date** | 2026-10-22 |
+| **Scope** | The interface between the user mode and the kernel |
+| **Contract version** | `syscall_abi = 3` |
 
-## 1. Objetivo
+## 1. Objective
 
-Definir a interface da chamada de sistema do VorynOS: como o modo de usuário
-pede uma operação ao núcleo, como o núcleo responde, e como um programa
-descobre que a operação não foi feita.
+Define the system call interface of the VorynOS: how the user mode asks an
+operation of the kernel, how the kernel answers, and how a program discovers
+that the operation was not performed.
 
-O contrato é **estável**: um programa de usuário compilado contra a versão 1
-continua funcionando quando o núcleo passa para a versão 2, e o núcleo
-precisa **recusar** um número de chamada que não conhece, em vez de adivinhar
-o seu significado.
+The contract is **stable**: a user program compiled against version 1 keeps
+working when the kernel moves to version 2, and the kernel has to **refuse**
+a call number that it does not know, instead of guessing its meaning.
 
-A versão 2 acrescenta as chamadas de canal e a chamada que copia um bloco
-entre dois processos. A versão 3 acrescenta a chamada que **bloqueia** à
-espera de uma mensagem. As chamadas das versões anteriores **não mudam de
-número e não mudam de significado**.
+Version 2 adds the channel calls and the call that copies a block between
+two processes. Version 3 adds the call that **blocks** waiting for a
+message. The calls of the earlier versions **do not change their number and
+do not change their meaning**.
 
-## 2. O mecanismo
+## 2. The mechanism
 
-A chamada é entregue pela instrução `syscall`, o caminho que a arquitetura
-prevê para o modo de 64 bits. A instrução:
+The call is delivered by the `syscall` instruction, the path that the
+architecture provides for the 64 bit mode. The instruction:
 
-- carrega o código e a pilha do núcleo a partir de `IA32_STAR`;
-- carrega o endereço de entrada a partir de `IA32_LSTAR`;
-- aplica a máscara `IA32_SFMASK` às flags de quem chamou;
-- deixa o endereço de retorno no registrador `RCX` e as flags de quem
-  chamou no registrador `R11`.
+- loads the code and the stack of the kernel from `IA32_STAR`;
+- loads the entry address from `IA32_LSTAR`;
+- applies the `IA32_SFMASK` mask to the flags of the caller;
+- leaves the address of return in the `RCX` register and the flags of the
+  caller in the `R11` register.
 
-A entrada da chamada está na pilha do núcleo da tarefa, e o quadro de
-retorno de interrupção com o estado do usuário é montado na volta, com a
-instrução `iretq`. O tratador **nunca** roda sobre a pilha do usuário.
+The entry of the call is on the kernel stack of the task, and the interrupt
+return frame with the state of the user is built on the way back, with the
+`iretq` instruction. The handler **never** runs on the stack of the user.
 
-## 3. O registro de chamada
+## 3. The call register
 
 ```text
-registrador  uso
-RAX          o número da chamada, e o resultado da chamada
-RDI          o primeiro argumento
-RSI          o segundo argumento
-RDX          o terceiro argumento
-R8           o quarto argumento
-RCX          o endereço de retorno (gravado pela instrução)
-R11          as flags de quem chamou (gravado pela instrução)
+register  use
+RAX          the number of the call, and the result of the call
+RDI          the first argument
+RSI          the second argument
+RDX          the third argument
+R8           the fourth argument
+RCX          the address of return (written by the instruction)
+R11          the flags of the caller (written by the instruction)
 ```
 
-`RCX` e `R11` **não são argumentos**: a instrução da chamada os escreve, e
-um programa que precisa de um quarto argumento tem de usar `R8`. Um erro
-clássico é usar `RCX` para o valor de uma mensagem: o valor que o núcleo
-recebe é o endereço de retorno, e a mensagem chega com o valor errado.
+`RCX` and `R11` **are not arguments**: the call instruction writes them,
+and a program that needs a fourth argument has to use `R8`. A classic
+mistake is to use `RCX` for the value of a message: the value that the
+kernel receives is the address of return, and the message arrives with the
+wrong value.
 
-Os argumentos que não são usados por uma chamada não têm significado. Um
-programa de usuário **não pode** presumir que os registradores que a
-arquitetura não salva estejam intactos depois da chamada: o tratador
-preserva os que a convenção de chamada exige, e o núcleo documenta quais
-são eles.
+The arguments that are not used by a call have no meaning. A user program
+**cannot** presume that the registers that the architecture does not save
+are intact after the call: the handler preserves the ones that the calling
+convention requires, and the kernel documents which ones they are.
 
-## 4. As chamadas da versão 1
+## 4. The calls of version 1
 
-| Número | Chamada | Argumentos | Resultado |
+| Number | Call | Arguments | Result |
 |--------|---------|-----------|-----------|
-| 1 | `ping` | — | `0x42`, um valor conhecido |
-| 2 | `write` | `RDI` buffer, `RSI` comprimento, `RDX` arquivo | o número de bytes escritos |
-| 3 | `memcpy` | `RDI` destino, `RSI` origem, `RDX` comprimento | o número de bytes copiados |
-| 4 | `exit` | `RDI` código de saída | — |
+| 1 | `ping` | — | `0x42`, a known value |
+| 2 | `write` | `RDI` buffer, `RSI` length, `RDX` file | the number of bytes written |
+| 3 | `memcpy` | `RDI` destination, `RSI` source, `RDX` length | the number of bytes copied |
+| 4 | `exit` | `RDI` exit code | — |
 
 ### 4.1 `ping`
 
-A chamada não tem argumento e responde com um valor conhecido. Ela existe
-para provar que a instrução, os registradores de modelo e a volta funcionam,
-e é a chamada que o auto teste do núcleo usa.
+The call has no argument and answers with a known value. It exists to prove
+that the instruction, the model registers and the way back work, and it is
+the call that the self test of the kernel uses.
 
 ### 4.2 `write`
 
-Escreve um bloco de bytes no arquivo indicado. A versão 1 conhece apenas o
-console do núcleo, o arquivo `1`; qualquer outro arquivo é recusado.
+Writes a block of bytes in the indicated file. Version 1 knows only the
+console of the kernel, the file `1`; any other file is refused.
 
-O bloco pertence ao usuário, e o núcleo **confere a faixa nas tabelas de
-página** antes de ler: a página tem de estar presente, tem de ter o bit de
-usuário, e o comprimento tem de estar no limite do contrato. Uma chamada
-com um endereço do núcleo é recusada, e o núcleo não lê a memória.
+The block belongs to the user, and the kernel **checks the range in the page
+tables** before reading: the page has to be present, it has to have the user
+bit, and the length has to be within the limit of the contract. A call with
+an address of the kernel is refused, and the kernel does not read the
+memory.
 
-A conferência é feita nas tabelas do **espaço de endereço do processo que
-chamou**, porque as páginas do usuário mode vivem nesse espaço e em nenhum
-outro.
+The check is done in the tables of the **address space of the process that
+called**, because the pages of the user mode live in that space and in no
+other.
 
 ### 4.3 `memcpy`
 
-Copia um bloco de bytes de um endereço do usuário para outro endereço do
-usuário. As duas faixas são conferidas nas tabelas de página antes da
-cópia, e a cópia é feita pelo núcleo, de modo que o usuário não precisa ter
-uma rotina própria para isso.
+Copies a block of bytes from one address of the user to another address of
+the user. The two ranges are checked in the page tables before the copy,
+and the copy is done by the kernel, so that the user does not need a routine
+of its own for that.
 
-A origem tem de estar presente e ter o bit de usuário; o destino tem de
-estar presente, ter o bit de usuário e ser gravável.
+The source has to be present and to have the user bit; the destination has
+to be present, to have the user bit and to be writable.
 
-A cópia tolera faixas que se sobrepõem: quem escolhe os dois endereços é o
-usuário, e uma cópia que recusasse a sobreposição negaria uma chamada
-legítima. A cópia é feita do fim para o começo quando as faixas se
-sobrepõem, e o resultado é o mesmo que a cópia de uma máquina de Turing.
+The copy tolerates ranges that overlap: the one that chooses the two
+addresses is the user, and a copy that refused the overlap would deny a
+legitimate call. The copy is done from the end to the beginning when the
+ranges overlap, and the result is the same as the copy of a Turing machine.
 
 ### 4.4 `exit`
 
-Ende a tarefa do usuário. O núcleo marca a tarefa como terminada e o
-escalonador não a escolhe de novo; o processador deixa a tarefa na próxima
-interrupção. O código de saída fica registrado na tarefa.
+Ends the user task. The kernel marks the task as terminated and the
+scheduler does not choose it again; the processor leaves the task on the
+next interrupt. The exit code is registered in the task.
 
-## 5. As chamadas da versão 2
+## 5. The calls of version 2
 
-| Número | Chamada | Argumentos | Resultado |
+| Number | Call | Arguments | Result |
 |--------|---------|-----------|-----------|
-| 5 | `send` | `RDI` canal, `RSI` lado, `RDX` tipo, `R8` valor | zero, quando a mensagem foi posta na fila |
-| 6 | `receive` | `RDI` canal, `RSI` lado | o tipo da mensagem, e o valor no `RDX` |
-| 7 | `copy_to` | `RDI` processo, `RSI` destino, `RDX` origem, `R8` comprimento | o número de bytes copiados |
-| 8 | `receive_blocking` | `RDI` canal, `RSI` lado | o tipo da mensagem, e o valor no `RDX` |
+| 5 | `send` | `RDI` channel, `RSI` side, `RDX` kind, `R8` value | zero, when the message was posted in the queue |
+| 6 | `receive` | `RDI` channel, `RSI` side | the kind of the message, and the value in the `RDX` |
+| 7 | `copy_to` | `RDI` process, `RSI` destination, `RDX` source, `R8` length | the number of bytes copied |
+| 8 | `receive_blocking` | `RDI` channel, `RSI` side | the kind of the message, and the value in the `RDX` |
 
 ### 5.1 `send`
 
-Põe uma mensagem na fila de um lado de um canal. Os argumentos são o
-identificador do canal, o lado que recebe a mensagem, o tipo da mensagem e
-o valor da mensagem.
+Posts a message in the queue of one side of a channel. The arguments are
+the identifier of the channel, the side that receives the message, the kind
+of the message and the value of the message.
 
-O lado é um argumento, e não uma regra da chamada, porque **um canal
-pertence a duas tarefas e cada lado do canal é uma tarefa**: quem manda
-escolhe o lado de quem recebe, e quem recebe escolhe o mesmo lado. Com
-essa regra a mensagem nunca volta para quem mandou, e dois processos
-conversam pelo mesmo canal sem tomar a mensagem um do outro.
+The side is an argument, and not a rule of the call, because **a channel
+belongs to two tasks and each side of the channel is a task**: the one that
+sends chooses the side of the one that receives, and the one that receives
+chooses the same side. With this rule the message never comes back to the
+sender, and two processes talk through the same channel without taking the
+message from each other.
 
-O canal tem uma fila por lado, e a fila é limitada a dezesseis mensagens.
-Uma fila cheia recusa a mensagem, e a recusa é contada.
+The channel has one queue per side, and the queue is limited to sixteen
+messages. A full queue refuses the message, and the refusal is counted.
 
 ### 5.2 `receive`
 
-Toma uma mensagem de um canal. Os argumentos são o identificador do canal e
-o lado que guarda a mensagem. O resultado é o tipo da mensagem, e o valor
-da mensagem volta no `RDX`.
+Takes a message of a channel. The arguments are the identifier of the
+channel and the side that holds the message. The result is the kind of the
+message, and the value of the message comes back in the `RDX`.
 
-A chamada **não bloqueia**: uma fila vazia devolve o erro 5, e o programa
-repete a chamada até a mensagem chegar. O bloqueio é um incremento
-separado, porque ele exige que a chamada consiga continuar depois que a
-mensagem chega.
+The call **does not block**: an empty queue returns the error 5, and the
+program repeats the call until the message arrives. The blocking is a
+separate increment, because it requires the call to be able to continue
+after the message arrives.
 
 ### 5.3 `copy_to`
 
-Copia um bloco de bytes do espaço do processo que chamou para o espaço de
-outro processo. Os argumentos são o identificador do processo de destino, o
-endereço do destino no espaço de destino, o endereço da origem no espaço de
-quem chamou, e o comprimento do bloco.
+Copies a block of bytes from the space of the process that called to the
+space of another process. The arguments are the identifier of the
+destination process, the address of the destination in the destination
+space, the address of the source in the space of the caller, and the length
+of the block.
 
-Os dois espaços não nomeam as mesmas páginas, portanto o núcleo não copia
-o bloco com um único movimento: ele lê a origem com o espaço de quem
-chamou ativo, guarda o bloco num buffer do núcleo, e escreve o destino com
-o espaço de destino ativo. O buffer vive na imagem do núcleo, e a imagem
-está mapeada em todos os espaços, e por isso o buffer é alcançável nas
-duas direções da troca.
+The two spaces do not name the same pages, therefore the kernel does not
+copy the block with a single movement: it reads the source with the space
+of the caller active, saves the block in a buffer of the kernel, and writes
+the destination with the space of the destination active. The buffer lives
+in the kernel image, and the image is mapped in every space, and therefore
+the buffer is reachable in both directions of the switch.
 
-As duas faixas são conferidas nas tabelas do espaço de cada uma, e o espaço
-de quem chamou é restaurado no fim, qualquer que seja o resultado da cópia.
+The two ranges are checked in the tables of the space of each one, and the
+space of the caller is restored at the end, whatever the result of the copy
+is.
 
 ### 5.4 `receive_blocking`
 
-Toma uma mensagem de um canal e **bloqueia** quem chama até que a mensagem
-chegue. Os argumentos são o identificador do canal e o lado que guarda a
-mensagem. O resultado é o tipo da mensagem, e o valor da mensagem volta no
-`RDX`.
+Takes a message of a channel and **blocks** the caller until the message
+arrives. The arguments are the identifier of the channel and the side that
+holds the message. The result is the kind of the message, and the value of
+the message comes back in the `RDX`.
 
-A diferença em relação à chamada `receive` é o que acontece quando a fila
-está vazia:
+The difference in relation to the `receive` call is what happens when the
+queue is empty:
 
 | | `receive` | `receive_blocking` |
 |---|---|---|
-| a fila está vazia | devolve o erro 5 | a tarefa **espera** |
-| uso do processador | a tarefa repete a chamada | a tarefa **não** é executada |
-| escolha da tarefa | a tarefa continua sendo escolhida | o escalonador escolhe outra |
-| retorno | imediato | quando a mensagem chega |
+| the queue is empty | returns the error 5 | the task **waits** |
+| use of the processor | the task repeats the call | the task **is not** run |
+| choice of the task | the task keeps being chosen | the scheduler chooses another one |
+| return | immediate | when the message arrives |
 
-A tarefa que espera é marcada como bloqueada, e o escalonador não a
-escolhe. Quando a mensagem chega, a entrega escreve o tipo e o valor
-**direto no contexto salvo da tarefa**, e a tarefa acorda. A tarefa
-continua **depois** da chamada, com o resultado nos mesmos registradores
-que uma chamada que tivesse respondido de imediato.
+The task that waits is marked as blocked, and the scheduler does not choose
+it. When the message arrives, the delivery writes the kind and the value
+**straight into the context saved of the task**, and the task wakes up. The
+task continues **after** the call, with the result in the same registers as
+a call that had answered at once.
 
-A entrega é **direta**: a mensagem não fica na fila quando há alguém
-esperando, e por isso a latência medida é o intervalo entre a mensagem
-sair e a mensagem chegar à tarefa que esperava, e não o tempo que a
-tarefa ficou esperando na fila.
+The delivery is **direct**: the message does not stay in the queue when
+there is someone waiting, and therefore the measured latency is the
+interval between the message leaving and the message arriving at the task
+that was waiting, and not the time that the task spent waiting in the
+queue.
 
-A chamada devolve o erro 5 quando a fila está vazia e **não há outra
-tarefa para executar**: uma espera que seria a única tarefa do sistema
-seria um laço ocupado, e não uma espera.
+The call returns the error 5 when the queue is empty and **there is no
+other task to run**: a wait that would be the only task of the system would
+be a busy loop, and not a wait.
 
-## 6. O resultado e os erros
+## 6. The result and the errors
 
-O resultado da chamada volta em `RAX`. Um resultado **negativo** significa
-que a chamada **não foi feita**, e o valor absoluto do resultado é o código
-do erro:
+The result of the call comes back in `RAX`. A **negative** result means
+that the call **was not performed**, and the absolute value of the result is
+the code of the error:
 
-| Código | Erro | Significado |
+| Code | Error | Meaning |
 |--------|------|-------------|
-| 1 | chamada desconhecida | o número da chamada não existe nesta versão |
-| 2 | endereço inválido | uma das faixas não pertence ao modo de usuário |
-| 3 | comprimento inválido | o comprimento é zero ou maior que o limite |
-| 4 | não permitida | a chamada não é permitida ao nível de privilégio de quem chamou |
-| 5 | fila vazia | o lado do canal não tem mensagem |
-| 6 | canal desconhecido | o identificador do canal não existe |
-| 7 | fila cheia | o lado do canal não aceita mais mensagens |
-| 8 | processo desconhecido | o identificador do processo não existe |
-| 9 | espera impossível | a tarefa esperou por uma mensagem e não havia outra tarefa para executar |
+| 1 | unknown call | the number of the call does not exist in this version |
+| 2 | invalid address | one of the ranges does not belong to the user mode |
+| 3 | invalid length | the length is zero or greater than the limit |
+| 4 | not allowed | the call is not allowed at the privilege level of the caller |
+| 5 | empty queue | the side of the channel has no message |
+| 6 | unknown channel | the identifier of the channel does not exist |
+| 7 | full queue | the side of the channel does not accept more messages |
+| 8 | unknown process | the identifier of the process does not exist |
+| 9 | impossible wait | the task waited for a message and there was no other task to run |
 
-O limite de comprimento é de **64 KiB** por chamada, e ele existe para que
-o núcleo não passe um tempo indeterminado dentro de uma chamada.
+The limit of the length is **64 KiB** per call, and it exists so that the
+kernel does not spend an undetermined time inside a call.
 
-Um resultado que não é negativo é o número de bytes processados, e nunca é
-negativo, de modo que o programa de usuário distingue os dois casos sem
-conhecer os códigos de erro.
+A result that is not negative is the number of bytes processed, and it is
+never negative, so that the user program tells the two cases apart without
+knowing the error codes.
 
-## 7. As regras do contrato
+## 7. The rules of the contract
 
-1. Um número de chamada novo **nunca** reaproveita o número de uma
-   chamada existente: o número é a identidade da chamada para sempre.
-2. Uma chamada nova entra no fim da lista, e o contrato incrementa a
-   versão.
-3. Um número de chamada desconhecido é recusado com o erro 1. O núcleo
-   **não pode** adivinhar o significado de um número.
-4. O usuário é o dono da memória dele: toda faixa que o núcleo toca por
-   causa de uma chamada é conferida nas tabelas de página antes.
-5. O tratador roda na pilha do núcleo da tarefa, e não na pilha do usuário.
-6. A chamada nunca altera o estado de privilégio de quem chamou além da
-   ida e da volta, e a volta devolve os flags de quem chamou.
-7. Os argumentos de uma chamada que passa de três usam `R8`, e nunca `RCX`
-   nem `R11`, porque a instrução da chamada escreve os dois.
-8. Uma chamada que confere uma faixa confere a faixa **no espaço de
-   endereço de quem chamou**, e não no espaço do núcleo.
-9. Uma chamada que bloqueia não ocupa o processador, e a tarefa só é
-   escolhida de novo quando a mensagem chega.
+1. A new call number **never** reuses the number of an existing call: the
+   number is the identity of the call forever.
+2. A new call enters at the end of the list, and the contract increments the
+   version.
+3. An unknown call number is refused with the error 1. The kernel **cannot**
+   guess the meaning of a number.
+4. The user is the owner of its memory: every range that the kernel touches
+   because of a call is checked in the page tables before.
+5. The handler runs on the kernel stack of the task, and not on the stack of
+   the user.
+6. The call never changes the privilege state of the caller beyond the way
+   in and the way out, and the way out returns the flags of the caller.
+7. The arguments of a call that goes beyond three use `R8`, and never `RCX`
+   nor `R11`, because the call instruction writes both.
+8. A call that checks a range checks the range **in the address space of the
+   caller**, and not in the space of the kernel.
+9. A call that blocks does not occupy the processor, and the task is only
+   chosen again when the message arrives.
 
-## 8. O que a versão 2 não tem
+## 8. What version 2 does not have
 
-- **Transferência de capacidades.** A chamada não carrega capacidades, e
-  a pergunta aberta do ADR-0001 sobre o modelo de capacidade continua
-  aberta.
-- **Arquivos.** A chamada `write` conhece apenas o console.
-- **Estrutura de mensagem.** Não há formato de mensagem definido, e a
-  mensagem do canal carrega um tipo e um valor.
-- **Vários processos por chamada.** A chamada `copy_to` conhece o
-  processo de destino pelo identificador, e não por um nome de arquivo
-  nem por um caminho.
-- **Espera com prazo.** A chamada que bloqueia espera para sempre, e não
-  existe um prazo de espera.
-- **Várias esperas por tarefa.** Uma tarefa espera por um canal e por um
-  lado, e não por um conjunto de canais.
+- **Transfer of capabilities.** The call does not carry capabilities, and
+  the open question of ADR-0001 about the capability model remains open.
+- **Files.** The `write` call knows only the console.
+- **Message structure.** There is no message format defined, and the
+  message of the channel carries a kind and a value.
+- **Several processes per call.** The `copy_to` call knows the destination
+  process by the identifier, and not by a file name nor by a path.
+- **Wait with a timeout.** The call that blocks waits forever, and there is
+  no timeout of the wait.
+- **Several waits per task.** A task waits for one channel and one side,
+  and not for a set of channels.

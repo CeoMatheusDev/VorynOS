@@ -73,8 +73,8 @@ const gate_type: u8 = 0x8E;
 
 /// The register frame that the stubs build.
 ///
-/// The contract do quadro está em `frame.zig`, que é o módulo que o
-/// tratador, o switch e a volta do processador leem.
+/// The frame contract is in `frame.zig`, which is the module that the
+/// handler, the switch and the processor return read.
 pub const Registers = frame_layout.Registers;
 
 /// The table itself.
@@ -278,8 +278,8 @@ export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv
     serial.printLine("[VNK]   error code: 0x{x}", .{processor.error_code});
     serial.printLine("[VNK]   faulting address: 0x{x}", .{cpu.readCr2()});
 
-    // A falta de página é o defeito que mais precisa de contexto: o
-    // relatório mostra como a página que causou a falta está mapeada.
+    // The page fault is the fault that needs context the most: the report
+    // shows how the page that caused the fault is mapped.
     if (vector == 14) {
         const paging = @import("paging.zig");
         paging.describe(cpu.readCr2());
@@ -302,16 +302,17 @@ export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv
         frame.rbp,
     });
 
-    // A exceção que veio do modo de usuário é um defeito do processo, e
-    // não um defeito do núcleo: o processo é morto, e o núcleo continua.
-    // Uma exceção no núcleo é fatal, porque o estado do núcleo é
-    // desconhecido, e continuar a partir dele é pior do que parar.
+    // The exception that came from the user mode is a defect of the process,
+    // and not a defect of the kernel: the process is killed, and the kernel
+    // continues. An exception in the kernel is fatal, because the state of
+    // the kernel is unknown, and continuing from it is worse than stopping.
     if (processor.cs == user_code_selector) {
         const scheduler = @import("../../task/scheduler.zig");
 
-        // Uma exceção do modo de usuário sem tarefa corrente é um estado
-        // que o núcleo não sabe tratar: sem a tarefa não há a pilha do
-        // núcleo para onde reescrever o quadro, e a máquina para.
+        // An exception of the user mode without a current task is a state
+        // that the kernel does not know how to handle: without the task
+        // there is no kernel stack to rewrite the frame to, and the machine
+        // stops.
         const task = scheduler.scheduler.current orelse {
             serial.printLine("[VNK] FATAL: an exception of the user mode without a current task", .{});
             port.haltForever();
@@ -321,10 +322,11 @@ export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv
 
         serial.printLine("[VNK]   the process {d} was killed, and the kernel continues", .{task.id});
 
-        // A tarefa morta não volta para o código que falhou: o quadro do
-        // processador é reescrito para o laço do núcleo, e a tarefa fica
-        // lá até o temporizador a tirar de lá. O escalonador não a
-        // escolhe de novo, porque ela está terminada.
+        // The killed task does not go back to the code that failed: the
+        // frame of the processor is rewritten to the loop of the kernel,
+        // and the task stays there until the timer takes it out of there.
+        // The scheduler does not choose it again, because it is
+        // terminated.
         rewriteFrame(frame, task.kernel_rsp);
 
         return;
@@ -333,15 +335,16 @@ export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv
     port.haltForever();
 }
 
-/// Reescreve o quadro do processador para o laço da tarefa morta.
+/// Rewrites the frame of the processor to the loop of the killed task.
 ///
-/// O quadro do processador está dentro do quadro do tratador, e o tratador
-/// escreve nele o endereço de retorno, o segmento de código, o ponteiro de
-/// pilha e o segmento de pilha.
+/// The frame of the processor is inside the frame of the handler, and the
+/// handler writes in it the address of return, the code segment, the stack
+/// pointer and the stack segment.
 ///
-/// A tarefa morta entra no laço do núcleo, no nível 0, com a pilha do
-/// núcleo da tarefa. As flags não são tocadas: o laço espera por uma
-/// interrupção com o `hlt`, e o temporizador é o que tira a tarefa de lá.
+/// The killed task enters the loop of the kernel, at level 0, with the
+/// kernel stack of the task. The flags are not touched: the loop waits for
+/// an interruption with the `hlt`, and the timer is what takes the task out
+/// of there.
 fn rewriteFrame(frame: *const Registers, kernel_stack: u64) void {
     const base = @intFromPtr(frame) + @sizeOf(Registers);
     const pointer = base + 8;

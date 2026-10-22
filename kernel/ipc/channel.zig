@@ -65,9 +65,10 @@ pub const Side = struct {
 /// A task that waits for a message of a queue.
 ///
 /// The waiter carries the address of the two words where the result of the
-/// call is written, e o endereço da tarefa que espera. A entrega escreve o
-/// resultado **direto** no contexto salvo da tarefa, e por isso o
-/// chamador do canal não precisa saber nada sobre o escalonador.
+/// call is written, and the address of the task that waits. The delivery
+/// writes the result **straight** into the context saved of the task, and
+/// therefore the caller of the channel does not need to know anything
+/// about the scheduler.
 pub const Waiter = struct {
     /// The address where the type of the message is written.
     kind: *u64,
@@ -110,8 +111,9 @@ pub const Queue = struct {
     /// The moment of the last message that was delivered to a task that
     /// was waiting.
     ///
-    /// O valor é o que permite medir a latência da entrega de verdade: o
-    /// intervalo entre a mensagem sair e a mensagem chegar.
+    /// The value is what allows the measurement of the real delivery
+    /// latency: the
+    /// interval between the message leaving and the message arriving.
     delivered_at: u64 = 0,
 
     /// Puts a message in the queue.
@@ -133,11 +135,13 @@ pub const Queue = struct {
 
     /// Registers a task that waits for a message of the queue.
     ///
-    /// A task que espera é acordada pela mensagem que chega, e a mensagem
-    /// não fica na fila: ela é entregue direto ao contexto da tarefa.
+    /// The task that waits is woken by the message that arrives, and the
+    /// message does not stay in the queue: it is delivered straight to the
+    /// context of the task.
     ///
-    /// A função devolve falso quando a fila já tem o número máximo de
-    /// tarefas esperando.
+    /// The function returns false when the queue already holds the
+    /// maximum number of
+    /// tasks waiting.
     pub fn wait(self: *Queue, waiter: Waiter) bool {
         for (&self.waiters) |*entry| {
             if (entry.* != null) continue;
@@ -147,9 +151,9 @@ pub const Queue = struct {
         return false;
     }
 
-    /// Removes a wait of a task, sem entregar mensagem alguma.
+    /// Removes a wait of a task, without delivering any message.
     ///
-    /// A função devolve verdadeiro quando a espera existia.
+    /// The function returns true when the wait existed.
     pub fn cancelWait(self: *Queue, waiter: Waiter) bool {
         for (&self.waiters) |*entry| {
             const value = entry.* orelse continue;
@@ -160,24 +164,26 @@ pub const Queue = struct {
         return false;
     }
 
-    /// Entrega uma mensagem a uma tarefa que espera, se houver uma.
+    /// Delivers a message to a task that waits, if there is one.
     ///
-    /// A função devolve verdadeiro quando a mensagem foi entregue, e falso
-    /// quando não havia nenhuma tarefa esperando, e a mensagem tem de ir
-    /// para a fila.
+    /// The function returns true when the message was delivered, and false
+    /// when there was no task waiting, and the message has to go to the
+    /// queue.
     pub fn deliver(self: *Queue, message: Message) bool {
         for (&self.waiters) |*entry| {
             const waiter = entry.* orelse continue;
 
-            // O resultado da chamada é escrito direto no contexto salvo da
-            // tarefa, e a tarefa continua depois da chamada, como se a
-            // chamada tivesse respondido.
+            // The result of the call is written straight into the context
+            // saved of the
+            // task, and the task continues after the call, as if the call
+            // had answered at once.
             waiter.kind.* = message.kind;
             waiter.value.* = message.value;
             entry.* = null;
 
-            // A tarefa acordada é escolhida pelo escalonador, e a entrega
-            // registra o momento em que a mensagem chegou.
+            // The task that was woken is chosen by the scheduler, and the
+            // delivery
+            // records the moment the message arrived.
             self.delivered += 1;
             self.delivered_at = context.timestamp();
             waiter.wake(waiter.task);
@@ -226,36 +232,37 @@ pub const Channel = struct {
     /// The queue of each side of the channel.
     queues: [2]Queue = @splat(.{}),
 
-    /// Registra uma tarefa que espera por uma mensagem de um lado.
+    /// Registers a task that waits for a message of one side.
     ///
-    /// A função devolve falso quando o lado não existe, ou quando a fila
-    /// dele já tem o número máximo de tarefas esperando.
+    /// The function returns false when the side does not exist, or when its
+    /// queue already holds the maximum number of tasks waiting.
     pub fn wait(self: *Channel, side: u64, waiter: Waiter) bool {
         if (side >= self.queues.len) return false;
         return self.queues[side].wait(waiter);
     }
 
-    /// Remove a espera de uma tarefa em um lado.
+    /// Removes the wait of a task on one side.
     pub fn cancelWait(self: *Channel, side: u64, waiter: Waiter) bool {
         if (side >= self.queues.len) return false;
         return self.queues[side].cancelWait(waiter);
     }
 
-    /// Entrega uma mensagem a uma tarefa que espera em um lado.
+    /// Delivers a message to a task that waits on one side.
     ///
-    /// A função devolve verdadeiro quando a mensagem foi entregue, e a
-    /// mensagem não fica na fila.
+    /// The function returns true when the message was delivered, and the
+    /// message does not stay in the queue.
     pub fn deliver(self: *Channel, side: u64, message: Message) bool {
         if (side >= self.queues.len) return false;
         return self.queues[side].deliver(message);
     }
 
-    /// Entrega uma mensagem a uma tarefa que espera, ou a põe na fila.
+    /// Delivers a message to a task that waits, or puts it in the queue.
     ///
-    /// A função é o caminho único de uma mensagem que sai, e por isso é
-    /// ela que marca o momento da saída: a latência da entrega é o
-    /// intervalo entre esse momento e o momento em que a mensagem chegou à
-    /// tarefa que esperava.
+    /// The function is the single path of a message that leaves, and
+    /// therefore it is the one that marks the moment of the departure: the
+    /// delivery latency is the interval between that moment and the moment
+    /// the message arrived at the
+    /// task that was waiting.
     pub fn post(self: *Channel, side: u64, message: Message) bool {
         if (side >= self.queues.len) return false;
 
@@ -266,17 +273,19 @@ pub const Channel = struct {
         return queue.send(message);
     }
 
-    /// O número de mensagens que chegaram a uma tarefa que esperava.
+    /// The number of messages that arrived at a task that was waiting.
     pub fn deliveries(self: *Channel, side: u64) u64 {
         if (side >= self.queues.len) return 0;
         return self.queues[side].delivered;
     }
 
-    /// O número de ciclos entre a mensagem sair e a mensagem chegar.
+    /// The number of cycles between the message leaving and the message
+    /// arriving.
     ///
-    /// A latência medida é a da entrega: o intervalo entre o momento em
-    /// que a mensagem foi posta na fila e o momento em que ela chegou à
-    /// tarefa que esperava.
+    /// The measured latency is the one of the delivery: the interval
+    /// between the moment the message was posted in the queue and the moment
+    /// it arrived at the
+    /// task that was waiting.
     pub fn deliveryLatency(self: *Channel, side: u64) u64 {
         if (side >= self.queues.len) return 0;
         const queue = &self.queues[side];

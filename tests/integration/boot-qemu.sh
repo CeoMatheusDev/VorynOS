@@ -40,20 +40,20 @@ fi
 
 # --- locate the firmware ----------------------------------------------------
 #
-# O firmware do QEMU é procurado em três lugares: as variáveis de ambiente,
-# os pares de arquivos conhecidos das distribuições, e uma busca no sistema
-# de arquivos. A busca existe porque a distribuição de referência do
-# ambiente de teste pode instalar o firmware em um caminho que o projeto
-# não conhece, e um teste que falha por causa de um caminho não é um
-# teste: é uma falha de ambiente.
+# The QEMU firmware is looked for in three places: the environment variables,
+# the known file pairs of the distributions, and a search of the file system.
+# The search exists because the reference distribution of the test
+# environment may install the firmware in a path that the project does not
+# know, and a test that fails because of a path is not a test: it is an
+# environment failure.
 #
-# Cada par é "código:variáveis", e o par tem de ser coerente: o firmware de
-# quatro megabytes vem com o arquivo de variáveis de quatro megabytes, e o
-# de dois megabytes com o de dois megabytes.
+# Each pair is "code:variables", and the pair has to be coherent: the
+# firmware of four megabytes comes with the variables file of four
+# megabytes, and the one of two megabytes with the one of two megabytes.
 #
-# O formato de cada arquivo vem do nome dele, e o QEMU aceita formatos
-# diferentes nos dois dispositivos de flash: um código de quatro megabytes
-# em qcow2 com as variáveis em raw funciona.
+# The format of each file comes from its name, and the QEMU accepts
+# different formats in the two flash devices: a code of four megabytes in
+# qcow2 with the variables in raw works.
 
 OVMF_PAIRS=(
     "${OVMF_CODE:-}:${OVMF_VARS:-}"

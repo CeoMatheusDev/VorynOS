@@ -1,403 +1,401 @@
-# ADR-0005 — Modelo de tarefa, troca de contexto e modo de usuário
+# ADR-0005 — Task model, context switch, and user mode
 
-| Campo | Valor |
+| Field | Value |
 |-------|-------|
-| **Estado** | ACEITO — o escalonador e o modo de usuário estão implementados e verificados |
-| **Data** | 2026-10-21 |
-| **Decidido por** | Engenharia VorynOS |
-| **Contexto** | Marco F3, execução |
+| **Status** | ACCEPTED — the scheduler and user mode are implemented and verified |
+| **Date** | 2026-10-21 |
+| **Decided by** | VorynOS Engineering |
+| **Context** | Milestone F3, execution |
 
-## 1. Contexto
+## 1. Context
 
-O marco F2 entregou as estruturas do processador. O marco F3 precisa de tarefas
-que alternam entre si, e o primeiro objetivo verificável é o **modo de
-usuário**: uma tarefa que executa no terceiro nível de privilégio, com páginas
-próprias, e que volta para o núcleo por uma chamada de sistema.
+Milestone F2 delivered the processor structures. Milestone F3 needs tasks
+that switch between each other, and the first verifiable objective is
+**user mode**: a task that runs at the third privilege level, with its own
+pages, and that returns to the kernel through a system call.
 
-## 2. Decisões
+## 2. Decisions
 
-### 2.1 O contexto guarda o quadro completo do processador
+### 2.1 The context holds the complete processor frame
 
-Uma tarefa suspensa **dentro** de um tratador de interrupção não tem
-endereço de retorno para onde voltar: o quadro da interrupção pertence ao
-tratador, e não ao código interrompido. Um contexto que só guardasse os
-registradores que a arquitetura não salva, e que fosse retomado com um
-`ret`, leria da pilha um valor qualquer.
+A task suspended **inside** an interrupt handler has no return address to
+return to: the interrupt frame belongs to the handler, and not to the
+interrupted code. A context that only held the registers the architecture
+does not save, and that was resumed with a `ret`, would read an arbitrary
+value from the stack.
 
-O contexto do VorynOS guarda, além dos registradores que a arquitetura não
-salva, o ponteiro de instrução, as flags e os seletores de segmento. A troca
-monta o quadro do processador sobre a pilha da tarefa que entra e termina com
-um `iretq`.
+VorynOS's context holds, besides the registers the architecture does not
+save, the instruction pointer, the flags, and the segment selectors. The
+switch builds the processor frame on the stack of the incoming task and
+ends with an `iretq`.
 
-**Consequência:** a troca custa alguns ciclos a mais do que um `ret`, e a
-medição confirma a ordem de grandeza: **358 ciclos** no melhor caso, com uma
-média de 8 mil ciclos na primeira execução, em que as caches ainda estão
-frias.
+**Consequence:** the switch costs a few cycles more than a `ret`, and the
+measurement confirms the order of magnitude: **358 cycles** in the best
+case, with an average of 8 thousand cycles in the first execution, in which
+the caches are still cold.
 
-### 2.2 A troca acontece no ponto de entrada da interrupção
+### 2.2 The switch happens at the interrupt entry point
 
-A troca de contexto é executada pelo ponto de entrada da interrupção, e não
-pelo tratador em Zig. O quadro da interrupção ainda está na pilha quando a
-tarefa suspensa é retomada, e portanto o contexto pode ser reconstruído a
-partir dele.
+The context switch is performed by the interrupt entry point, and not by
+the Zig handler. The interrupt frame is still on the stack when the
+suspended task is resumed, and therefore the context can be reconstructed
+from it.
 
-**Consequência:** o tratador devolve um valor que indica se a troca é
-necessária, e o ponto de entrada decide.
+**Consequence:** the handler returns a value that indicates whether the
+switch is necessary, and the entry point decides.
 
-### 2.3 A política é circular, e não "a primeira tarefa pronta"
+### 2.3 The policy is round-robin, and not "the first ready task"
 
-A primeira versão da política devolvia sempre a primeira tarefa pronta da
-lista. Com três tarefas, a segunda nunca era escolhida: o processador
-alternava entre a primeira e a segunda e a terceira passava fome.
+The first version of the policy always returned the first ready task of the
+list. With three tasks, the second was never chosen: the processor switched
+between the first and the second and the third starved.
 
-A política visita as tarefas **a partir da tarefa atual**, e volta ao
-começo quando chega ao fim. É a política mais simples que não produz fome,
-e é a base sobre a qual as políticas de latência do perfil gamer vão ser
-construídas, com dados.
+The policy visits the tasks **starting from the current task**, and returns
+to the beginning when it reaches the end. It is the simplest policy that
+does not produce starvation, and it is the basis on which the gamer
+profile's latency policies will be built, with data.
 
-### 2.4 O segmento de tarefa aponta para a pilha da tarefa
+### 2.4 The task segment points to the task's stack
 
-O processador carrega o ponteiro de pilha do segmento de tarefa sempre que o
-nível de privilégio muda, **nos dois sentidos**. Uma tarefa de usuário que
-recebe o seu ponteiro de pilha de um outro lugar executaria sobre a pilha do
-núcleo, cujas páginas não são acessíveis de usuário.
+The processor loads the task segment's stack pointer whenever the privilege
+level changes, **in both directions**. A user task that receives its stack
+pointer from somewhere else would run on the kernel stack, whose pages are
+not accessible from user mode.
 
-O escalonador aponta o segmento de tarefa para a pilha da tarefa que vai
-executar. Para uma tarefa de usuário, é a pilha de usuário; para uma tarefa
-do núcleo, é a pilha da própria tarefa.
+The scheduler points the task segment to the stack of the task that is
+going to run. For a user task, it is the user stack; for a kernel task, it
+is the task's own stack.
 
-**Consequência:** o tratador de uma exceção que vem do usuário executa sobre
-a pilha de usuário. A pilha de usuário precisa ser maior do que a pilha do
-núcleo usaria, e é preciso documentar esse acoplamento.
+**Consequence:** the handler of an exception coming from user mode runs on
+the user stack. The user stack has to be larger than the kernel stack would
+use, and this coupling needs to be documented.
 
-### 2.5 O bit de usuário existe em todos os níveis da hierarquia
+### 2.5 The user bit exists at all levels of the hierarchy
 
-O processador verifica o bit de usuário em **todos** os níveis da hierarquia
-de tabelas. As entradas de nível superior recebem sempre o bit, e são as
-entradas de página que decidem: as páginas do núcleo não o têm, e portanto
-continuam inacessíveis a partir do usuário.
+The processor checks the user bit at **all** levels of the table hierarchy.
+The upper-level entries always receive the bit, and it is the page entries
+that decide: the kernel pages do not have it, and therefore remain
+inaccessible from user mode.
 
-### 2.6 O núcleo prepara o coprocessor
+### 2.6 The kernel prepares the coprocessor
 
-O firmware deixa o coprocessor desabilitado, e uma instrução de ponto
-flutuante levanta um erro de coprocessor. A rotina de cópia de memória do
-compilador usa instruções de vetor, e o núcleo habilita a unidade, habilita o
-estado salvo pelo processador e mascara as exceções da unidade.
+The firmware leaves the coprocessor disabled, and a floating-point
+instruction raises a coprocessor error. The compiler's memory copy routine
+uses vector instructions, and the kernel enables the unit, enables the state
+saved by the processor, and masks the unit's exceptions.
 
-**Consequência:** todo núcleo precisa dessa rotina, e a sua ausência aparece
-como um erro de coprocessor dentro de uma rotina de biblioteca, o que
-desvia o diagnóstico.
+**Consequence:** every kernel needs this routine, and its absence shows up
+as a coprocessor error inside a library routine, which misleads the
+diagnosis.
 
-## 3. O modo de usuário: o que já existe e o que falta
+## 3. User mode: what already exists and what is missing
 
-**O modo de usuário está implementado e verificado.** O programa da tarefa de
-usuário executa no terceiro nível de privilégio, escreve na sua própria
-página de dados, chama o núcleo pela instrução `syscall` e recebe a resposta
-de volta no mesmo registrador.
+**User mode is implemented and verified.** The user task's program runs at
+the third privilege level, writes to its own data page, calls the kernel
+through the `syscall` instruction, and receives the response back in the
+same register.
 
-Existe e foi verificado:
+The following exists and has been verified:
 
-- as tabelas de página com o bit de usuário e as páginas do núcleo sem ele;
-- a tarefa de usuário, com o seu próprio programa, a sua página de dados e a
-  sua pilha;
-- a pilha do núcleo de cada tarefa, onde os tratadores de interrupção e de
-  chamada rodam;
-- o segmento de tarefa, com o layout do modo de 64 bits, apontando para a
-  pilha do núcleo da tarefa em execução;
-- a chamada de sistema pela instrução `syscall`, com o tratador em Zig.
+- the page tables with the user bit and the kernel pages without it;
+- the user task, with its own program, its data page, and its stack;
+- each task's kernel stack, where the interrupt and call handlers run;
+- the task segment, with the 64-bit mode layout, pointing to the kernel
+  stack of the running task;
+- the system call through the `syscall` instruction, with the handler in
+  Zig.
 
-A entrega da exceção que vem do usuário **foi corrigida**: a causa era o
-layout do segmento de tarefa, descrita na seção 3.3.
+The delivery of the exception coming from user mode **has been fixed**: the
+cause was the task segment layout, described in section 3.3.
 
-O diagnóstico da porta de interrupção continua registrado, porque ele
-delimita o problema, mas **a conclusão dele estava errada**: a falha não era
-uma verificação de privilégio, e sim uma falha de pilha, com o vetor 12. O
-registro abaixo é o que a investigação encontrou na época:
+The interrupt gate diagnosis remains registered, because it delimits the
+problem, but **its conclusion was wrong**: the fault was not a privilege
+check, and rather a stack fault, with vector 12. The record below is what
+the investigation found at the time:
 
-1. A tarefa de usuário **executa** no terceiro nível de privilégio: o
-   processador registra `cpl=3`, com o seletor de código `0x1b` e o de dados
-   `0x23`, e o programa chega à instrução de chamada de sistema, com o
-   registro de número preenchido.
-2. A porta da chamada de sistema está **correta**, byte a byte. O
-   descritor medido em memória é `81 07 08 00 00 ee 29 00 00 00 00 00 00
-   00 00`: o deslocamento em duas partes, o seletor `0x08` do código do
-   núcleo, o índice de pilha de interrupção zero, e o tipo `0xee`, presente
-   e de terceiro nível de privilégio.
-3. Os segmentos estão corretos: o código do usuário tem o bit de modo longo
-   e o terceiro nível de privilégio, e o segmento de dados é gravável e do
-   terceiro nível de privilégio.
-4. As tabelas de página estão corretas: as três páginas do usuário estão
-   presentes, graváveis e com o bit de usuário, e os níveis superiores da
-   hierarquia também o têm.
-5. A chamada de sistema **é entregue** pelo emulador: o registro de
-   interrupções mostra o vetor `0x80` com a marca de interrupção de software.
-6. Durante a entrega, o emulador levanta uma **exceção com código de erro
-   zero**, antes de o tratador receber o controle: o traço das exceções
-   mostra a mesma exceção e, em seguida, uma falha dupla, porque a entrega
-   da própria falha também falha.
-7. A leitura do traço identificou a exceção como a **falha de proteção
-   geral**, com o código de erro zero, e a conclusão foi que se tratava de
-   uma verificação de privilégio.
+1. The user task **runs** at the third privilege level: the processor
+   records `cpl=3`, with the code selector `0x1b` and the data selector
+   `0x23`, and the program reaches the system call instruction, with the
+   number register filled in.
+2. The system call gate is **correct**, byte by byte. The descriptor
+   measured in memory is `81 07 08 00 00 ee 29 00 00 00 00 00 00 00 00`:
+   the offset in two parts, the `0x08` selector of the kernel code, the zero
+   interrupt stack index, and the `0xee` type, present and of the third
+   privilege level.
+3. The segments are correct: the user code has the long mode bit and the
+   third privilege level, and the data segment is writable and of the third
+   privilege level.
+4. The page tables are correct: the three user pages are present, writable,
+   and with the user bit, and the upper levels of the hierarchy have it as
+   well.
+5. The system call **is delivered** by the emulator: the interrupt log
+   shows the `0x80` vector with the software interrupt marker.
+6. During the delivery, the emulator raises an **exception with error code
+   zero**, before the handler receives control: the exception trace shows
+   the same exception and, then, a double fault, because the delivery of
+   the fault itself also fails.
+7. The reading of the trace identified the exception as the **general
+   protection fault**, with the zero error code, and the conclusion was
+   that it was a privilege check.
 
-**A correção do ponto 7 é o que resolveu o defeito:** a exceção é a
-**falha de pilha**, o vetor 12, e ela não vem da porta: vem do segmento de
-tarefa, cujo layout estava errado. A porta de interrupção entregava a
-chamada corretamente, e o que falhava era a pilha que o processador usava
-para entregar a exceção que vinha do usuário.
+**The correction of item 7 is what resolved the defect:** the exception is
+the **stack fault**, vector 12, and it does not come from the gate: it
+comes from the task segment, whose layout was wrong. The interrupt gate
+delivered the call correctly, and what was failing was the stack the
+processor used to deliver the exception coming from user mode.
 
-### 3.1 Consequência: a instrução de chamada de sistema
+### 3.1 Consequence: the system call instruction
 
-O caminho da porta de interrupção é abandonado. O núcleo passa a usar a
-instrução `syscall`, com o mecanismo previsto pela arquitetura para isso em
-modo de 64 bits, e a decisão tem três motivos:
+The interrupt gate path is abandoned. The kernel starts to use the
+`syscall` instruction, with the mechanism the architecture provides for it
+in 64-bit mode, and the decision has three reasons:
 
-1. **O caminho da porta é o único que falha.** A instrução `syscall` não
-   passa pela tabela de interrupções, e portanto não depende da verificação
-   que falha.
-2. **A pilha do tratador passa a ser do núcleo.** Com a porta de
-   interrupção, o tratador roda sobre a pilha do usuário, e o usuário
-   poderia reescrever o quadro do tratador. Com `syscall`, o processador
-   entrega a chamada na pilha que o segmento de tarefa aponta, e a pilha do
-   usuário só é restaurada na volta.
-3. **A porta de interrupção é um caminho herdado.** A recomendação da
-   arquitetura para chamadas de sistema no modo de 64 bits é a instrução
-   `syscall`, com os registradores de modelo `IA32_STAR`, `IA32_LSTAR` e
+1. **The gate path is the only one that fails.** The `syscall` instruction
+   does not go through the interrupt table, and therefore does not depend on
+   the check that fails.
+2. **The handler's stack becomes the kernel's.** With the interrupt gate,
+   the handler runs on the user stack, and the user could overwrite the
+   handler's frame. With `syscall`, the processor delivers the call on the
+   stack that the task segment points to, and the user stack is only
+   restored on the way back.
+3. **The interrupt gate is a legacy path.** The architecture's
+   recommendation for system calls in 64-bit mode is the `syscall`
+   instruction, with the model registers `IA32_STAR`, `IA32_LSTAR`, and
    `IA32_SFMASK`.
 
-A tarefa de usuário **não é agendada** até a chamada de sistema funcione
-pelo caminho novo, porque uma tarefa que falha interrompe a máquina. A
-alternativa seria mascarar a falha no usuário, o que destruiria justamente
-o isolamento que o modo de usuário deve oferecer.
+The user task **is not scheduled** until the system call works through the
+new path, because a task that fails halts the machine. The alternative
+would be to mask the fault in user mode, which would destroy precisely the
+isolation that user mode must offer.
 
-### 3.3 A causa do defeito: o segmento de tarefa
+### 3.3 The cause of the defect: the task segment
 
-A migração para a instrução `syscall` **não** resolveu o defeito por si só: a
-primeira execução do caminho novo reproduziu a mesma falha, e o traço das
-exceções apontou o defeito real.
+The migration to the `syscall` instruction did **not** resolve the defect
+by itself: the first execution of the new path reproduced the same failure,
+and the exception trace pointed to the real defect.
 
-O sintoma, no traço do emulador, é o vetor **12** — a exceção de **falha de
-pilha**, com código de erro zero —, e não a falha de proteção geral que o
-diagnóstico anterior supunha. A falha de pilha é levantada na entrega de
-uma interrupção vinda do terceiro nível de privilégio, e é seguida de falha
-dupla, porque a entrega da própria falha também falha.
+The symptom, in the emulator's trace, is the vector **12** — the **stack
+fault** exception, with zero error code — and not the general protection
+fault that the previous diagnosis assumed. The stack fault is raised at the
+delivery of an interrupt coming from the third privilege level, and it is
+followed by a double fault, because the delivery of the fault itself also
+fails.
 
-A causa está no **segmento de tarefa**, e é um defeito de layout:
+The cause is in the **task segment**, and it is a layout defect:
 
-- O segmento de tarefa do modo de 64 bits **não é** o do modo protegido. A
-  estrutura do modo de 64 bits não tem o campo do seletor do segmento de
-  pilha, e os campos do segmento de tarefa começam em outros deslocamentos:
-  a pilha de ring 3 (`RSP0`) está no **deslocamento 4**, e não no 8; a
-  tabela de pilhas de interrupção (`IST`) começa no **deslocamento 36**; a
-  estrutura tem **104 bytes**, e o limite do segmento é 103.
-- O núcleo usava o layout do modo protegido: a pilha de ring 3 estava no
-  deslocamento 8 e a tabela de pilhas de interrupção no 40. O processador
-  lia, no deslocamento 4, o campo reservado e a metade baixa do ponteiro
-  de pilha: o valor lido não era um endereço de pilha, e o quadro da
-  interrupção era escrito num endereço inválido.
-- A estrutura do núcleo era declarada como `extern struct`, e o compilador
-  insere **alinhamento implícito**: o primeiro `u64` de uma `extern struct`
-  fica no deslocamento 8, mesmo depois de um `u32` no deslocamento 0. A
-  estrutura precisa ser `packed`, e o compilador acrescenta oito bytes de
-  preenchimento no fim, de modo que o tamanho relevante é uma constante da
-  arquitetura, e não `@sizeOf`.
+- The 64-bit mode task segment **is not** the one of the protected mode.
+  The 64-bit mode structure does not have the stack segment selector field,
+  and the task segment fields start at other offsets: the ring 3 stack
+  (`RSP0`) is at **offset 4**, and not at 8; the interrupt stack table
+  (`IST`) starts at **offset 36**; the structure has **104 bytes**, and the
+  segment limit is 103.
+- The kernel used the protected mode layout: the ring 3 stack was at offset
+  8 and the interrupt stack table at 40. The processor read, at offset 4,
+  the reserved field and the low half of the stack pointer: the value read
+  was not a stack address, and the interrupt frame was written to an
+  invalid address.
+- The kernel's structure was declared as an `extern struct`, and the
+  compiler inserts **implicit alignment**: the first `u64` of an
+  `extern struct` lands at offset 8, even after a `u32` at offset 0. The
+  structure has to be `packed`, and the compiler adds eight bytes of
+  padding at the end, so that the relevant size is an architecture
+  constant, and not `@sizeOf`.
 
-**A correção** foi reescrever a estrutura com os deslocamentos da
-arquitetura, com a verificação em tempo de compilação dos deslocamentos e do
-tamanho, e com o limite do segmento no último byte válido.
+**The correction** was to rewrite the structure with the architecture's
+offsets, with the compile-time verification of the offsets and of the size,
+and with the segment limit in the last valid byte.
 
-**Consequência:** a entrega de interrupções ao terceiro nível de
-privilégio passou a funcionar, e o traço do emulador **não registra nenhuma
-exceção** durante toda a execução: nem falta de pilha, nem falha dupla, nem
-falha de página.
+**Consequence:** the delivery of interrupts to the third privilege level
+started to work, and the emulator's trace **records no exception** during
+the whole execution: neither stack fault, nor double fault, nor page
+fault.
 
-### 3.4 O caminho da chamada de sistema
+### 3.4 The system call path
 
-A chamada usa a instrução `syscall`, e o núcleo tem quatro decisões
-próprias desse caminho:
+The call uses the `syscall` instruction, and the kernel has four decisions
+of its own for this path:
 
-1. **A instrução é o caminho do usuário para o núcleo, e nada mais.** O
-   processador carrega os segmentos do núcleo e o nível de privilégio do
-   núcleo **antes** de o ponto de entrada executar, e portanto o ponto de
-   entrada não consegue distinguir o nível de privilégio de quem chamou. A
-   volta é sempre um `iretq`, e o núcleo chama o próprio tratador com uma
-   chamada comum, e não com a instrução.
-2. **Cada tarefa tem duas pilhas.** A pilha do usuário é a que a tarefa usa,
-   e a pilha do núcleo é a que recebe os quadros das interrupções e das
-   chamadas. O tratador da chamada **nunca** roda sobre a pilha do usuário,
-   e o usuário não pode reescrever o quadro do tratador. O segmento de
-   tarefa aponta para a pilha do núcleo da tarefa que está em execução.
-3. **O registro `IA32_STAR` tem um layout só, e o núcleo o programa para
-   ele.** A arquitetura define a operação da instrução assim: o seletor do
-   código do núcleo vem do campo da metade baixa, `IA32_STAR[47:32]`, e o
-   seletor da pilha do núcleo vem do valor oito bytes acima dele, porque a
-   pilha do núcleo é *"SS just above CS"*. A tabela do núcleo tem o segmento
-   de dados oito bytes depois do segmento de código, e portanto o seletor do
-   código serve para os dois: o campo da metade baixa recebe o seletor do
-   código do núcleo, e a pilha do núcleo que o processador carrega é a do
-   seletor do código mais oito. O campo da metade alta pertence à instrução
-   de retorno, que o núcleo não usa, porque a volta da chamada é um retorno
-   de interrupção.
-4. **A máscara de flags tem de limpar a interrupção.** O ponto de entrada
-   monta o quadro da chamada na pilha do núcleo, e uma interrupção que
-   chegasse no meio dessa sequência escreveria o próprio quadro por cima do
-   quadro da chamada. A máscara limpa a interrupção, a armadilha, a direção
-   e as flags da aritmética.
+1. **The instruction is the path from user mode to the kernel, and nothing
+   more.** The processor loads the kernel segments and the kernel privilege
+   level **before** the entry point runs, and therefore the entry point
+   cannot distinguish the privilege level of the caller. The return is
+   always an `iretq`, and the kernel calls its own handler with an ordinary
+   call, and not with the instruction.
+2. **Each task has two stacks.** The user stack is the one the task uses,
+   and the kernel stack is the one that receives the interrupt frames and
+   the call frames. The call handler **never** runs on the user stack, and
+   the user cannot overwrite the handler's frame. The task segment points
+   to the kernel stack of the task that is running.
+3. **The `IA32_STAR` register has a single layout, and the kernel programs
+   it for it.** The architecture defines the operation of the instruction
+   like this: the kernel code selector comes from the low half field,
+   `IA32_STAR[47:32]`, and the kernel stack selector comes from the value
+   eight bytes above it, because the kernel stack is *"SS just above CS"*.
+   The kernel's table has the data segment eight bytes after the code
+   segment, and therefore the code selector serves for both: the low half
+   field receives the kernel code selector, and the kernel stack the
+   processor loads is the one of the code selector plus eight. The high
+   half field belongs to the return instruction, which the kernel does not
+   use, because the return of the call is an interrupt return.
+4. **The flags mask has to clear the interrupt.** The entry point builds
+   the call frame on the kernel stack, and an interrupt that arrived in the
+   middle of that sequence would write its own frame on top of the call
+   frame. The mask clears the interrupt, the trap, the direction, and the
+   arithmetic flags.
 
-   A máscara **não** tira a interrupção de quem chamou: o processador salva
-   as flags no registrador `R11` **antes** de aplicar a máscara, e a volta
-   restaura o valor de `R11`. A medição confirma: com a máscara `0x7fd`, o
-   tratador leu `0x202` em `R11`, com a interrupção ligada, e a tarefa do
-   usuário mode voltou preemptível, e o escalonador preemptivo continuou a
-   escolhê-la ✓.
+   The mask **does not** take the interrupt away from the caller: the
+   processor saves the flags in the `R11` register **before** applying the
+   mask, and the return restores the value of `R11`. The measurement
+   confirms: with the `0x7fd` mask, the handler read `0x202` in `R11`, with
+   the interrupt enabled, and the user mode task came back preemptible, and
+   the preemptive scheduler kept choosing it ✓.
 
-### 3.5 Correções que a investigação produziu
+### 3.5 Corrections that the investigation produced
 
-- **A tabela de vetores de exceção do modo de 64 bits é diferente da de 32
-  bits.** A falta de página é o vetor 14, e não o 13, e a exceção de
-  segmento de pilha é o 13, e não o 11. A tabela do núcleo usava a numeração
-  do modo protegido, e o diagnóstico da falta de página dizia "erro de ponto
-  flutuante" ✗.
-- **A cópia do programa do usuário tem de acontecer depois da troca das
-  tabelas de página.** Antes da troca, a escrita usaria as tabelas do
-  firmware, e o programa cairia em outra página física, que a tarefa
-  executaria como se fosse o programa ✗.
-- **A instrução que para o processador é privilegiada.** O programa de
-  usuário esperava com `hlt`, que levanta uma falha de proteção geral no
-  terceiro nível de privilégio ✗. A instrução `pause` é rejeitada pelo
-  emulador pelo mesmo motivo ✗, e a espera passa a ser um laço que só
-  salta para si mesmo ✓.
-- **O seletor de segmento tem o nível de privilégio nos dois campos mais
-  baixos.** A função que monta o seletor colocava o indicador de tabela no
-  campo 3 e o nível de privilégio no campo 4, e o seletor do usuário saía
-  `0x38` e `0x30`: um índice fora da tabela, e com o nível de privilégio do
-  núcleo. A correção põe o indicador de tabela no campo 2 e o nível de
-  privilégio nos campos 0 e 1, e o seletor do usuário passa a ser `0x1b` e
-  `0x23` ✓. O defeito era silencioso: os seletores hardcoded do escalonador
-  estavam certos, e só o registro da chamada de sistema usava os valores
-  errados.
-- **O quadro do retorno de interrupção é montado na ordem inversa.** O
-  processador desempilha o endereço de retorno, o seletor do código, as
-  flags, o ponteiro de pilha e o seletor da pilha, e portanto o valor do
-  endereço de retorno é o que fica no endereço mais baixo do quadro. O
-  quadro da chamada de sistema era montado na ordem oposta, e o retorno
-  carregava o valor errado para o endereço de retorno ✗.
-- **O número da chamada não pode ser destruído antes de ser salvo.** O
-  ponto de entrada usava o primeiro registrador para ler o ponteiro de
-  pilha do usuário, e o número da chamada, que é o primeiro registrador do
-  usuário, deixava de existir: o tratador recebia o ponteiro de pilha no
-  lugar do número ✗. A medição mostrava o número `0x404000`, que é o topo
-  da pilha do usuário.
+- **The 64-bit mode exception vector table is different from the 32-bit
+  one.** The page fault is vector 14, and not 13, and the stack segment
+  exception is 13, and not 11. The kernel's table used the protected mode
+  numbering, and the page fault diagnosis said "floating point error" ✗.
+- **The copy of the user program has to happen after the swap of the page
+  tables.** Before the swap, the write would use the firmware's tables,
+  and the program would land on another physical page, which the task would
+  execute as if it were the program ✗.
+- **The instruction that halts the processor is privileged.** The user
+  program was waiting with `hlt`, which raises a general protection fault
+  at the third privilege level ✗. The `pause` instruction is rejected by
+  the emulator for the same reason ✗, and the wait becomes a loop that
+  only jumps to itself ✓.
+- **The segment selector has the privilege level in the two lowest
+  fields.** The function that builds the selector placed the table
+  indicator in field 3 and the privilege level in field 4, and the user
+  selector came out `0x38` and `0x30`: an index outside the table, and with
+  the kernel's privilege level. The correction puts the table indicator in
+  field 2 and the privilege level in fields 0 and 1, and the user selector
+  becomes `0x1b` and `0x23` ✓. The defect was silent: the scheduler's
+  hardcoded selectors were right, and only the system call record used the
+  wrong values.
+- **The interrupt return frame is built in the reverse order.** The
+  processor pops the return address, the code selector, the flags, the
+  stack pointer, and the stack selector, and therefore the value of the
+  return address is the one that ends up in the lowest address of the
+  frame. The system call frame was built in the opposite order, and the
+  return loaded the wrong value for the return address ✗.
+- **The call number cannot be destroyed before being saved.** The entry
+  point used the first register to read the user stack pointer, and the
+  call number, which is the user's first register, ceased to exist: the
+  handler received the stack pointer in place of the number ✗. The
+  measurement showed the number `0x404000`, which is the top of the user
+  stack.
 
-## 4. Custos e riscos
+## 4. Costs and risks
 
-| Risco | Impacto | Tratamento |
+| Risk | Impact | Mitigation |
 |-------|---------|------------|
-| Pilha de usuário compartilhada com o tratador | Resolvido | Cada tarefa tem uma pilha do núcleo, e o tratador da chamada roda nela |
-| A política circular pode gerar inanição com tarefas bloqueadas | Médio | O bloqueio ainda não existe; quando existir, a política precisa de classes de prioridade |
-| A porta de interrupção não entrega a chamada de sistema do usuário | Resolvido | O caminho da porta é abandonado, e a chamada usa a instrução `syscall` |
-| O segmento de tarefa com o layout errado | Alto | O layout é verificado em tempo de compilação, e o limite do segmento é o último byte da estrutura |
+| User stack shared with the handler | Resolved | Each task has a kernel stack, and the call handler runs on it |
+| The round-robin policy can generate starvation with blocked tasks | Medium | Blocking does not exist yet; when it exists, the policy will need priority classes |
+| The interrupt gate does not deliver the user's system call | Resolved | The gate path is abandoned, and the call uses the `syscall` instruction |
+| Task segment with the wrong layout | High | The layout is verified at compile time, and the segment limit is the last byte of the structure |
 
-### 4.1 Plano de migração para a instrução de chamada de sistema
+### 4.1 Migration plan for the system call instruction
 
-1. Escrever os registradores de modelo `IA32_STAR`, `IA32_LSTAR` e
-   `IA32_SFMASK`, com o seletor do código do núcleo em `IA32_STAR`. **Feito.**
-2. Escrever a entrada da chamada de sistema em assembly: a instrução
-   `syscall` não troca a pilha, e a entrada tem de salvar o ponteiro de
-   pilha do usuário antes de saltar para a pilha do núcleo, que o segmento
-   de tarefa aponta. **Feito.**
-3. Gravar no contexto da tarefa o estado do usuário que a volta precisa:
-   o endereço de retorno, as marcas e o ponteiro de pilha, e os registradores
-   que a convenção de chamada preserva. **Feito:** o quadro da volta é
-   montado na pilha do núcleo, com o quadro de retorno de interrupção.
-4. Devolver ao usuário com `iretq`, montando o quadro com o estado do
-   usuário. **Feito:** a ordem dos empilhamentos é a inversa da ordem em que
-   o processador desempilha, e o quadro de retorno de interrupção fica no
-   topo da pilha.
-5. Tratar a preempção dentro da chamada de sistema: a tarefa suspensa
-   dentro do tratador tem de voltar ao tratador, e não ao usuário.
-   **Feito por construção:** o quadro da chamada fica na pilha do núcleo da
-   tarefa, e a troca de contexto salva o quadro da interrupção por cima
-   dele, de modo que a retomada devolve a tarefa ao tratador.
+1. Write the model registers `IA32_STAR`, `IA32_LSTAR`, and `IA32_SFMASK`,
+   with the kernel code selector in `IA32_STAR`. **Done.**
+2. Write the system call entry in assembly: the `syscall` instruction does
+   not switch the stack, and the entry has to save the user stack pointer
+   before jumping to the kernel stack, which the task segment points to.
+   **Done.**
+3. Record in the task's context the user state that the return needs: the
+   return address, the flags and the stack pointer, and the registers that
+   the calling convention preserves. **Done:** the return frame is built on
+   the kernel stack, with the interrupt return frame.
+4. Return to user mode with `iretq`, building the frame with the user
+   state. **Done:** the order of the pushes is the inverse of the order in
+   which the processor pops, and the interrupt return frame stays at the
+   top of the stack.
+5. Handle preemption inside the system call: the task suspended inside the
+   handler has to return to the handler, and not to user mode. **Done by
+   construction:** the call frame stays on the kernel stack of the task, and
+   the context switch saves the interrupt frame on top of it, so that the
+   resumption returns the task to the handler.
 
-## 5. Consequências
+## 5. Consequences
 
-- O modelo de contexto completo é a base para o modo de usuário, para os
-  processos e para as threads: todos compartilham a mesma mecânica.
-- A medição do custo da troca de contexto é a referência para as decisões de
-  desempenho do marco F10.
-- Cada tarefa tem duas pilhas, e a pilha do núcleo é a que o segmento de
-  tarefa aponta. O modo de usuário deixou de rodar o tratador sobre a pilha
-  que o usuário controla.
-- O layout do segmento de tarefa é verificado em tempo de compilação,
-  porque um erro de deslocamento produz uma falha de pilha cujo diagnóstico
-  é indireto, e o defeito que este registro descreve consumiu um incremento
-  inteiro.
+- The complete context model is the basis for user mode, for the processes,
+  and for the threads: they all share the same mechanics.
+- The measurement of the cost of the context switch is the reference for
+  the performance decisions of milestone F10.
+- Each task has two stacks, and the kernel stack is the one the task
+  segment points to. User mode stopped running the handler on the stack
+  that the user controls.
+- The task segment layout is verified at compile time, because an offset
+  error produces a stack fault whose diagnosis is indirect, and the defect
+  that this record describes consumed an entire increment.
 
-## 6. A ordem da inicialização
+## 6. The order of the initialization
 
-O canal de mensagens do VNX não entregava nada, e o defeito não estava no
-canal: estava na **ordem** da inicialização do núcleo.
+The VNX message channel delivered nothing, and the defect was not in the
+channel: it was in the **order** of the kernel initialization.
 
-A sequência de inicialização habilita as interrupções do temporizador, e o
-escalonador começa a escolher as tarefas nesse instante. A tarefa do
-usuário mode roda no seu primeiro turno, e ela envia a primeira mensagem
-nesse turno. A inicialização dos canais vinha **depois** do temporizador, e
-ela reiniciava as filas, e portanto apagava a mensagem que a tarefa tinha
-mandado.
+The initialization sequence enables the timer interrupts, and the scheduler
+starts to choose the tasks at that instant. The user mode task runs in its
+first turn, and it sends the first message in that turn. The channels'
+initialization came **after** the timer, and it restarted the queues, and
+therefore erased the message that the task had sent.
 
-A medição que fechou o diagnóstico mostra os contadores das duas filas do
-mesmo canal, lidos na mesma execução: no instante da mensagem, a fila do
-núcleo contava uma mensagem enviada, e na verificação seguinte, um instante
-depois, as duas filas contavam zero. O canal era o mesmo, e a única coisa
-que passou entre as duas leituras foi a inicialização.
+The measurement that closed the diagnosis shows the counters of the two
+queues of the same channel, read in the same execution: at the instant of
+the message, the kernel queue counted one message sent, and in the next
+verification, an instant later, the two queues counted zero. The channel was
+the same, and the only thing that passed between the two readings was the
+initialization.
 
-**A regra que o defeito ensina:** tudo o que as tarefas podem usar tem de
-existir **antes** do temporizador, porque o temporizador é o que começa a
-executar as tarefas. A inicialização que vem depois do temporizador é uma
-inicialização tardia, e ela corre com as tarefas em execução.
+**The rule that the defect teaches:** everything the tasks can use has to
+exist **before** the timer, because the timer is what starts to execute the
+tasks. The initialization that comes after the timer is a late
+initialization, and it runs with the tasks in execution.
 
-**Consequência:** a inicialização dos canais do VNX vem antes do
-temporizador, e a entrega da mensagem passou a funcionar: a mensagem que a
-tarefa do usuário mode envia chega ao núcleo, o núcleo responde, e a
-resposta chega de volta à tarefa.
+**Consequence:** the initialization of the VNX channels comes before the
+timer, and the delivery of the message started to work: the message that
+the user mode task sends reaches the kernel, the kernel responds, and the
+response comes back to the task.
 
-## 7. A tolerância da sobreposição na cópia
+## 7. The tolerance of the overlap in the copy
 
-A chamada de cópia copia um bloco de memória entre duas faixas que o
-usuário mode escolhe. A primeira implementação usava a instrução de cópia,
-que **exige** que as duas faixas não se sobreponham, e a exigência levanta
-um pânico no núcleo, e o pânico do núcleo para a máquina.
+The copy call copies a block of memory between two ranges that user mode
+chooses. The first implementation used the copy instruction, which
+**requires** that the two ranges do not overlap, and the requirement raises
+a panic in the kernel, and the kernel's panic halts the machine.
 
-O defeito é uma negação de serviço: uma tarefa do usuário mode derrubava o
-sistema com dois argumentos, e nenhum isolamento impede isso, porque a
-faixa da origem e a do destino são ambas válidas.
+The defect is a denial of service: a user mode task brought the system
+down with two arguments, and no isolation prevents this, because the source
+range and the destination range are both valid.
 
-A medição confirma: com a cópia sem a tolerância, o programa do usuário
-mode levanta o pânico `@memcpy arguments alias` e o núcleo para ✓. Com a
-tolerância, a mesma cópia com as faixas sobrepostas devolve o número de
-bytes, e o programa do usuário mode continua ✓.
+The measurement confirms: with the copy without the tolerance, the user
+mode program raises the `@memcpy arguments alias` panic and the kernel
+halts ✓. With the tolerance, the same copy with the overlapping ranges
+returns the number of bytes, and the user mode program continues ✓.
 
-**A regra:** uma chamada que trabalha com faixas escolhidas por quem chama
-tem de tolerar a sobreposição, ou tem de recusar a chamada com um erro
-próprio. Levantar um pânico no núcleo não é uma das duas.
+**The rule:** a call that works with ranges chosen by the caller has to
+tolerate the overlap, or it has to reject the call with its own error.
+Raising a panic in the kernel is not one of the two.
 
-## 8. Nota do incremento seguinte
+## 8. Note of the next increment
 
-O incremento dos processos, registrado em
+The increment of the processes, registered in
 [`ADR-0006-address-spaces-and-processes.md`](ADR-0006-address-spaces-and-processes.md),
-encontrou **três defeitos mais profundos** no modelo de tarefa que este
-documento descreve, e que o diagnóstico aqui não tinha alcançado:
+found **three deeper defects** in the task model that this document
+describes, and that the diagnosis here had not reached:
 
-1. o contexto da tarefa guardava apenas os registradores que a
-   arquitetura preserva entre chamadas, e o resultado de uma chamada de
-   sistema se perdia a cada troca de contexto;
-2. o quadro do processador da volta era montado sobre a pilha do código
-   interrompido, e portanto, para uma tarefa do modo de usuário, sobre uma
-   página que o usuário possui;
-3. a janela do modo de usuário tinha endereço fixo dentro da imagem do
-   núcleo, que é mapeada por identidade e cresce.
+1. the task's context held only the registers that the architecture
+   preserves between calls, and the result of a system call was lost on
+   every context switch;
+2. the processor frame of the return was built on the stack of the
+   interrupted code, and therefore, for a user mode task, on a page that
+   the user owns;
+3. the user mode window had a fixed address inside the kernel image, which
+   is mapped by identity and grows.
 
-As decisões e as medições estão no ADR-0006. Este documento continua
-válido como o registro do diagnóstico do defeito do segmento de tarefa, e
-as suas regras — a inicialização antes do temporizador e a tolerância da
-sobreposição — continuam valendo.
+The decisions and the measurements are in ADR-0006. This document remains
+valid as the record of the diagnosis of the task segment defect, and its
+rules — the initialization before the timer and the tolerance of the
+overlap — remain in force.

@@ -1,48 +1,49 @@
-# Estratégia de teste do VorynOS
+# VorynOS testing strategy
 
-| Campo | Valor |
+| Field | Value |
 |-------|-------|
-| **Estado** | ACEITO |
-| **Data** | 2026-10-21 |
+| **State** | ACCEPTED |
+| **Date** | 2026-10-21 |
 
-## 1. Princípio
+## 1. Principle
 
-Nenhuma funcionalidade é declarada funcionando sem um comando executado que
-demonstre o comportamento. A estratégia separa o que pode ser testado sem
-hardware do que exige emulação ou máquina real, e mantém a separação entre
-**implementado** e **validado** visível em `docs/roadmap/phase-status.md`.
+No feature is declared working without an executed command that demonstrates
+the behavior. The strategy separates what can be tested without hardware
+from what requires emulation or a real machine, and keeps the separation
+between **implemented** and **validated** visible in
+`docs/roadmap/phase-status.md`.
 
-## 2. Camadas
+## 2. Layers
 
-| Camada | Onde | O que cobre | Comando |
+| Layer | Where | What it covers | Command |
 |--------|------|-------------|---------|
-| L1 — Unidade | Host | Lógica pura: ELF64, mapa de memória, contrato de handoff, formatos | `zig build test` |
-| L2 — Integração de boot | QEMU + OVMF | Cadeia completa firmware → loader → kernel | `zig build qemu-test` |
-| L3 — Comportamento no QEMU | QEMU + OVMF | Comportamento observável (exceções, temporizador, alocadores) | script dedicado, a criar por marco |
-| L4 — Hardware | PC real | Boot em hardware, drivers físicos, desempenho | a criar quando existir hardware-alvo |
-| L5 — Desempenho | Host e QEMU | Métricas de boot, latência, memória | a criar com F10 |
+| L1 — Unit | Host | Pure logic: ELF64, memory map, handoff contract, formats | `zig build test` |
+| L2 — Boot integration | QEMU + OVMF | Complete chain firmware → loader → kernel | `zig build qemu-test` |
+| L3 — Behavior in QEMU | QEMU + OVMF | Observable behavior (exceptions, timer, allocators) | dedicated script, to be created per milestone |
+| L4 — Hardware | Real PC | Boot on hardware, physical drivers, performance | to be created when the target hardware exists |
+| L5 — Performance | Host and QEMU | Boot metrics, latency, memory | to be created with F10 |
 
-## 3. L1 — Testes de unidade
+## 3. L1 — Unit tests
 
-Os módulos de `shared/` são compilados para o host e testados com
-`std.testing`. São módulos sem alocação e sem dependência de sistema, o que
-permite testar a lógica que roda dentro do kernel e do loader:
+The modules of `shared/` are compiled for the host and tested with
+`std.testing`. They are modules with no allocation and no system
+dependency, which makes it possible to test the logic that runs inside the
+kernel and the loader:
 
-- `shared/elf64.zig`: cabeçalho malformado, segmento fora do arquivo, entry
-  point inválido, segmento sem RAM por trás, número excessivo de segmentos.
-- `shared/memmap.zig`: busca de região, faixa utilizável, overflow de
-  endereço, resumo do mapa, região de carga com alinhamento e limite
-  inferior.
-- `shared/handoff.zig`: magic, versão, tamanho do cabeçalho, coerência do
-  mapa de memória.
+- `shared/elf64.zig`: malformed header, segment outside the file, invalid
+  entry point, segment with no RAM behind it, excessive number of segments.
+- `shared/memmap.zig`: region search, usable range, address overflow, map
+  summary, load region with alignment and lower bound.
+- `shared/handoff.zig`: magic, version, header size, coherence of the
+  memory map.
 
-Regra: todo módulo de `shared/` nasce com testes, porque é a camada que o
-kernel vai depender para não repetir erro de firmware.
+Rule: every module of `shared/` is born with tests, because it is the
+layer that the kernel will depend on to not repeat a firmware mistake.
 
-## 4. L2 — Teste de boot no QEMU
+## 4. L2 — Boot test in QEMU
 
-`tests/integration/boot-qemu.sh` executa a imagem de disco no QEMU com OVMF,
-captura o console serial e verifica marcadores de progresso:
+`tests/integration/boot-qemu.sh` runs the disk image in QEMU with OVMF,
+captures the serial console and verifies progress markers:
 
 ```text
 ok: found '[VNB] VorynOS'
@@ -58,71 +59,74 @@ ok: found 'VORYN-KERNEL-READY'
 qemu-boot-test: all checks passed
 ```
 
-O teste também falha se o console contiver a marca `FATAL`, o que detecta
-falhas que não param o boot mas indicam estado incorreto.
+The test also fails if the console holds the `FATAL` marker, which detects
+failures that do not stop the boot but that indicate an incorrect state.
 
-O teste é a **única** prova de comportamento do modo de usuário, dos
-processos e do canal, e os marcadores verificam o **conteúdo** e não só a
-execução: o marcador da página de dados de cada processo é conferido, o
-conteúdo da cópia com faixas sobrepostas é conferido byte a byte, e o
-espaço de quem chamou a cópia entre processos é conferido depois da cópia.
+The test is the **only** proof of the behavior of the user mode, of the
+processes and of the channel, and the markers verify the **content** and not
+only the execution: the marker of the page of data of each process is
+checked, the content of the copy with overlapping ranges is checked byte by
+byte, and the space of the caller of the copy between processes is checked
+after the copy.
 
-Características:
+Characteristics:
 
-- Determinístico: a imagem é construída pelo próprio projeto, sem
-  dependência de estado externo.
-- Sem rede e sem interação: o emulador é encerrado por tempo.
-- O console serial é o canal verificado, porque é o único que existe dos dois
-  lados da fronteira firmware/kernel.
-- A escrita no console serial é **atômica**: a tarefa que escreve desliga
-  as interrupções enquanto a mensagem é montada, e por isso duas tarefas
-  não escrevem uma sobre a outra. Sem essa garantia, o console deixa de
-  ser uma evidência, porque passa a relatar linhas que ninguém escreveu.
+- Deterministic: the image is built by the project itself, with no
+  dependency on external state.
+- Without network and without interaction: the emulator is terminated by
+  time.
+- The serial console is the verified channel, because it is the only one
+  that exists on the two sides of the firmware/kernel boundary.
+- The write in the serial console is **atomic**: the task that writes
+  disables the interrupts while the message is assembled, and therefore two
+  tasks do not write over each other. Without that guarantee, the console
+  stops being evidence, because it starts to report lines that nobody
+  wrote.
 
-## 5. L3 — Comportamento no QEMU
+## 5. L3 — Behavior in QEMU
 
-O núcleo provoca uma `#DE` no fim do boot e imprime o vetor, o código de
-erro, o endereço que causou a falta e o quadro do processador. O teste
-verifica a presença do relatório.
+The kernel provokes a `#DE` at the end of the boot and prints the vector,
+the error code, the address that caused the fault and the processor frame.
+The test verifies the presence of the report.
 
-A **recuperação** existe e é verificada. Um terceiro processo escreve em
-um endereço que não está mapeado, e a falta de página é tratada: o
-processo é morto, o console diz que o núcleo continua, e o teste verifica
-que o temporizador continua contando, que a conversa entre os outros dois
-processos **completa** o ida e volta, e que a máquina chega à marca
-`VORYN-KERNEL-READY`.
+The **recovery** exists and is verified. A third process writes in an
+address that is not mapped, and the page fault is handled: the process is
+killed, the console says that the kernel continues, and the test verifies
+that the timer keeps counting, that the conversation between the other two
+processes **completes** the round trip, and that the machine reaches the
+`VORYN-KERNEL-READY` marker.
 
-A exceção no núcleo continua fatal, e o teste do fim do boot verifica
-que o relatório da `#DE` aparece: parar a máquina com uma exceção
-provocada é o que o teste pede.
+The exception in the kernel remains fatal, and the test of the end of the
+boot verifies that the report of the `#DE` appears: stopping the machine
+with a provoked exception is what the test asks for.
 
-A medição de desempenho é feita com o contador de tempo do processador, e
-o custo da troca de contexto e a latência da entrega de uma mensagem são
-relatados no console a cada execução.
+The performance measurement is done with the time counter of the processor,
+and the cost of the context switch and the latency of the delivery of a
+message are reported on the console on every run.
 
 ## 6. L4 — Hardware
 
-Requer máquina física com UEFI e hardware de referência. Enquanto isso não
-existir, toda afirmação sobre hardware real é marcada como não verificada.
-O emulador não substitui o hardware: diferenças de firmware, de tabela de
-página, de temporizador e de console são previsíveis.
+It requires a physical machine with UEFI and reference hardware. While that
+does not exist, every statement about real hardware is marked as not
+verified. The emulator does not replace the hardware: the differences of
+firmware, of page table, of timer and of console are predictable.
 
-## 7. Evidências
+## 7. Evidence
 
-Toda execução de teste relevante é registrada com:
+Every relevant test run is registered with:
 
-1. comando exato;
-2. saída real;
-3. ambiente (versão do Zig, QEMU, OVMF, máquina);
-4. data.
+1. the exact command;
+2. the real output;
+3. the environment (version of Zig, QEMU, OVMF, machine);
+4. the date.
 
-O relatório de incremento em `AGENTS.md` §4.8 segue esse formato. Resultados
-nunca são inventados nem arredondados para "corretos".
+The increment report of `AGENTS.md` §4.8 follows this format. The results
+are never invented nor rounded to "correct".
 
-## 8. Limitações do conjunto atual
+## 8. Limitations of the current set
 
-- Não há teste de fuzzing ainda. O leitor ELF64 é o alvo prioritário,
-  porque processa entrada não confiável do firmware.
-- Não há teste de concorrência: ainda não há código concorrente.
-- Não há medição de desempenho: o conjunto mede correção, não velocidade.
-  A primeira medição (tempo de boot) entra no F2.
+- There is no fuzzing test yet. The ELF64 reader is the priority target,
+  because it processes untrusted input from the firmware.
+- There is no concurrency test: there is still no concurrent code.
+- There is no performance measurement: the set measures correctness, not
+  speed. The first measurement (boot time) enters in F2.

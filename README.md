@@ -123,7 +123,8 @@ The kernel provides an initial functional infrastructure for processor managemen
 - Global Descriptor Table (GDT) configuration.
 - Task State Segment (TSS) configuration.
 - Interrupt Descriptor Table (IDT) configuration.
-- Exception handling with register diagnostics.
+- Exception handling with register diagnostics: an exception that comes
+  from the user mode kills the process, and the kernel continues.
 - Initial hardware interrupt configuration.
 - Remapping of the 8259 interrupt controllers.
 - Programming the 8254 timer at 100 Hz.
@@ -140,6 +141,9 @@ The kernel provides an initial functional infrastructure for processor managemen
 - System calls through the `syscall` instruction, with a handler implemented in Zig.
 - System call contract with eight calls, including validation of user memory ranges against the calling process's page tables before the kernel accesses user memory.
 - Context-switch cost measurement using the processor's time counter.
+- A user-mode exception that **kills the process** instead of the machine:
+  the process is marked as terminated, the processor frame is rewritten to a
+  kernel loop, and the scheduler selects another task.
 
 **Processes**
 
@@ -210,9 +214,9 @@ The following limitations are known and documented:
 | Physical memory | Bitmap covering up to 4 GiB |
 | Heap | Fixed 256 KiB region |
 | Virtual memory | Kernel image and framebuffer mappings, with a dedicated window for each process |
-| Processes | Two processes; the address-space limit is a constant defined in the paging module |
+| Processes | Three processes; the address-space limit is a constant defined in the paging module |
 | TSS | 64-bit mode structure with a layout verified at compile time |
-| Exceptions | Fatal handling without recovery |
+| Exceptions | A user-mode exception kills the process; an exception in the kernel is fatal |
 | Syscalls | Eight system calls, with verified return to user mode |
 | IPC | Message delivery and waiting between two processes are verified; ordering, guaranteed delivery, and synchronization are not provided |
 | Waiting | No timeout support; a task waits on one channel and one endpoint |
@@ -584,7 +588,7 @@ The remaining objectives for this milestone are:
 
 1. The **VNC capability model**, which determines what resources a process may access and addresses the open architectural question recorded in ADR-0001.
 2. **Timed waiting** and waiting on multiple channels simultaneously.
-3. **Exception handling by type**, including a recovery test, and **dynamic heap management** through VNM.
+3. **Dynamic heap management** through VNM, the **signal in the process**, with a handler in the user space, and the **policy by exception type**, which today is the same for every user-mode exception.
 4. Measuring context-switch overhead under **representative workloads**, with more tasks and processes.
 
 These implementations must respect the project's architectural contracts and established validation criteria.
@@ -607,6 +611,7 @@ VorynOS maintains technical documentation alongside its source code.
 | [ADR-0005](docs/adr/ADR-0005-task-model-and-user-mode.md) | Task model and user mode |
 | [ADR-0006](docs/adr/ADR-0006-address-spaces-and-processes.md) | Per-process address spaces and processor frames |
 | [ADR-0007](docs/adr/ADR-0007-blocking-receive.md) | Blocking message reception syscall |
+| [ADR-0008](docs/adr/ADR-0008-exception-recovery.md) | A process exception kills the process, and not the machine |
 | [Boot Handoff](docs/specs/boot-handoff-spec.md) | Boot handoff contract specification |
 | [Syscall ABI](docs/specs/syscall-abi.md) | System call contract |
 | [v0.1.0-dev.1 Release Notes](docs/releases/v0.1.0-dev.1.md) | Official notes for the consolidated initial milestone |

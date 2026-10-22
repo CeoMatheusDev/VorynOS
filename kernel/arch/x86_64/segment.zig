@@ -330,9 +330,9 @@ test "the task state segment has the layout of the long mode" {
     try testing.expectEqual(@as(usize, 0x54), @offsetOf(TaskStateSegment, "ist7"));
     try testing.expectEqual(@as(usize, 0x66), @offsetOf(TaskStateSegment, "iomap_base"));
 
-    // The limit of the segment is the offset of its last byte, e o
-    // processador exige que o limite seja pelo menos 103, que é o tamanho
-    // da estrutura menos um.
+    // The limit of the segment is the offset of its last byte, and the
+    // processor requires the limit to be at least 103, which is the size of
+    // the structure minus one.
     try testing.expectEqual(@as(usize, 104), tss_size);
     try testing.expect(tss_size - 1 >= 103);
 }

@@ -12,30 +12,31 @@
 
 //! The frame that the stubs of the interrupts and of the exceptions build.
 //!
-//! The frame is a **contract** entre três partes do núcleo: o stub, que o
-//! monta; o tratador, que o lê; e o switch do contexto, que o salva e o
-//! restaura. As três partes leem as **mesmas** posições, e este módulo é
-//! onde esse contrato está escrito.
+//! The frame is a **contract** between three parts of the kernel: the stub,
+//! which builds it; the handler, which reads it; and the context switch,
+//! which saves it and restores it. The three parts read the **same**
+//! positions, and this module is where that contract is written.
 //!
 //! ## A forma do quadro
 //!
-//! O processador empurra, quando a exceção acontece, o código de erro
-//! (só nas exceções que têm um), o `RIP`, o `CS`, as flags, o `RSP` e o
-//! `SS`. O stub empurra, por cima disso: um marcador, o número do vetor e
-//! os quinze registradores.
+//! The processor pushes, when the exception happens, the error code (only
+//! on the exceptions that have one), the `RIP`, the `CS`, the flags, the
+//! `RSP` and the `SS`. The stub pushes, on top of that: a marker, the
+//! vector number and the fifteen registers.
 //!
-//! O quadro das exceções que **têm** código de erro é, por isso, **oito
-//! bytes maior** do que o das que não têm, e todos os deslocamentos
-//! depois do código de erro mudam.
+//! The frame of the exceptions that **have** an error code is therefore
+//! **eight bytes larger** than the frame of the ones that do not, and every
+//! offset after the error code changes.
 //!
-//! A correção é **uma forma só**: o stub de uma exceção **com** código de
-//! erro salva o código em um lugar conhecido e move as cinco palavras do
-//! retorno do processador **oito bytes para baixo**. O stub de uma
-//! exceção **sem** código de erro já produz o quadro nessa forma.
+//! The fix is **one single shape**: the stub of an exception **with** an
+//! error code saves the code in a known place and moves the five words of
+//! the return of the processor **eight bytes down**. The stub of an
+//! exception **without** an error code already produces the frame in that
+//! shape.
 //!
-//! Depois da normalização, o tratador, o switch e a volta do processador
-//! leem as mesmas posições, e a forma do quadro deixa de ser uma
-//! preocupação de cada chamada.
+//! After the normalization, the handler, the switch and the return of the
+//! processor read the same positions, and the shape of the frame stops
+//! being a concern of each call.
 
 const std = @import("std");
 
@@ -86,8 +87,8 @@ pub const ProcessorFrame = struct {
 /// The distance, in bytes, between the beginning of the frame of the
 /// registers and the word that holds the `RIP`.
 ///
-/// O quadro do processador começa depois dos quinze registradores, do
-/// vetor e do marcador, e o `RIP` é a primeira das cinco palavras do
+/// The frame of the processor starts after the fifteen registers, the
+/// vector and the marker, and the `RIP` is the first of the five words of
 /// retorno do processador.
 pub const rip_offset: usize = @sizeOf(Registers) + 8;
 
@@ -109,11 +110,11 @@ pub const ss_offset: usize = rip_offset + 32;
 
 /// Reads the frame of the processor from the frame of the registers.
 ///
-/// O quadro do processador tem **uma forma só**: o stub de uma exceção
-/// **com** código de erro move as cinco palavras do retorno para baixo, e
-/// o stub de uma exceção **sem** código de erro já monta o quadro nessa
-/// forma. O código de erro chega como argumento, porque ele é lido do
-/// lugar onde o stub o salvou.
+/// The frame of the processor has **one single shape**: the stub of an
+/// exception **with** an error code moves the five words of the return
+/// down, and the stub of an exception **without** an error code already
+/// builds the frame in that shape. The error code arrives as an argument,
+/// because it is read from the place where the stub saved it.
 pub fn processorFrame(error_code: u64, frame: *const Registers) ProcessorFrame {
     const base = @intFromPtr(frame);
 
@@ -167,9 +168,9 @@ test "the frame of the processor is read from the normalized shape" {
 }
 
 test "the offsets of the frame are the ones that the stub builds" {
-    // The fifteen registradores ocupam os primeiros bytes, e o vetor vem
-    // depois deles. O quadro do processador começa depois do vetor e do
-    // marcador.
+    // The fifteen registers occupy the first bytes, and the vector comes
+    // after them. The frame of the processor starts after the vector and
+    // the marker.
     try std.testing.expectEqual(@as(usize, 120), @sizeOf(Registers) - 8);
     try std.testing.expectEqual(@as(usize, 136), rip_offset);
     try std.testing.expectEqual(@as(usize, 144), cs_offset);
