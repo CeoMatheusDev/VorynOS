@@ -1,0 +1,137 @@
+# VORYNOS — START DEVELOPMENT
+
+Inicie o desenvolvimento real do VorynOS.
+
+## CONTEXTO
+
+O VorynOS é um sistema operacional independente, desenvolvido do zero, prioritariamente em Zig, com C23 e Assembly quando necessários.
+
+Diretório local desejado:
+
+`/home/matheus/Documentos/ProjectOpenCode/VorynOS`
+
+Repositório remoto pretendido:
+
+`https://github.com/CeoMatheusDev/VorynOS`
+
+Plataforma inicial:
+
+`x86_64 + UEFI + QEMU/OVMF`
+
+Compilador-alvo:
+
+`Zig 0.17.0`
+
+Ambiente principal:
+
+Fedora Linux 44, KDE Plasma, Wayland.
+
+## OBJETIVO DESTA EXECUÇÃO
+
+Estabelecer a fundação técnica do VorynOS e iniciar a implementação funcional do bootloader nativo.
+
+Não desenvolva uma interface gráfica simulada.
+
+Não tente implementar todos os subsistemas simultaneamente.
+
+Comece pelo menor incremento funcional que possa ser compilado e testado.
+
+## ETAPA 1 — INSPEÇÃO
+
+Verifique:
+
+1. Existência do diretório do projeto.
+2. Arquivos existentes.
+3. Estado do repositório Git.
+4. Versão e disponibilidade do Zig.
+5. Ferramentas C23 e Assembly.
+6. QEMU e firmware OVMF.
+7. Configuração necessária para compilar aplicações UEFI.
+8. Documentação técnica já existente.
+
+Preserve quaisquer arquivos encontrados.
+
+Não sobrescreva implementações existentes sem avaliar seu conteúdo.
+
+Se não houver acesso ao computador do usuário, declare essa limitação e trabalhe somente no ambiente realmente disponível.
+
+## ETAPA 2 — FUNDAÇÃO
+
+Prepare a estrutura mínima necessária.
+
+Crie ou atualize:
+
+- `README.md`
+- `AGENTS.md`
+- `.gitignore`
+- `build.zig`
+- `build.zig.zon`
+- `docs/adr/ADR-0001-voryn-fabric.md`
+- `docs/standards/VVS-0001.md`
+- `docs/standards/VN-NAMES-0001.md`
+
+Não crie componentes futuros sem implementação.
+
+Documente a arquitetura proposta e mantenha decisões não aprovadas no estado DRAFT.
+
+## ETAPA 3 — PRIMEIRA IMPLEMENTAÇÃO
+
+Implemente o VNB — Voryn Native Boot.
+
+Requisitos:
+
+1. Inicialização como aplicação UEFI x86_64.
+2. Entrada UEFI válida conforme a ABI aplicável.
+3. Saída de diagnóstico verificável.
+4. Tratamento correto de erros.
+5. Build reproduzível.
+6. Execução no QEMU com OVMF.
+7. Teste automatizável do resultado.
+
+Objetivo inicial:
+
+Exibir a identificação do VorynOS durante a inicialização.
+
+Caso seja utilizado console UEFI em vez de serial na primeira implementação, documente a diferença e implemente a saída serial como incremento verificável.
+
+Não declare que o kernel já está funcional somente porque o bootloader iniciou.
+
+## ETAPA 4 — VALIDAÇÃO
+
+Execute, quando disponíveis:
+
+- Build do projeto.
+- Testes aplicáveis.
+- Inicialização no QEMU.
+- Captura de mensagens de diagnóstico.
+- Verificação de falhas.
+- Inspeção do artefato produzido.
+
+Se houver erro, investigue e corrija sua causa.
+
+Não utilize resultados fictícios.
+
+## ETAPA 5 — RELATÓRIO
+
+Ao terminar, apresente:
+
+1. Estado inicial encontrado.
+2. Arquivos realmente criados.
+3. Arquitetura inicial definida.
+4. Implementação concluída.
+5. Comandos efetivamente executados.
+6. Testes aprovados e reprovados.
+7. Problemas ainda existentes.
+8. Próximo incremento de desenvolvimento.
+
+## COMANDO FINAL
+
+COMECE AGORA.
+
+Execute a inspeção e avance para a implementação inicial utilizando as ferramentas disponíveis.
+
+Não responda apenas com um plano.
+
+Transforme o plano em arquivos, código e testes reais sempre que o ambiente permitir.
+
+Respeite os limites de acesso e solicite autorização somente quando uma operação depender de decisão exclusiva do proprietário ou puder provocar alterações destrutivas ou publicação não autorizada.
