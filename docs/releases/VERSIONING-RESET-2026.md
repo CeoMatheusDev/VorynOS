@@ -1,0 +1,204 @@
+# VERSIONING-RESET-2026 — Reorganização do versionamento público
+
+| Campo | Valor |
+|-------|-------|
+| **Estado** | CONCLUÍDO |
+| **Data** | 2026-10-22 |
+| **Escopo** | Marcos públicos de versionamento do repositório |
+| **Natureza** | Reorganização de referências Git e de documentação |
+
+## 1. Objetivo
+
+Estabelecer `v0.1.0-dev.1` como o **marco inicial oficial** do
+desenvolvimento público do VorynOS, aproveitando integralmente o estado
+corrente da branch `main`, e descontinuar os dois marcos experimentais
+publicados anteriormente.
+
+**Esta operação não é um reinício do código-fonte.** O histórico de
+commits da `main` é preservado, o código existente é preservado, e nenhuma
+funcionalidade foi removida.
+
+## 2. O que foi descontinuado
+
+| Identificador | Título do release | Commit apontado | Objeto da tag | Publicado em |
+|---|---|---|---|---|
+| `v0.1.0-dev.2` | VorynOS v0.1.0-dev.2 — Native UEFI Boot & Kernel Bring-Up | `42c3e62fbf84798d07cf36c3461d6b73e51cbb0f` | `91e1e06d481b6b793b9b4fe25ff7b34e30868d06` | 2026-10-21T20:58:00Z |
+| `v0.1.0-dev.3` | VorynOS v0.1.0-dev.3 — User-Mode Execution Milestone | `5dd258830823ca8a9d9a257460643c7924ee23d9` | `0b2cbd33449141f79f1404000af26ae387095e8a` | 2026-10-21T22:57:46Z |
+
+Os dois commits acima **continuam no histórico da `main`** e não foram
+reescritos, descartados ou apagados. Eles são a referência técnica
+original de cada marco.
+
+## 3. Estado técnico registrado de cada marco
+
+### v0.1.0-dev.2 — Native UEFI Boot & Kernel Bring-Up
+
+Estado técnico registrado na data de publicação, em 21/10/2026:
+
+- Carregador de inicialização UEFI nativo, em Zig, sem dependência de
+  libc.
+- Carregamento do kernel em ELF64, com o contrato de boot versionado.
+- Validação de boot ponta a ponta com QEMU e OVMF.
+- Inicialização do núcleo x86_64, com GDT, TSS e IDT.
+- Gerenciamento de memória física e virtual, com tabelas de página
+  próprias.
+- Heap do núcleo com fusão de blocos e verificação de integridade.
+- Escalonador preemptivo circular, movido por um temporizador de 100 Hz.
+- Infraestrutura de testes automatizados, com testes no hospedeiro e
+  verificação de boot no emulador.
+- Infraestrutura inicial de modo de usuário, **desabilitada** na data da
+  publicação, à espera da correção do tratamento de exceções.
+
+### v0.1.0-dev.3 — User-Mode Execution Milestone
+
+Estado técnico registrado na data de publicação, em 21/10/2026:
+
+- Execução verificada no terceiro nível de privilégio, com ida e volta do
+  modo de usuário.
+- Páginas do espaço de usuário com os atributos de acesso do usuário.
+- Chamadas de sistema nativas pela instrução `syscall`, com o tratador no
+  núcleo escrito em Zig.
+- Pilha de kernel por tarefa, para a execução privilegiada.
+- Correção do layout do segmento de tarefa do modo de 64 bits, que era a
+  causa raiz da falha de entrega de exceção vinda do usuário.
+- Retorno ao modo de usuário com `iretq`, preservando as flags de quem
+  chamou.
+- Escalonamento preemptivo por temporizador, integrado ao caminho verificado
+  de execução do usuário mode.
+- Teste de boot no QEMU exigindo evidência explícita da execução no modo de
+  usuário, e a sequência de interrupções do emulador sem nenhuma exceção
+  registrada.
+
+**O que o marco `v0.1.0-dev.3` afirmava e esta reorganização não altera:**
+ele afirmava a execução no modo de usuário e o caminho da chamada de
+sistema. Ele **não** afirmava a existência de processos, de threads, de
+comunicação entre processos, nem de capacidades. O marco `v0.1.0-dev.1`
+mantém essa distinção explícita.
+
+## 4. Motivo da descontinuação
+
+1. Os dois marcos foram publicados como **experimentos parciais**, com o
+   canal `dev` e sem garantia de contrato, e cada um deles cobria apenas
+   uma fatia do caminho de inicialização.
+2. A numeração do canal `dev` passou a sugerir uma ordem de progresso que
+   não correspondia ao estado real do código: o `dev.3` era anterior ao
+   estado atual, e o estado atual é o consolidado.
+3. A reorganização dá ao projeto **uma linha de base única e coerente**,
+   a partir da qual a numeração volta a ter sentido, e a partir da qual
+   cada próximo lançamento corresponde a um incremento técnico verificável.
+
+**O que não motivou a descontinuação:** nenhuma falha técnica, nenhuma
+regressão, e nenhum problema de qualidade do código publicado. Os marcos
+antigos foram verificados na época, e o registro acima preserva o que
+eles afirmavam.
+
+## 5. Procedimento realizado
+
+1. Registro do identificador, do commit e da data de publicação de cada um
+   dos dois marcos, e transcrição do estado técnico de cada um para este
+   documento.
+2. Atualização das constantes de versão do projeto — o pacote
+   `build.zig.zon`, o carregador e o núcleo — para `0.1.0-dev.1`.
+3. Criação das notas oficiais da nova versão em
+   [`v0.1.0-dev.1.md`](v0.1.0-dev.1.md).
+4. Registro da exceção extraordinária na
+   [VVS-0001](../standards/VVS-0001.md).
+5. Atualização do README, do roadmap e das referências do repositório.
+6. Verificação do código, com `zig build`, `zig build test`,
+   `zig build qemu-test` e `zig build check`.
+7. Publicação do commit, da tag anotada `v0.1.0-dev.1` e do release
+   correspondente, marcado como pré-lançamento.
+8. **Depois** da confirmação da existência da nova tag e do novo release,
+   exclusão dos releases `v0.1.0-dev.2` e `v0.1.0-dev.3`, e exclusão das
+   tags remotas com os mesmos dois identificadores, uma operação por vez.
+9. Verificação final do repositório e da comparação de integridade do
+   código.
+
+## 6. O que foi preservado
+
+- A branch `main` **não** foi apagada, reescrita ou reposicionada.
+- O histórico de commits da `main` é **intacto**, e os dois commits dos
+  marcos descontinuados continuam nele.
+- Nenhum arquivo de código-fonte foi apagado, e nenhuma funcionalidade foi
+  descartada.
+- A documentação histórica dos dois marcos está neste documento e no
+  histórico do Git.
+- Nenhum outro release ou tag foi removido.
+
+## 7. Comparação de integridade do código
+
+A reorganização alterou apenas **documentação e referências de versão**. Os
+arquivos funcionais de `boot/`, `kernel/`, `shared/`, `tools/`, `scripts/` e
+`tests/` permaneceram idênticos, com uma única exceção declarada: as
+**constantes de versão**, que passam a identificar o novo marco.
+
+A verificação é feita pela comparação das somas de verificação SHA-256 de
+todos os arquivos desses diretórios, antes e depois da operação. O
+resultado obtido foi:
+
+| Arquivo | Antes | Depois |
+|---|---|---|
+| `boot/uefi/main.zig` | `0941dab2…3e435` | `bf2dfb31…6742` |
+| `kernel/main.zig` | `7aa542e0…c3f70` | `55c1413d…8ec` |
+| os outros 34 arquivos | inalterados | inalterados |
+
+A diferença em cada um dos dois arquivos é **exclusivamente** a constante
+de versão:
+
+```diff
+-const loader_version = "0.1.0-dev.3";
++const loader_version = "0.1.0-dev.1";
+```
+
+```diff
+-const kernel_version = "0.1.0-dev.3";
++const kernel_version = "0.1.0-dev.1";
+```
+
+E, fora do conjunto verificado, o manifesto do pacote:
+
+```diff
+-    .version = "0.1.0-dev.3",
++    .version = "0.1.0-dev.1",
+```
+
+Nenhuma instrução de máquina, nenhuma lógica, nenhuma tabela, nenhum
+contrato e nenhum teste foi alterado. O código funcional do projeto é
+**byte a byte** o mesmo que estava antes da reorganização, com a
+identificação de versão corrigida.
+
+## 8. Referência Git original
+
+| Identificador | Commit | Tag anotada |
+|---|---|---|
+| `v0.1.0-dev.1` (novo) | o commit que contém o estado consolidado e esta documentação | tag anotada `v0.1.0-dev.1` |
+| `v0.1.0-dev.2` (descontinuado) | `42c3e62fbf84798d07cf36c3461d6b73e51cbb0f` | `91e1e06d481b6b793b9b4fe25ff7b34e30868d06` |
+| `v0.1.0-dev.3` (descontinuado) | `5dd258830823ca8a9d9a257460643c7924ee23d9` | `0b2cbd33449141f79f1404000af26ae387095e8a` |
+
+## 9. Política de versionamento a partir de agora
+
+A sequência oficial começa em `v0.1.0-dev.1`:
+
+```text
+v0.1.0-dev.1
+      |
+      | Próximas alterações reais
+      v
+v0.1.0-dev.2
+      |
+      | Novos incrementos
+      v
+v0.1.0-dev.3
+      |
+      v
+v0.1.0-alpha.1
+```
+
+Cada novo lançamento corresponde a um **incremento técnico verificável**, e
+o identificador de um lançamento aponta para um commit **diferente** do
+commit de qualquer marco antigo.
+
+A exceção registrada na VVS-0001 é **extraordinária e única**. Ela não
+estabelece permissão geral para reutilizar um identificador publicado: a
+proibição continua valendo para o futuro, e a exceção só vale para os dois
+identificadores aqui descontinuados.

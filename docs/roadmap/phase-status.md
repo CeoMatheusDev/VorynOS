@@ -4,10 +4,16 @@
 |-------|-------|
 | **Estado** | VIVO |
 | **Data** | 2026-10-22 |
+| **Versão publicada** | `v0.1.0-dev.1` — marco inicial consolidado |
 
 O estado abaixo reflete o **código existente e verificado**, não a
 intenção. Um item só é marcado como concluído quando atende a todos os
 critérios de "definição de concluído" do `AGENTS.md`.
+
+A versão publicada é registrada aqui, e as notas oficiais da versão estão
+em [`../releases/v0.1.0-dev.1.md`](../releases/v0.1.0-dev.1.md). A
+reorganização dos marcos públicos de versionamento está registrada em
+[`../releases/VERSIONING-RESET-2026.md`](../releases/VERSIONING-RESET-2026.md).
 
 ## Marcos
 

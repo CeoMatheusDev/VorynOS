@@ -36,7 +36,7 @@ const elf64 = voryn.elf64;
 const memmap = voryn.memmap;
 
 /// Version of the loader, reported on the console.
-const loader_version = "0.1.0-dev.3";
+const loader_version = "0.1.0-dev.1";
 
 /// Path of the kernel image inside the boot volume.
 const kernel_path = "\\boot\\vorynk.elf";

@@ -7,7 +7,7 @@
 **Um sistema operacional independente, desenvolvido do zero para oferecer controle direto sobre o hardware, eficiência e liberdade tecnológica.**
 
 [![Zig](https://img.shields.io/badge/Zig-0.17.0-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
-[![Release](https://img.shields.io/badge/release-v0.1.0--dev.3-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases)
+[![Release](https://img.shields.io/badge/release-v0.1.0--dev.1-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.1)
 [![License](https://img.shields.io/badge/license-GPL--3.0--only-22C55E)](LICENSE)
 [![Architecture](https://img.shields.io/badge/architecture-x86__64-64748B)](#arquitetura)
 [![Status](https://img.shields.io/badge/status-em%20desenvolvimento-EAB308)](#estado-do-projeto)
@@ -16,7 +16,8 @@
 [**Estado atual**](#estado-do-projeto) ·
 [**Compilação**](#compilação) ·
 [**Arquitetura**](#arquitetura) ·
-[**Documentação**](#documentação)
+[**Documentação**](#documentação) ·
+[**Notas da versão**](docs/releases/v0.1.0-dev.1.md)
 
 ![Logo do VorynOS](Logos_VorynOS.png)
 
@@ -47,12 +48,18 @@ O projeto encontra-se em desenvolvimento inicial e **ainda não constitui um sis
 
 ## Estado do projeto
 
-> **Versão de desenvolvimento:** `v0.1.0-dev.3`  
+> **Versão publicada:** `v0.1.0-dev.1` — [notas da versão](docs/releases/v0.1.0-dev.1.md)  
 > **Arquitetura inicial:** `x86_64`  
 > **Linguagem principal:** Zig 0.17.0  
 > **Firmware de inicialização:** UEFI  
 > **Licença:** GPL-3.0-only  
 > **Última revisão documental:** 22/10/2026
+
+A versão publicada é o **marco inicial consolidado** do projeto: ela
+carrega todo o progresso técnico já verificado, e a partir dela a numeração
+das versões volta a ter sentido. A reorganização dos marcos públicos está
+registrada em
+[VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md).
 
 O desenvolvimento está organizado em marcos incrementais, com critérios técnicos de aceitação e documentação das evidências de funcionamento.
 
@@ -280,6 +287,19 @@ Os scripts de execução utilizam o QEMU e o firmware OVMF para inicializar o si
 git clone https://github.com/CeoMatheusDev/VorynOS.git
 cd VorynOS
 ```
+
+Para obter exatamente o marco publicado:
+
+```bash
+git checkout v0.1.0-dev.1
+```
+
+**Sobre os artefatos:** o release `v0.1.0-dev.1` publica **apenas o código
+fonte**. Nenhum binário é distribuído junto dele, porque o projeto não
+mantém uma cadeia de construção reproduzível o bastante para que um
+artefato binário possa ser declarado oficial. A imagem de inicialização é
+construída localmente pelo próprio projeto, e é ela que o teste de boot
+verifica.
 
 ### 2. Compilar o projeto
 
@@ -600,6 +620,8 @@ O VorynOS mantém documentação técnica junto ao código-fonte.
 | [ADR-0006](docs/adr/ADR-0006-address-spaces-and-processes.md) | Espaços de endereço por processo e o quadro do processador |
 | [Boot Handoff](docs/specs/boot-handoff-spec.md) | Especificação do contrato de inicialização |
 | [Syscall ABI](docs/specs/syscall-abi.md) | Contrato da chamada de sistema |
+| [Notas da v0.1.0-dev.1](docs/releases/v0.1.0-dev.1.md) | Notas oficiais do marco inicial consolidado |
+| [VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md) | Histórico dos marcos descontinuados e procedimento da reorganização |
 | [Roadmap](docs/roadmap/phase-status.md) | Estado e planejamento dos marcos |
 | [Testing Strategy](docs/testing/testing-strategy.md) | Estratégia de validação |
 | [VVS-0001](docs/standards/VVS-0001.md) | Política de versionamento |
