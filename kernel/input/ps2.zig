@@ -11,7 +11,7 @@
 //! normal exige interrupções locais desabilitadas; IRQ1 é o único produtor.
 
 const voryn = @import("voryn_shared");
-const keyboard = @import("keyboard.zig");
+const keyboard = @import("voryn_keyboard");
 
 const status_port: u16 = 0x64;
 const data_port: u16 = 0x60;
