@@ -887,34 +887,66 @@ fn installTimer() void {
 
     serial.printLine("[VNK] timer: {d} Hz, {d} ticks", .{ timer.ticksPerSecond(), timer.ticks() });
 
-    // F6.7.1: janela de teste de entrada real via QEMU HMP sendkey.
-    // O produtor é IRQ1. Aqui as interrupções são desabilitadas apenas
-    // durante o consumo da fila, evitando corrida com o handler.
+    // F6.9: event pump por 50 ticks, em vez de consumir toda a fila
+    // apenas no final. O trabalho de composição ocorre com IRQs habilitadas.
+    // CLI protege somente a retirada de um evento da fila SPSC de IRQ1.
     serial.printLine("[VNK] keyboard: ready for PS/2 input", .{});
     const input_start = timer.ticks();
-    while (timer.ticks() - input_start < 50) {
-        cpu.halt();
-    }
-    cpu.disableInterrupts();
     var key_count: usize = 0;
     var pressed: usize = 0;
     var released: usize = 0;
-    while (ps2.popIrqsDisabled()) |event| {
+    var graphics_updates: usize = 0;
+    while (timer.ticks() - input_start < 50) {
+        cpu.disableInterrupts();
+        const maybe_event = ps2.popIrqsDisabled();
+        cpu.enableInterrupts();
+        if (maybe_event) |event| {
+            key_count += 1;
+            if (event.pressed) {
+                pressed += 1;
+                if (event.extended and (event.scancode == 0x4b or event.scancode == 0x4d or event.scancode == 0x48 or event.scancode == 0x50))
+                    graphics_updates += 1;
+            } else {
+                released += 1;
+            }
+            applyKeyboardGraphics(event);
+            serial.printLine("[VNK] keyboard: key scancode=0x{x} extended={d} pressed={d}", .{
+                event.scancode, @intFromBool(event.extended), @intFromBool(event.pressed),
+            });
+        } else {
+            // HLT acorda na próxima IRQ; não realiza busy polling.
+            cpu.halt();
+        }
+    }
+    // Drena os eventos que chegaram no último tick da janela.
+    while (true) {
+        cpu.disableInterrupts();
+        const maybe_event = ps2.popIrqsDisabled();
+        cpu.enableInterrupts();
+        const event = maybe_event orelse break;
         key_count += 1;
-        applyKeyboardGraphics(event);
         if (event.pressed) {
             pressed += 1;
+            if (event.extended and (event.scancode == 0x4b or event.scancode == 0x4d or event.scancode == 0x48 or event.scancode == 0x50))
+                graphics_updates += 1;
         } else {
             released += 1;
         }
+        applyKeyboardGraphics(event);
         serial.printLine("[VNK] keyboard: key scancode=0x{x} extended={d} pressed={d}", .{
             event.scancode, @intFromBool(event.extended), @intFromBool(event.pressed),
         });
     }
-    serial.printLine("[VNK] keyboard: {d} events, {d} pressed, {d} released, {d} bytes, {d} dropped", .{
-        key_count, pressed, released, ps2.receivedIrqsDisabled(), ps2.droppedIrqsDisabled(),
-    });
+    cpu.disableInterrupts();
+    const bytes = ps2.receivedIrqsDisabled();
+    const dropped = ps2.droppedIrqsDisabled();
     cpu.enableInterrupts();
+    serial.printLine("[VNK] keyboard: {d} events, {d} pressed, {d} released, {d} bytes, {d} dropped", .{
+        key_count, pressed, released, bytes, dropped,
+    });
+    serial.printLine("[VNK] graphics: event pump {d} arrow presses over {d} ticks", .{
+        graphics_updates, timer.ticks() - input_start,
+    });
 }
 
 /// Initializes the file system.
