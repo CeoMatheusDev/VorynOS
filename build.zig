@@ -225,6 +225,18 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(raster_tests).step);
 
+    // F6: compositor opaco sobre rasterizador puro.
+    const compositor_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/graphics/compositor.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const compositor_tests = b.addTest(.{
+        .name = "compositor-tests",
+        .root_module = compositor_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(compositor_tests).step);
+
     // The memory managers of the kernel are free of architecture specific
     // code and are tested on the host as well.
     const kernel_test_module = b.createModule(.{
