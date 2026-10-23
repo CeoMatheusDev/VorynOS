@@ -156,24 +156,34 @@ trap 'cleanup_qemu; rm -rf "$WORK_DIRECTORY"' EXIT
 
 # The script injects I during boot, then RIGHT only after the persistent
 # loop marker. This distinguishes the permanent loop from the boot pump.
-if ! python3 - "$SERIAL_LOG" "$MONITOR_SOCKET" "$QEMU_PID" "$TIMEOUT" <<'PY'
+if ! python3 - "$SERIAL_LOG" "$MONITOR_SOCKET" "$QEMU_PID" "$TIMEOUT" "$WORK_DIRECTORY" <<'PY'
 import os
 import re
 import socket
 import sys
 import time
 
-log_path, monitor_path, pid_text, timeout_text = sys.argv[1:]
+log_path, monitor_path, pid_text, timeout_text, work_dir = sys.argv[1:]
 pid = int(pid_text)
 deadline = time.monotonic() + int(timeout_text)
 state = "boot"
 baseline = 0
+before_path = os.path.join(work_dir, "before.ppm")
+after_path = os.path.join(work_dir, "after.ppm")
 
-def sendkey(key):
+def monitor_command(command):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(2)
         sock.connect(monitor_path)
-        sock.sendall(("sendkey " + key + " 50\n").encode("ascii"))
+        sock.sendall((command + "\n").encode("ascii"))
+
+def screenshot(path):
+    monitor_command("screendump " + path)
+    for _ in range(100):
+        if os.path.isfile(path) and os.path.getsize(path) > 100:
+            return
+        time.sleep(0.02)
+    sys.exit("FAIL: QEMU screendump missing: " + path)
 
 while time.monotonic() < deadline:
     try:
@@ -185,7 +195,7 @@ while time.monotonic() < deadline:
         sys.exit("FAIL: fatal error in interactive boot")
     if state == "boot" and "[VNK] keyboard: ready for PS/2 input" in log:
         try:
-            sendkey("i")
+            monitor_command("sendkey i 50")
         except (OSError, TimeoutError):
             time.sleep(0.02)
             continue
@@ -195,7 +205,8 @@ while time.monotonic() < deadline:
             sys.exit("FAIL: interactive loop started before readiness")
         baseline = len(re.findall(r"\[VNK\] graphics: keyboard move x=", log))
         try:
-            sendkey("right")
+            screenshot(before_path)
+            monitor_command("sendkey right 50")
         except (OSError, TimeoutError) as exc:
             sys.exit("FAIL: could not send right arrow: " + str(exc))
         state = "movement"
@@ -204,6 +215,15 @@ while time.monotonic() < deadline:
         if count > baseline:
             if "[VNK] EXCEPTION 6: invalid opcode" in log:
                 sys.exit("FAIL: fatal self-test executed in interactive mode")
+            screenshot(after_path)
+            import subprocess
+            result = subprocess.run(
+                [sys.executable, "tests/integration/compare-framebuffer.py", before_path, after_path],
+                check=False, capture_output=True, text=True,
+            )
+            print(result.stdout, end="")
+            if result.returncode:
+                sys.exit("FAIL: framebuffer validation: " + result.stderr)
             print("ok: persistent loop received arrow after readiness")
             sys.exit(0)
     try:
