@@ -88,3 +88,24 @@ o motivo e continua sem tentar desenhar. O teste automatizado atual não
 inspeciona pixels; verificar visualmente em `zig build qemu` e executar
 `zig build test` e `zig build qemu-test`. Esta integração não foi
 compilada nem executada no ambiente do agente.
+
+## F6.3 — Composição incremental (em desenvolvimento)
+
+O compositor em `kernel/graphics/compositor.zig` oferece agora
+`composeDirty(surface, background, windows, dirty)`, que recompõe apenas a
+interseção de um retângulo com o framebuffer e retorna o número de pixels
+redesenhados. A ordem de composição das janelas permanece estável; regiões
+fora do retângulo não são modificadas. Há testes host para sobreposição,
+clipping e dimensões extremas. O caminho de boot ainda usa `compose` para
+apresentar a cena inicial completa.
+
+Validação pendente no Fedora com Zig 0.17.0:
+
+```sh
+zig build test
+zig build
+zig build qemu-test
+```
+
+A F6.3 não inclui ainda rastreamento automático de regiões danificadas,
+movimentação de janelas ou dispositivos de entrada.
