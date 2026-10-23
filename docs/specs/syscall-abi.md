@@ -5,7 +5,7 @@
 | **State** | ACCEPTED |
 | **Date** | 2026-10-22 |
 | **Scope** | The interface between the user mode and the kernel |
-| **Contract version** | `syscall_abi = 8` |
+| **Contract version** | `syscall_abi = 9` |
 
 ## 1. Objective
 
@@ -25,6 +25,7 @@ that the calls of the channel use. Version 5 adds the **kind** of the
 capability to the calls that give and take it, so that a process can
 delegate the capability of an address space as well as the capability of a
 channel. Version 6 adds the call that waits for a message with a timeout.
+Version 9 adds the file system calls 13 to 18.
 
 The calls of the earlier versions **do not change their number**. Their
 behavior changes in the points that the sections 9 and 10 describe: the
@@ -122,7 +123,7 @@ Ends the user task. The kernel marks the task as terminated and the
 scheduler does not choose it again; the processor leaves the task on the
 next interrupt. The exit code is registered in the task.
 
-## 5. The calls of the versions 2 to 6
+## 5. The calls from version 2 onwards
 
 | Number | Call | Arguments | Result |
 |--------|---------|-----------|-----------|
@@ -133,9 +134,15 @@ next interrupt. The exit code is registered in the task.
 | 9 | `grant` | `RDI` process, `RSI` kind, `RDX` subject, `R8` rights | zero, when the capability was given |
 | 10 | `revoke` | `RDI` process, `RSI` kind, `RDX` subject | zero, when the capability was taken back |
 | 11 | `receive_timeout` | `RDI` channel, `RSI` side, `RDX` timeout | the kind of the message, and the value in the `RDX` |
-| 12 | `receive_any` | `RDI` array, `RSI` count, `RDX` timeout | the kind of the message, the value in the `RDX` and the index in the `R8` |
-| 13 | `get_priority` | `RDI` task identifier, `RSI` | the priority of the task |
-| 14 | `set_priority` | `RDI` task identifier, `RSI` the new priority | zero, when the priority was set
+| 13 | `fs_open` | `RDI` path address, `RSI` path length, `RDX` flags | the descriptor |
+| 14 | `fs_close` | `RDI` descriptor | zero |
+| 15 | `fs_read` | `RDI` descriptor, `RSI` buffer, `RDX` length | the number of bytes read |
+| 16 | `fs_write` | `RDI` descriptor, `RSI` buffer, `RDX` length | the number of bytes written |
+| 17 | `fs_create` | `RDI` path address, `RSI` path length | the descriptor |
+| 18 | `fs_mkdir` | `RDI` path address, `RSI` path length | zero |
+
+The number 12 is reserved and is **not** defined by this version: the kernel
+refuses it with the error 1, as it refuses any unknown number.
 
 ### 5.1 `send`
 
@@ -322,6 +329,44 @@ timeout is considered, and the error 9 is what the call answers.
 The call needs the capability of the channel, with the right of receiving,
 in the same way as the calls 6 and 8.
 
+### 5.7 The file system calls
+
+The calls 13 to 18 expose the RamFS to the user mode. The path is a block
+of the user, **not** null terminated: the length is an argument, and the
+kernel checks the range in the page tables before reading it. The path is
+limited to 255 bytes.
+
+| Flag | Value | Meaning |
+|------|-------|---------|
+| `O_RDONLY` | `0o0` | read only |
+| `O_WRONLY` | `0o1` | write only |
+| `O_RDWR` | `0o2` | read and write |
+| `O_CREAT` | `0o100` | create the file when it does not exist |
+| `O_TRUNC` | `0o1000` | truncate the file on open |
+| `O_APPEND` | `0o2000` | start the descriptor at the end of the file |
+
+`fs_open` returns a descriptor in the range `0..15`. The table is global,
+because the contract does not have a process-scoped file table yet: two
+processes that open the same path share the same entries. The limit is 16
+open files.
+
+`fs_close` releases the descriptor. A descriptor that is not open is
+refused with the error 16, `bad_descriptor`.
+
+`fs_read` and `fs_write` copy at most 64 KiB per call, and the kernel
+checks the buffer in the page tables: a read needs a writable range of the
+user, and a write needs a readable range. The descriptor advances by the
+number of bytes processed.
+
+`fs_create` creates a regular file and returns a descriptor open for
+reading and writing. `fs_mkdir` creates a directory and returns zero. The
+calls do not create the parent directory: a path whose parent does not
+exist is refused with the error 14, `no_such_file`.
+
+The version 9 does **not** have `seek`, `stat`, `unlink`, `rename`, indirect
+blocks, persistence or a per-process descriptor table. The RamFS is still a
+kernel-side file system with a small user-facing window.
+
 ## 6. The result and the errors
 
 The result of the call comes back in `RAX`. A **negative** result means
@@ -343,6 +388,14 @@ the code of the error:
 | 11 | unknown kind | the kind of the capability does not exist |
 | 12 | invalid rights | the rights are empty, or they do not apply to the kind |
 | 13 | timeout | the wait expired before the message arrived |
+| 14 | no such file | the path does not name an existing file or directory |
+| 15 | no space | the file system has no free block or no free inode |
+| 16 | bad descriptor | the descriptor is not open, or it is out of range |
+| 17 | too many open files | the table of open files has no free entry |
+| 18 | name exists | a file or directory with the same name already exists |
+| 19 | invalid name | the path or a component of it is not valid |
+| 20 | file too large | the file exceeds the limit of the file system |
+| 21 | I/O error | the file system refused the operation for another reason |
 
 The limit of the length is **64 KiB** per call, and it exists so that the
 kernel does not spend an undetermined time inside a call.
@@ -378,7 +431,7 @@ knowing the error codes.
 12. A change to the arguments of an existing call is a break of the
     contract, and it increments the version, as a new call does.
 
-## 8. What version 6 does not have
+## 8. What version 9 does not have
 
 - **The capability that carries a memory range.** A capability is about a
   subject of the kernel, and a range of memory is not one of them.
@@ -386,7 +439,15 @@ knowing the error codes.
   of a process carries the right to write in its address space, and not the
   right to read it nor to execute its code.
 - **The capability of a device.** No driver exists to hold one.
-- **Files.** The `write` call knows only the console.
+- **The console and the files in the same call.** The `write` call knows
+  only the console, and the file system has the calls 13 to 18. The
+  `write` call does not accept a descriptor.
+- **Seek, stat, unlink and rename.** The version 9 opens, closes, reads,
+  writes, creates and creates directories, and nothing else.
+- **A descriptor table per process.** The table is global and has 16
+  entries, because the contract has no process-scoped file table yet.
+- **Persistence.** The RamFS lives in the memory of the kernel and
+  disappears when the machine is turned off.
 - **Message structure.** There is no message format defined, and the
   message of the channel carries a kind and a value.
 - **Several processes per call.** The `copy_to` call knows the destination
@@ -447,4 +508,22 @@ keeps working without a change.
 The call is the blocking receive with a deadline, and it exists because a
 service that waits for a client that died would otherwise wait forever.
 The decision, with the alternatives that were discarded, is in the
-ADR-0010.
+[`ADR-0010`](../adr/ADR-0010-wait-timeout.md).
+
+## 12. The version 9
+
+The version 9 is **additive**. It adds the calls 13 to 18 and the errors 14
+to 21, and it does not change the number nor the meaning of any existing
+call. The version 7 and the version 8 were not published as stable
+contracts; the document records the jump so that a number is never reused.
+
+The file system calls are the first user-facing interface of the RamFS. The
+kernel checks the path and the buffer in the page tables, translates the
+errors of the file system into the codes of the contract, and keeps the
+file system state in the kernel. The call 12 remains reserved and is
+refused with the error 1.
+
+The decision about the separation between the load planner and the
+materialization of an ELF64 image is in
+[`ADR-0011`](../adr/ADR-0011-elf64-load-plan.md). The RamFS layout and its
+limits are documented in the increment report and in the roadmap.

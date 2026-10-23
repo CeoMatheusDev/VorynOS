@@ -10,7 +10,7 @@
 // SPDX-License-Identifier: GPL-3.0-only                                  //
 //************************************************************************//
 
-#! An inode represents a file or directory in the file system.
+//! An inode represents a file or directory in the file system.
 //!
 //! The inode stores metadata about the file, including its size, ownership,
 //! permissions, and the blocks that store its data.

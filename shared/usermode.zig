@@ -23,7 +23,7 @@ pub const code_offset: u64 = 0x0000;
 pub const data_offset: u64 = 0x1000;
 
 /// The offset of the first page of the stack inside the window.
-pub const stack_offset: u64 = 0x2000;
+pub const stack_offset: u64 = 0x3000;
 
 /// The number of pages of the stack of the user mode.
 pub const stack_pages: u64 = 2;

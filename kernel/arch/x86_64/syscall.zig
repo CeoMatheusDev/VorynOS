@@ -67,6 +67,7 @@ const serial = voryn.serial;
 
 const channel_module = @import("../../ipc/channel.zig");
 const capability = @import("../../security/capability.zig");
+const fs_module = @import("../../fs/fs.zig");
 const cpu = @import("cpu.zig");
 const paging = @import("paging.zig");
 const segment = @import("segment.zig");
@@ -273,6 +274,22 @@ pub const Error = struct {
     /// The wait was removed from the queue, and the message that arrives
     /// later stays in the queue for the next call.
     pub const timeout: u64 = 13;
+    /// The path does not name an existing file or directory.
+    pub const no_such_file: u64 = 14;
+    /// The file system has no free block or no free inode.
+    pub const no_space: u64 = 15;
+    /// The descriptor is not open.
+    pub const bad_descriptor: u64 = 16;
+    /// The table of open files is full.
+    pub const too_many_open_files: u64 = 17;
+    /// A file or directory with the same name already exists.
+    pub const name_exists: u64 = 18;
+    /// The path or the name is not valid.
+    pub const invalid_name: u64 = 19;
+    /// The file exceeds the limit of the file system.
+    pub const file_too_large: u64 = 20;
+    /// The file system refused the operation for another reason.
+    pub const io_error: u64 = 21;
 };
 
 /// The largest block that a call copies in one go.
@@ -280,6 +297,9 @@ pub const Error = struct {
 /// The limit keeps the kernel from spending an unbounded time inside a
 /// call, and it is the same for the copy and for the write.
 pub const max_block_length: u64 = 64 * 1024;
+
+/// The largest path that a file system call accepts.
+pub const max_path_length: usize = 255;
 
 /// The files that the call of write knows.
 pub const Descriptor = struct {
@@ -509,28 +529,52 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
             });
         },
         Number.fs_open => {
-            frame.rax = failure(Error.unknown_call);
-            serial.printLine("[VNK] syscall {d} from {s} fs_open placeholder", .{ number, caller });
+            frame.rax = fsOpen(frame.rdi, frame.rsi, frame.rdx, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} fs_open result 0x{x}", .{
+                number,
+                caller,
+                frame.rax,
+            });
         },
         Number.fs_close => {
-            frame.rax = failure(Error.unknown_call);
-            serial.printLine("[VNK] syscall {d} from {s} fs_close placeholder", .{ number, caller });
+            frame.rax = fsClose(frame.rdi, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} fs_close result 0x{x}", .{
+                number,
+                caller,
+                frame.rax,
+            });
         },
         Number.fs_read => {
-            frame.rax = failure(Error.unknown_call);
-            serial.printLine("[VNK] syscall {d} from {s} fs_read placeholder", .{ number, caller });
+            frame.rax = fsRead(frame.rdi, frame.rsi, frame.rdx, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} fs_read read 0x{x} bytes", .{
+                number,
+                caller,
+                frame.rax,
+            });
         },
         Number.fs_write => {
-            frame.rax = failure(Error.unknown_call);
-            serial.printLine("[VNK] syscall {d} from {s} fs_write placeholder", .{ number, caller });
+            frame.rax = fsWrite(frame.rdi, frame.rsi, frame.rdx, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} fs_write wrote 0x{x} bytes", .{
+                number,
+                caller,
+                frame.rax,
+            });
         },
         Number.fs_create => {
-            frame.rax = failure(Error.unknown_call);
-            serial.printLine("[VNK] syscall {d} from {s} fs_create placeholder", .{ number, caller });
+            frame.rax = fsCreate(frame.rdi, frame.rsi, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} fs_create result 0x{x}", .{
+                number,
+                caller,
+                frame.rax,
+            });
         },
         Number.fs_mkdir => {
-            frame.rax = failure(Error.unknown_call);
-            serial.printLine("[VNK] syscall {d} from {s} fs_mkdir placeholder", .{ number, caller });
+            frame.rax = fsMkdir(frame.rdi, frame.rsi, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} fs_mkdir result 0x{x}", .{
+                number,
+                caller,
+                frame.rax,
+            });
         },
         Number.grant => {
             frame.rax = grant(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
@@ -578,6 +622,122 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
 /// the error.
 pub fn failure(code: u64) u64 {
     return -%code;
+}
+
+/// Copies a path of the user mode into a buffer of the kernel.
+///
+/// The path is not null terminated: the length is an argument of the call,
+/// and the check of the range in the page tables happens before the read.
+fn copyUserPath(address: u64, length: u64, buffer: *[max_path_length]u8) ?[]const u8 {
+    if (length == 0 or length > max_path_length) return null;
+    if (!paging.isUserRange(address, length, false)) return null;
+
+    const count: usize = @intCast(length);
+    const source: [*]const u8 = @ptrFromInt(address);
+    @memcpy(buffer[0..count], source[0..count]);
+    return buffer[0..count];
+}
+
+/// Translates an error of the file system into the error of the contract.
+fn fsFailure(err: anyerror) u64 {
+    return switch (err) {
+        error.EntryNotFound => failure(Error.no_such_file),
+        error.NoSpace, error.NoFreeInode, error.DirectoryFull => failure(Error.no_space),
+        error.BadDescriptor => failure(Error.bad_descriptor),
+        error.TooManyOpenFiles => failure(Error.too_many_open_files),
+        error.NameExists => failure(Error.name_exists),
+        error.InvalidName, error.InvalidPath => failure(Error.invalid_name),
+        error.FileTooLarge => failure(Error.file_too_large),
+        else => failure(Error.io_error),
+    };
+}
+
+/// Opens a file of the RamFS.
+///
+/// The arguments are the address and the length of the path, and the flags
+/// of the open. The result is the descriptor, or the negative error.
+fn fsOpen(path_address: u64, path_length: u64, flags: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+
+    var path_buffer: [max_path_length]u8 = undefined;
+    const path = copyUserPath(path_address, path_length, &path_buffer) orelse {
+        if (path_length == 0 or path_length > max_path_length) return failure(Error.invalid_length);
+        return failure(Error.invalid_address);
+    };
+
+    const descriptor = fs_module.open(process, path, @intCast(flags & 0xFFFF)) catch |err|
+        return fsFailure(err);
+    return descriptor;
+}
+
+/// Closes a descriptor of the RamFS.
+fn fsClose(descriptor: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+    if (descriptor > std.math.maxInt(u32)) return failure(Error.bad_descriptor);
+
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+    fs_module.close(process, @intCast(descriptor)) catch |err| return fsFailure(err);
+    return 0;
+}
+
+/// Reads from a descriptor into a buffer of the user mode.
+fn fsRead(descriptor: u64, buffer_address: u64, length: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+    if (length == 0 or length > max_block_length) return failure(Error.invalid_length);
+    if (!paging.isUserRange(buffer_address, length, true)) return failure(Error.invalid_address);
+    if (descriptor > std.math.maxInt(u32)) return failure(Error.bad_descriptor);
+
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+    const destination: [*]u8 = @ptrFromInt(buffer_address);
+    const count = fs_module.read(process, @intCast(descriptor), destination[0..@intCast(length)]) catch |err|
+        return fsFailure(err);
+    return count;
+}
+
+/// Writes a buffer of the user mode into a descriptor.
+fn fsWrite(descriptor: u64, buffer_address: u64, length: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+    if (length == 0 or length > max_block_length) return failure(Error.invalid_length);
+    if (!paging.isUserRange(buffer_address, length, false)) return failure(Error.invalid_address);
+    if (descriptor > std.math.maxInt(u32)) return failure(Error.bad_descriptor);
+
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+    const source: [*]const u8 = @ptrFromInt(buffer_address);
+    const count = fs_module.write(process, @intCast(descriptor), source[0..@intCast(length)]) catch |err|
+        return fsFailure(err);
+    return count;
+}
+
+/// Creates a file and returns an open descriptor.
+fn fsCreate(path_address: u64, path_length: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+
+    var path_buffer: [max_path_length]u8 = undefined;
+    const path = copyUserPath(path_address, path_length, &path_buffer) orelse {
+        if (path_length == 0 or path_length > max_path_length) return failure(Error.invalid_length);
+        return failure(Error.invalid_address);
+    };
+
+    const descriptor = fs_module.create(process, path, 0o644) catch |err| return fsFailure(err);
+    return descriptor;
+}
+
+/// Creates a directory.
+fn fsMkdir(path_address: u64, path_length: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    var path_buffer: [max_path_length]u8 = undefined;
+    const path = copyUserPath(path_address, path_length, &path_buffer) orelse {
+        if (path_length == 0 or path_length > max_path_length) return failure(Error.invalid_length);
+        return failure(Error.invalid_address);
+    };
+
+    _ = fs_module.mkdir(path) catch |err| return fsFailure(err);
+    return 0;
 }
 
 /// Writes a buffer of the user mode in the console.

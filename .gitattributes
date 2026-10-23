@@ -2,8 +2,7 @@
 # GitHub-generated Source code downloads may ignore export-ignore.
 
 # AI development instructions are not part of source distributions.
-# The root AGENTS.md is the entry point that the programming tools
-# discover, and it points to the protocol inside internal/ai.
+# The root AGENTS.md is the canonical protocol discovered by agents.
 /internal/ export-ignore
 /AGENTS.md export-ignore
 
@@ -13,8 +12,7 @@
 /SECURITY.md export-ignore
 
 # Brand assets are not needed to compile the operating system.
-/Logos_VorynOS.png export-ignore
-/Logos_VorynOS_2.png export-ignore
+/assets/branding/ export-ignore
 
 # Source packaging script is not needed inside its own output.
 /scripts/package-source.sh export-ignore

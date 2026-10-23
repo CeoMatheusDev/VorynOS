@@ -7,7 +7,7 @@
 **An independent operating system built from scratch to provide direct hardware control, efficiency, and technological freedom.**
 
 [![Zig](https://img.shields.io/badge/Zig-0.17.0-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
-[![Release](https://img.shields.io/badge/release-v0.1.0--dev.3-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.3)
+[![Release](https://img.shields.io/badge/release-v0.1.0--dev.3-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2)
 [![License](https://img.shields.io/badge/license-GPL--3.0--only-22C55E)](LICENSE)
 [![Architecture](https://img.shields.io/badge/architecture-x86__64-64748B)](#architecture)
 [![Status](https://img.shields.io/badge/status-in%20development-EAB308)](#project-status)
@@ -17,7 +17,7 @@
 [**Building**](#building) ·
 [**Architecture**](#architecture) ·
 [**Documentation**](#documentation) ·
-[**Release Notes**](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.3)
+[**Release Notes**](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2)
 
 ![VorynOS Logo](assets/branding/logos/Logos_VorynOS.png)
 
@@ -48,14 +48,15 @@ The project is currently in its early development stages and **does not yet cons
 
 ## Project Status
 
-> **Published version:** `v0.1.0-dev.3` — RAMFS Foundation & Native ELF64 Support — [Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.3)  
-> **Initial architecture:** `x86_64`  
-> **Primary language:** Zig 0.17.0  
-> **Boot firmware:** UEFI  
-> **License:** GPL-3.0-only  
-> **Last documentation revision:** October 23, 2026
+> **Published version:** `v0.1.0-dev.3` — RAMFS Foundation — [Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.3)
+>
+> - **Initial architecture:** `x86_64`
+> - **Primary language:** Zig 0.17.0
+> - **Boot firmware:** UEFI
+> - **License:** GPL-3.0-only
+> - **Last documentation revision:** October 23, 2026
 
-The `v0.1.0-dev.3` development preview introduces the **RAMFS foundation**, initial filesystem operations, and the first steps toward native ELF64 application loading. Earlier milestones established UEFI boot, memory management, user processes, scheduling, IPC, capabilities, and process fault recovery. Filesystem integration and native application execution remain under active development; this is **not a production-ready operating system**. The release notes document the scope and limitations of the current preview.
+The current development line is **F5 — Runtime, SDK and native applications**. The RamFS has a verified core: block allocator, files with direct blocks, directories, path lookup and a descriptor facade. The ELF64 **planner and materializer** now load `/apps/hello.elf` from the RamFS into a fourth process: the kernel maps code R+X and data/stack R+W+NX with hardware NX, applies a relative relocation, and executes the image in QEMU. The embedded processes also use W^X. The host suite has 89 tests, and the boot test still covers process fault recovery, IPC, capabilities and the timeout. The native SDK/toolchain and persistent storage remain pending. This increment is verified in the working tree and has not been tagged yet. This is not a production-ready operating system.
 
 The reorganization of public milestones is documented in [VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md).
 
@@ -69,8 +70,8 @@ Development is organized into incremental milestones, each with technical accept
 | F1 | UEFI bootloader and kernel initialization | ✅ Completed |
 | F2 | Processor structures, interrupts, and memory | 🟢 Locally Tested |
 | F3 | Threads, scheduler, processes, syscalls, and IPC | ✅ Completed |
-| F4 | Storage and file systems | ✅ RAMFS foundation implemented; filesystem interfaces under validation |
-| F5 | Runtime, SDK, and native applications | 🚧 In progress — initial ELF64 loader and SDK groundwork |
+| F4 | Storage and file systems | 🚧 RamFS core verified — persistence and VFSX pending |
+| F5 | Runtime, SDK, and native applications | 🚧 In progress — native ELF and toolchain app verified; SDK pending |
 | F6 | Graphics subsystem and desktop environment | 📋 Proposed |
 | F7 | Drivers, networking, audio, and physical hardware | 📋 Proposed |
 | F8 | Compatibility with external formats and APIs | 📋 Proposed |
@@ -155,6 +156,9 @@ The kernel provides an initial functional infrastructure for processor managemen
 - VNX message channels supporting message delivery between two processes, with delivery latency measured using the processor clock.
 - **Capability fabric of the VNC**: the kernel holds the table of the capabilities and every process holds a set of them. A process that does not hold the capability of a channel does not use it, and the owner of the channel delegates the capability to another process and takes it back. The calls carry the kind of the capability, so the owner of the address space of a process can delegate it as well.
 - A **blocking** system call that waits for a message: the waiting task is not scheduled, the scheduler selects another task, and message arrival wakes the waiting task with the result stored in its saved context.
+- **Native ELF64 process loaded from the RamFS**: the kernel reads `/apps/hello.elf`, plans its two `PT_LOAD` segments, materializes them in a dedicated address space, applies one `R_X86_64_RELATIVE` relocation, and starts a fourth user task with the entry point from the image.
+- **Per-process descriptor tables**: each process has its own table of open files with independent offsets; closing or seeking in one process does not affect another.
+- **Hardware W^X**: code pages are mapped read-only and executable, data and stack pages are writable and non-executable, and the boot refuses a CPU without the no-execute feature. The kernel reads the page-table permissions back before it starts the native task.
 
 **Memory Management**
 
@@ -166,6 +170,9 @@ The kernel provides an initial functional infrastructure for processor managemen
 - Heap with block metadata.
 - Memory block splitting and coalescing.
 - Basic heap corruption detection.
+- **No-execute support**: `EFER.NXE` is enabled at boot, and the kernel refuses to continue when the processor does not report the feature.
+- **Explicit user-page permissions**: mapping, protection and unmapping with `R+X` for code and `R+W+NX` for data and stack.
+- **ELF materialization**: allocation, mapping, content copy, zeroed BSS, relative relocations, stack pages and cleanup of a partial load.
 
 **Diagnostics**
 
@@ -194,19 +201,6 @@ The structure includes versioning and structural integrity checks.
 
 **Specification:** [Boot Handoff Specification](docs/specs/boot-handoff-spec.md)
 
-### RAMFS Foundation (F4)
-
-The kernel includes an initial RAM-based filesystem for file and directory operations. This is **volatile storage**: RAMFS contents do not persist after reboot.
-
-- File creation, reading, writing, and directory management.
-- Filesystem syscall integration, with ABI numbering subject to documentation reconciliation.
-- RAMFS regression-test infrastructure.
-- Initial ELF64 application loader groundwork; full end-to-end native execution is not yet established.
-
-**Implementation:** `kernel/fs/ramfs.zig`, `kernel/arch/x86_64/syscall.zig`, and `kernel/elf_loader.zig`.
-
-**Release:** [v0.1.0-dev.3 — RAMFS Foundation & Native ELF64 Support](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.3)
-
 ### Disk Image Tool
 
 The project includes a custom FAT16 image builder implemented in Zig.
@@ -225,17 +219,19 @@ The following limitations are known and documented:
 
 | Subsystem | Limitation |
 |---|---|
-| Physical memory | Bitmap-based allocator; extended-memory behavior requires ongoing validation |
+| Physical memory | Bitmap covering up to 4 GiB |
 | Heap | Fixed 256 KiB region |
-| Virtual memory | Kernel image and framebuffer mappings, with a dedicated window for each process |
-| Processes | Three processes; the address-space limit is a constant defined in the paging module |
+| Virtual memory | Kernel image and framebuffer mappings, with a dedicated window for each process; native code is R+X and data/stack are R+W+NX |
+| Processes | Four processes: three embedded test processes and one native ELF; the address-space limit is a constant defined in the paging module |
 | TSS | 64-bit mode structure with a layout verified at compile time |
 | Exceptions | A user-mode exception kills the process; an exception in the kernel is fatal |
-| Syscalls | Existing process/IPC interface plus filesystem extensions; syscall numbering and ABI documentation require reconciliation |
+| Syscalls | Eleven system calls, with verified return to user mode |
 | IPC | Message delivery and waiting between two processes are verified; ordering, guaranteed delivery, and synchronization are not provided |
-| Waiting | Timed and multi-channel waiting are implemented in development; full regression coverage remains ongoing |
-| Capabilities | Channel and process capabilities; device-related capabilities are under development |
-| Storage | Initial in-memory RAMFS; no persistent storage across reboot |
+| Waiting | A wait has a timeout, in ticks of the timer; a task still waits on one channel and one endpoint, and a wait on several channels is not provided |
+| Capabilities | The model covers the channels of the VNX; the process still accesses its entire address space |
+| Storage | RamFS only, in memory; no block driver, VNV, persistence, or recovery |
+| Native applications | One bootstrap ELF built by the kernel; there is no SDK or native toolchain yet |
+| No-execute | Requires a CPU with NX; the kernel refuses to boot without it |
 | Drivers | No general-purpose driver infrastructure |
 | Graphical interface | Not implemented |
 | Physical hardware | No documented validation |
@@ -251,8 +247,8 @@ Interprocess memory copying performs an actual data copy: the calling process's 
 Features that do not yet exist include:
 
 - Threads.
-- A stable, fully documented filesystem ABI.
-- End-to-end native ELF64 application execution validation.
+- The native application SDK and toolchain.
+- Persistent storage (block driver, VNV, VFSX, journaling and recovery).
 - Physical hardware validation.
 
 These features belong to upcoming development increments.
@@ -307,10 +303,10 @@ cd VorynOS
 To obtain the exact published milestone:
 
 ```bash
-git checkout v0.1.0-dev.3
+git checkout v0.1.0-dev.2
 ```
 
-**About release artifacts:** The `v0.1.0-dev.3` release provides source distribution artifacts.
+**About release artifacts:** The `v0.1.0-dev.2` release provides source distribution artifacts.
 
 No binaries are distributed with this release because the project does not yet maintain a sufficiently reproducible build pipeline to designate a binary artifact as official.
 
@@ -630,7 +626,7 @@ VorynOS maintains technical documentation alongside its source code.
 | [ADR-0010](docs/adr/ADR-0010-wait-timeout.md) | The wait with a timeout |
 | [Boot Handoff](docs/specs/boot-handoff-spec.md) | Boot handoff contract specification |
 | [Syscall ABI](docs/specs/syscall-abi.md) | System call contract |
-| [v0.1.0-dev.2 Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.3) | Process fault recovery, kernel reliability fixes, and validation results |
+| [v0.1.0-dev.2 Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2) | Process fault recovery, kernel reliability fixes, and validation results |
 | [Roadmap](docs/roadmap/phase-status.md) | Milestone status and planning |
 | [Testing Strategy](docs/testing/testing-strategy.md) | Validation strategy |
 | [VVS-0001](docs/standards/VVS-0001.md) | Versioning policy |

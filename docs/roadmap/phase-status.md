@@ -3,8 +3,9 @@
 | Field | Value |
 |-------|-------|
 | **State** | ALIVE |
-| **Date** | 2026-10-22 |
-| **Published version** | `v0.1.0-dev.1` — consolidated initial milestone |
+| **Date** | 2026-10-23 |
+| **Published version** | `v0.1.0-dev.3` (tag) |
+| **Working tree** | F4/F5 increment, verified locally, not yet tagged |
 
 The state below reflects the **existing and verified code**, and not the
 intention. An item is only marked as completed when it meets every criterion
@@ -14,6 +15,12 @@ The published version is registered here, and the official release notes are
 in [`../releases/v0.1.0-dev.1.md`](../releases/v0.1.0-dev.1.md). The
 reorganization of the public versioning milestones is registered in
 [`../releases/VERSIONING-RESET-2026.md`](../releases/VERSIONING-RESET-2026.md).
+
+> **Correction.** The tag `v0.1.0-dev.3` was published with source files
+> that were not valid Zig (`kernel/fs/*.zig`, `kernel/elf_loader.zig`) and
+> that were not part of any build. The working tree described below replaces
+> them with compiling code covered by `zig build test` and by the boot test.
+> No new tag is claimed by this document.
 
 ## Milestones
 
@@ -240,12 +247,73 @@ channels came after, and reset the queues, and erased the message that the
 task of the user mode had sent in its first turn. The diagnosis and the
 rule are in ADR-0005.
 
-### F4 to F10 — PROPOSED
+### F4 — Storage and file systems — IN PROGRESS
+
+Objectives: RamFS, block layer, VNV, VFSX, persistence and recovery.
+
+| Objective | State | Evidence |
+|----------|--------|-----------|
+| Block allocator | COMPLETED | bitmap with one bit per block, block 0 reserved, allocation, release and exhaustion verified by unit tests |
+| File data | COMPLETED | up to 12 direct blocks (48 KiB), write, write at offset, truncate and read at offset, with old content preserved when a write is refused |
+| Directory table | COMPLETED | fixed table with parent, name and inode, duplicate-name refusal, `listDir` |
+| Path lookup | COMPLETED | absolute or root-relative paths, `.` ignored, `..` refused, nested directories |
+| Descriptor facade | COMPLETED | `open`, `close`, `read`, `write`, `seek`, `create` and `mkdir`, with access flags and a bounded table |
+| Host tests | COMPLETED | `zig build test` runs 13 tests of the RamFS and the descriptor facade |
+| Syscalls 13–18 | COMPLETED (kernel glue) | `fs_open`, `fs_close`, `fs_read`, `fs_write`, `fs_create` and `fs_mkdir` call the facade after checking the user range |
+| Boot self-test | COMPLETED | the kernel creates `/apps`, writes `/apps/hello.txt`, reads it back and compares the content before `VORYN-KERNEL-READY` |
+| Persistence and block driver | PROPOSED | the RamFS lives in the image of the kernel and disappears on power-off |
+| VNV and VFSX | PROPOSED | no virtual node layer and no disk format yet |
+| Per-process descriptors | PROPOSED | the descriptor table is global, because the contract has no process-scoped file table yet |
+| Unlink, rename, indirect blocks | PROPOSED | not implemented |
+
+Known limits of the verified core:
+
+- the RamFS is fixed at 1 MiB (256 blocks of 4 KiB), with 32 inodes and 64
+  directory entries;
+- a file is limited to 48 KiB, because only the 12 direct block pointers
+  exist;
+- there are no `.` and `..` entries, and `..` is refused by the resolver;
+- the descriptor table is global and has 16 entries;
+- the file system is not shared with user mode end to end yet: the syscalls
+  compile and check the user range, but the embedded user program does not
+  call them. The boot verification exercises the kernel-side facade.
+
+### F5 — Runtime, SDK and native applications — IN PROGRESS
+
+Objectives: VEX, VLIB, VPK, runtime, SDK and native applications.
+
+| Objective | State | Evidence |
+|----------|--------|-----------|
+| ELF64 parser | COMPLETED | `shared/elf64.zig`, with bounds-checked headers, segments and relative relocations |
+| Load planner | COMPLETED | `kernel/elf_loader.zig`, `plan` validates the image and computes the page range, permissions and entry point |
+| W^X | COMPLETED | a segment with write and execute is refused; there is a unit test for it |
+| Page overlap | COMPLETED | two segments that share a page are refused; there is a unit test for it |
+| Window and alignment | COMPLETED | segment and entry must fall inside the requested window, with `p_vaddr ≡ p_offset (mod p_align)` |
+| Entry validation | COMPLETED | the entry has to be inside an executable segment that comes from the file |
+| RamFS integration | COMPLETED | `planFromRamFs` reads the file, refuses a truncating buffer and plans the image |
+| Host tests | COMPLETED | nine planner tests, including the RamFS path |
+| Materialization | COMPLETED | `kernel/elf_materializer.zig`: physical allocation, mapping, content copy, zeroing of BSS, relative relocations, stack pages, CR3 restore and cleanup of a partial load |
+| Hardware W^X | COMPLETED | `EFER.NXE` is required at boot; code pages are R+X, data and stack pages are R+W+NX; the kernel reads the page-table entries back before starting the native task |
+| Native user application | COMPLETED | `/apps/hello.elf`, an ET_DYN image with two PT_LOAD segments and one R_X86_64_RELATIVE, runs as the fourth process and exits with code 0 |
+| Host tests | COMPLETED | 26 tests in `fs-loader-tests` (RamFS, planner, native image and per-process descriptors); 90 host tests in total |
+| Per-process descriptors | COMPLETED | `fs.zig` keeps one table per process, with independent offsets and unknown-process rejection |
+| VEX, VLIB, VPK and SDK | PROPOSED | no native toolchain, package format or SDK yet |
+
+The planner is deliberately pure: it does not allocate, map or spawn. The
+materializer consumes the `LoadPlan` and owns the hardware-dependent work.
+Its verification is the QEMU boot, where the kernel reads the page-table
+permissions back, checks that the relative relocation holds the load bias
+and waits for the native task to terminate. The native image is a bootstrap
+built in kernel memory, because the SDK does not exist yet; the ELF file
+itself goes through the RamFS and is validated by the same planner used on
+the host.
+
+### F4 to F10 — summary
 
 | Milestone | Content | State |
 |-------|----------|--------|
-| F4 | Block drivers, VNV, initial VFSX, persistence, recovery | PROPOSED |
-| F5 | VEX, VLIB, VPK, runtime, SDK, native applications | PROPOSED |
+| F4 | Block drivers, VNV, initial VFSX, persistence, recovery | IN PROGRESS — RamFS core verified |
+| F5 | VEX, VLIB, VPK, runtime, SDK, native applications | IN PROGRESS — native ELF and toolchain app verified; SDK pending |
 | F6 | Input, rasterizer, compositor, windows, VSH | PROPOSED |
 | F7 | Virtio, network, audio, physical hardware, GPU | PROPOSED |
 | F8 | ELF, Linux ABI, PE, Win32, external formats | PROPOSED |
@@ -259,5 +327,7 @@ rule are in ADR-0005.
 | Absence of capabilities | High | The capability model of ADR-0001 remains open |
 | Fixed heap in the kernel image | Medium | Dynamic heap with the VNM in F3 |
 | Fatal exceptions | Medium | Resolved in F3: the exception of the user kills the process, and the one of the kernel remains fatal |
-| Fixed number of processes | Medium | The limit of address spaces is a constant of the paging module |
+| Fixed number of processes | Medium | Four address spaces: three embedded test processes and one native ELF; `paging.max_process_spaces` is a constant |
+| NX requirement | High | The kernel requires EFER.NXE and refuses to boot without it; verified in QEMU/OVMF, with no fallback |
+| Bootstrap native image | Medium | The native ELF is built in kernel memory, not by an SDK; the next increment replaces the builder |
 | Absence of a hardware test | Medium | Marked as not verified until a reference machine exists |

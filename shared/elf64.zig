@@ -173,6 +173,16 @@ pub const Segment = struct {
     pub fn isExecutable(self: Segment) bool {
         return self.flags & pf_x != 0;
     }
+
+    /// True when the segment requests write access.
+    pub fn isWritable(self: Segment) bool {
+        return self.flags & pf_w != 0;
+    }
+
+    /// True when the segment requests read access.
+    pub fn isReadable(self: Segment) bool {
+        return self.flags & pf_r != 0;
+    }
 };
 
 /// A relative relocation of the image.
