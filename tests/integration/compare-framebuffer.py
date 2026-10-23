@@ -32,7 +32,7 @@ def compare(before, after, old_x, old_y, new_x, new_y):
             and 0 <= old_y < height and 0 <= new_y < height):
         raise ValueError("window position outside framebuffer")
 
-    front_width, front_height = width // 2, height // 3
+    # A clamped movement must not repaint or alter any pixel. Compare the\n    # complete PPM payload before sampling scene colors: at (0, 0), the\n    # front window covers the usual background sample.\n    if (old_x, old_y) == (new_x, new_y):\n        if original != updated:\n            first = next(i for i, (a, b) in enumerate(zip(original, updated)) if a != b)\n            raise ValueError(f"framebuffer changed despite clamped movement at byte {first}")\n        print(f"ok: clamped framebuffer unchanged ({old_x},{old_y}), {width}x{height}")\n        return\n\n    front_width, front_height = width // 2, height // 3
     back_rect = (width // 8, height // 8, width // 2, height // 2)
     front_before = (old_x, old_y, front_width, front_height)
     front_after = (new_x, new_y, front_width, front_height)
