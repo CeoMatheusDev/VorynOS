@@ -213,6 +213,18 @@ pub const Number = struct {
     /// removed from the queue and the call answers with the error of the
     /// timeout. The message that arrives later stays in the queue.
     pub const receive_timeout: u64 = 11;
+    /// Open a file in the RAMFS filesystem.
+    pub const fs_open: u64 = 13;
+    /// Close a file in the RAMFS filesystem.
+    pub const fs_close: u64 = 14;
+    /// Read from a file in the RAMFS filesystem.
+    pub const fs_read: u64 = 15;
+    /// Write to a file in the RAMFS filesystem.
+    pub const fs_write: u64 = 16;
+    /// Create a file in the RAMFS filesystem.
+    pub const fs_create: u64 = 17;
+    /// Make a directory in the RAMFS filesystem.
+    pub const fs_mkdir: u64 = 18;
 };
 
 /// The result that the kernel answers to the call of the probe.
@@ -495,6 +507,30 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
                 frame.rax,
                 timeout,
             });
+        },
+        Number.fs_open => {
+            frame.rax = failure(Error.unknown_call);
+            serial.printLine("[VNK] syscall {d} from {s} fs_open placeholder", .{ number, caller });
+        },
+        Number.fs_close => {
+            frame.rax = failure(Error.unknown_call);
+            serial.printLine("[VNK] syscall {d} from {s} fs_close placeholder", .{ number, caller });
+        },
+        Number.fs_read => {
+            frame.rax = failure(Error.unknown_call);
+            serial.printLine("[VNK] syscall {d} from {s} fs_read placeholder", .{ number, caller });
+        },
+        Number.fs_write => {
+            frame.rax = failure(Error.unknown_call);
+            serial.printLine("[VNK] syscall {d} from {s} fs_write placeholder", .{ number, caller });
+        },
+        Number.fs_create => {
+            frame.rax = failure(Error.unknown_call);
+            serial.printLine("[VNK] syscall {d} from {s} fs_create placeholder", .{ number, caller });
+        },
+        Number.fs_mkdir => {
+            frame.rax = failure(Error.unknown_call);
+            serial.printLine("[VNK] syscall {d} from {s} fs_mkdir placeholder", .{ number, caller });
         },
         Number.grant => {
             frame.rax = grant(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
