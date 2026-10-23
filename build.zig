@@ -371,6 +371,13 @@ pub fn build(b: *std.Build) void {
     qemu_test_step.dependOn(&image_step.step);
     qemu_test_step.dependOn(&qemu_test.step);
 
+    const interactive_test_step = b.step("qemu-interactive-test", "Verify persistent PS/2 graphics input in QEMU");
+    const interactive_test = b.addSystemCommand(&.{ "bash", "tests/integration/interactive-qemu.sh" });
+    interactive_test.addPrefixedFileArg("--image=", image_path);
+    interactive_test.has_side_effects = true;
+    interactive_test.step.dependOn(&image_step.step);
+    interactive_test_step.dependOn(&interactive_test.step);
+
     const qemu_run_step = b.step("qemu", "Boot the image in QEMU");
     const qemu_run = b.addSystemCommand(&.{ "bash", "scripts/qemu-run.sh" });
     qemu_run.addPrefixedFileArg("--image=", image_path);
