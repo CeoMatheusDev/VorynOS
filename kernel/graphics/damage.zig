@@ -114,3 +114,34 @@ test "tracker falls back to full redraw when capacity is exhausted" {
     try std.testing.expectEqualSlices(u8, &.{ 5, 5, 5, 5 }, pixels[0..4]);
     try std.testing.expect(!tracker.full);
 }
+
+test "F6.10 successive moves restore background and preserve overlapping back window" {
+    const background: [4]u8 = .{ 0, 0, 0, 0 };
+    const back: [4]u8 = .{ 1, 1, 1, 1 };
+    const front: [4]u8 = .{ 2, 2, 2, 2 };
+    var pixels: [96]u8 = @splat(0);
+    var surface = try raster.Surface.init(&pixels, 6, 4, 24);
+    var windows = [_]Window{
+        .{ .x = 1, .y = 1, .width = 3, .height = 2, .color = back },
+        .{ .x = 2, .y = 1, .width = 2, .height = 2, .color = front },
+    };
+    const bounds: Rect = .{ .x = 0, .y = 0, .width = 6, .height = 4 };
+    compositor.compose(&surface, background, &windows);
+
+    const positions = [_][2]usize{ .{ 4, 1 }, .{ 0, 0 }, .{ 2, 1 }, .{ 3, 2 } };
+    for (positions) |position| {
+        var next = windows[1];
+        next.x = position[0];
+        next.y = position[1];
+        var tracker: Tracker = .{};
+        updateWindow(&tracker, bounds, &windows[1], next);
+        try std.testing.expect(tracker.redraw(&surface, background, &windows) > 0);
+
+        // Oraculo independente: recomposicao completa deve produzir os
+        // mesmos pixels que a recomposicao incremental em cada movimento.
+        var reference_pixels: [96]u8 = @splat(0);
+        var reference = try raster.Surface.init(&reference_pixels, 6, 4, 24);
+        compositor.compose(&reference, background, &windows);
+        try std.testing.expectEqualSlices(u8, &reference_pixels, &pixels);
+    }
+}
