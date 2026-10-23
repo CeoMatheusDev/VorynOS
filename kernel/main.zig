@@ -54,6 +54,7 @@ const native_image = @import("native_image.zig");
 const toolchain_app = @import("native_app");
 const raster = @import("graphics/raster.zig");
 const compositor = @import("graphics/compositor.zig");
+const damage = @import("graphics/damage.zig");
 
 /// Version of the kernel, reported on the console.
 const kernel_version = "0.1.0-dev.1";
@@ -786,12 +787,21 @@ fn presentGraphicsDemo() void {
     const background: [4]u8 = if (is_bgr) .{ 0x20, 0x17, 0x10, 0 } else .{ 0x10, 0x17, 0x20, 0 };
     const front: [4]u8 = if (is_bgr) .{ 0xb0, 0x86, 0x30, 0 } else .{ 0x30, 0x86, 0xb0, 0 };
     const back: [4]u8 = if (is_bgr) .{ 0x70, 0x36, 0x1e, 0 } else .{ 0x1e, 0x36, 0x70, 0 };
-    const windows = [_]compositor.Window{
+    var windows = [_]compositor.Window{
         .{ .x = width / 8, .y = height / 8, .width = width / 2, .height = height / 2, .color = back },
         .{ .x = width / 4, .y = height / 4, .width = width / 2, .height = height / 3, .color = front },
     };
     compositor.compose(&surface, background, &windows);
     serial.printLine("[VNK] graphics: framebuffer scene presented ({d}x{d})", .{ width, height });
+
+    // F6.5: exercita a atualização incremental sobre o framebuffer real.
+    // O deslocamento é limitado ao tamanho da tela e não depende de entrada.
+    var tracker: damage.Tracker = .{};
+    var moved = windows[1];
+    moved.x = @min(width - 1, moved.x +| @max(@as(usize, 1), width / 16));
+    damage.updateWindow(&tracker, .{ .x = 0, .y = 0, .width = width, .height = height }, &windows[1], moved);
+    const repainted = tracker.redraw(&surface, background, &windows);
+    serial.printLine("[VNK] graphics: incremental redraw {d} pixels", .{repainted});
 }
 
 /// Prepares the heap of the kernel and verifies that it works.
