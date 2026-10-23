@@ -158,7 +158,7 @@ trap 'cleanup_qemu; rm -rf "$WORK_DIRECTORY"' EXIT
 
 # The script injects I during boot, then RIGHT only after the persistent
 # loop marker. This distinguishes the permanent loop from the boot pump.
-if ! python3 - "$SERIAL_LOG" "$MONITOR_SOCKET" "$QEMU_PID" "$TIMEOUT" "$WORK_DIRECTORY" <<'PY'
+if ! python3 - "$SERIAL_LOG" "$MONITOR_SOCKET" "$QEMU_PID" "$TIMEOUT" "$WORK_DIRECTORY" "$EDGES" <<'PY'
 import os
 import re
 import socket
