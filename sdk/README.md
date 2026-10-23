@@ -26,3 +26,32 @@ zig build qemu-test
 ```
 
 Não publicar como versão estável antes de validar esses comandos.
+
+## Incrementos F4–F6 publicados nesta branch
+
+- **F4:** `user/hello.zig` exercita `fs_open`, `fs_read` e
+  `fs_close` sobre `/apps/hello.txt` por meio do SDK.
+  A aplicação encerra com código não zero em caso de falha.
+- **F5:** teste de `ping` na aplicação nativa; catálogo tipado dos
+  códigos de erro da ABI em `sdk/src/syscall.zig`.
+- **F6:** `kernel/graphics/raster.zig` oferece desenho em superfícies
+  lineares de 32 bits e testes host de limites e clipping.
+  Ainda não está conectado ao framebuffer do boot.
+
+### Critérios para revisão
+
+Executar no Fedora, com Zig 0.17.0:
+
+```sh
+git switch feat/native-sdk
+git pull --ff-only origin feat/native-sdk
+zig build
+zig build test
+zig build qemu-test
+```
+
+Verificar que `toolchain ELF` continua aparecendo no console e que a
+aplicação termina com código zero. O teste de boot atual verifica a
+execução, mas não identifica separadamente cada falha do SDK.
+**Não considerar F4–F6 concluídas** com base apenas neste incremento:
+faltam persistência, VFSX, compositor, entrada e janelas.
