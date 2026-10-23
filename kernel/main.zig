@@ -56,6 +56,12 @@ const raster = @import("graphics/raster.zig");
 const compositor = @import("graphics/compositor.zig");
 const damage = @import("graphics/damage.zig");
 const ps2 = @import("input/ps2.zig");
+const keyboard_motion = @import("graphics/keyboard_motion.zig");
+const keyboard = @import("input/keyboard.zig");
+
+var graphics_front_x: usize = 0;
+var graphics_front_y: usize = 0;
+var graphics_ready: bool = false;
 
 /// Version of the kernel, reported on the console.
 const kernel_version = "0.1.0-dev.1";
@@ -803,6 +809,39 @@ fn presentGraphicsDemo() void {
     damage.updateWindow(&tracker, .{ .x = 0, .y = 0, .width = width, .height = height }, &windows[1], moved);
     const repainted = tracker.redraw(&surface, background, &windows);
     serial.printLine("[VNK] graphics: incremental redraw {d} pixels", .{repainted});
+    graphics_front_x = windows[1].x;
+    graphics_front_y = windows[1].y;
+    graphics_ready = true;
+}
+
+
+fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
+    if (!graphics_ready) return;
+    const framebuffer = boot_info.framebuffer;
+    const width: usize = @intCast(framebuffer.width);
+    const height: usize = @intCast(framebuffer.height);
+    const pitch: usize = @intCast(framebuffer.pitch);
+    const size: usize = @intCast(framebuffer.size);
+    const ptr: [*]u8 = @ptrFromInt(framebuffer.base);
+    var surface = raster.Surface.init(ptr[0..size], width, height, pitch) catch return;
+    const masks_absent = framebuffer.red_mask == 0 and framebuffer.green_mask == 0 and framebuffer.blue_mask == 0;
+    const is_bgr = if (masks_absent) framebuffer.pixel_format == .bgr32 else framebuffer.red_mask == 0x00ff0000;
+    const background: [4]u8 = if (is_bgr) .{ 0x20, 0x17, 0x10, 0 } else .{ 0x10, 0x17, 0x20, 0 };
+    const front: [4]u8 = if (is_bgr) .{ 0xb0, 0x86, 0x30, 0 } else .{ 0x30, 0x86, 0xb0, 0 };
+    const back: [4]u8 = if (is_bgr) .{ 0x70, 0x36, 0x1e, 0 } else .{ 0x1e, 0x36, 0x70, 0 };
+    var windows = [_]compositor.Window{
+        .{ .x = width / 8, .y = height / 8, .width = width / 2, .height = height / 2, .color = back },
+        .{ .x = graphics_front_x, .y = graphics_front_y, .width = width / 2, .height = height / 3, .color = front },
+    };
+    var next = windows[1];
+    const bounds: compositor.Rect = .{ .x = 0, .y = 0, .width = width, .height = height };
+    if (!keyboard_motion.move(&next, bounds, event, @max(@as(usize, 1), width / 32))) return;
+    var tracker: damage.Tracker = .{};
+    damage.updateWindow(&tracker, bounds, &windows[1], next);
+    const pixels = tracker.redraw(&surface, background, &windows);
+    graphics_front_x = next.x;
+    graphics_front_y = next.y;
+    serial.printLine("[VNK] graphics: keyboard move x={d} y={d} redraw={d} pixels", .{ next.x, next.y, pixels });
 }
 
 /// Prepares the heap of the kernel and verifies that it works.
@@ -862,6 +901,7 @@ fn installTimer() void {
     var released: usize = 0;
     while (ps2.popIrqsDisabled()) |event| {
         key_count += 1;
+        applyKeyboardGraphics(event);
         if (event.pressed) {
             pressed += 1;
         } else {
