@@ -69,3 +69,22 @@ Os testes de sobreposição, visibilidade e clipping estão ligados ao
 incremental (dirty rectangles), eventos de entrada e uma API de janelas
 para processos usuários. **Não confundir o compositor de host com uma
 interface gráfica em execução no VorynOS.**
+
+### F6.2 — Apresentação no framebuffer UEFI
+
+O kernel agora chama `presentGraphicsDemo()` imediatamente após
+`paging.activate()` e a sondagem de escrita no framebuffer. A rotina
+valida dimensões, limites da região mapeada, formato de 32 bpp e máscaras
+BGRA antes de desenhar uma cena estática com duas janelas sobrepostas.
+
+A saída esperada em hardware compatível é:
+
+```text
+[VNK] graphics: framebuffer scene presented (2048x2048)
+```
+
+Caso a geometria ou as máscaras não sejam suportadas, o kernel registra
+o motivo e continua sem tentar desenhar. O teste automatizado atual não
+inspeciona pixels; verificar visualmente em `zig build qemu` e executar
+`zig build test` e `zig build qemu-test`. Esta integração não foi
+compilada nem executada no ambiente do agente.
