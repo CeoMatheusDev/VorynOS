@@ -168,6 +168,7 @@ pid = int(pid_text)
 deadline = time.monotonic() + int(timeout_text)
 state = "boot"
 baseline = 0
+old_position = None
 before_path = os.path.join(work_dir, "before.ppm")
 after_path = os.path.join(work_dir, "after.ppm")
 
@@ -203,7 +204,9 @@ while time.monotonic() < deadline:
     elif state == "interactive" and "[VNK] graphics: interactive event loop ready" in log:
         if "VORYN-KERNEL-READY" not in log:
             sys.exit("FAIL: interactive loop started before readiness")
-        baseline = len(re.findall(r"\[VNK\] graphics: keyboard move x=", log))
+        positions = re.findall(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)", log)
+        old_position = tuple(map(int, positions[-1])) if positions else None
+        baseline = len(positions)
         try:
             screenshot(before_path)
             monitor_command("sendkey right 50")
@@ -213,12 +216,19 @@ while time.monotonic() < deadline:
     elif state == "movement":
         count = len(re.findall(r"\[VNK\] graphics: keyboard move x=", log))
         if count > baseline:
+            positions = re.findall(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)", log)
+            new_position = tuple(map(int, positions[-1]))
+            if old_position is None:
+                # The initial presentation shifts the front window by width/16.
+                # Screen geometry is read from the screenshot comparator below.
+                sys.exit("FAIL: initial keyboard position unavailable")
             if "[VNK] EXCEPTION 6: invalid opcode" in log:
                 sys.exit("FAIL: fatal self-test executed in interactive mode")
             screenshot(after_path)
             import subprocess
             result = subprocess.run(
-                [sys.executable, "tests/integration/compare-framebuffer.py", before_path, after_path],
+                [sys.executable, "tests/integration/compare-framebuffer.py", before_path, after_path,
+                 *map(str, (*old_position, *new_position))],
                 check=False, capture_output=True, text=True,
             )
             print(result.stdout, end="")
