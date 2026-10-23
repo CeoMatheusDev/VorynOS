@@ -10,7 +10,7 @@
 // SPDX-License-Identifier: GPL-3.0-only                                  //
 //************************************************************************//
 
-#! The superblock of the file system.
+//! The superblock of the file system.
 //!
 //! The superblock describes the file system layout and provides
 //! information about the total size, block size, and free blocks.
@@ -51,5 +51,5 @@ pub const SuperblockOnDisk = struct {
     /// File system flags
     flags: u64 = 0,
     /// Version of the file system
-    version: [16]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    version: [16]u8 = @splat(0),
 };

@@ -10,14 +10,14 @@
 // SPDX-License-Identifier: GPL-3.0-only                                  //
 //************************************************************************//
 
-#! A directory entry representing a file or subdirectory in a directory.
+//! A directory entry representing a file or subdirectory in a directory.
 //!
 //! Directory entries are stored compactly in the file system.
 
 const std = @import("std");
 
 /// The maximum length of a file name in the file system.
-pub const MAX_NAME_LEN: u32 = 255;
+pub const MAX_NAME_LEN: usize = 255;
 
 /// A directory entry.
 pub const DirEntryOnDisk = struct {
@@ -26,5 +26,5 @@ pub const DirEntryOnDisk = struct {
     /// Length of the name (not counting null terminator)
     name_len: u8,
     /// File name (null-terminated, padded to MAX_NAME_LEN)
-    name: [MAX_NAME_LEN + 1]u8 = [0xff; MAX_NAME_LEN + 1],
+    name: [MAX_NAME_LEN + 1]u8 = @splat(0xff),
 };

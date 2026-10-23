@@ -84,12 +84,18 @@ pub fn writeCr4(value: u64) void {
 }
 
 /// Invalidates the TLB entry that maps the given virtual address.
+///
+/// The instruction is privileged and the host unit tests never execute it.
+/// The assembly function exists in the image of the kernel; a host build
+/// resolves the call to a no-op, so that the modules that describe the
+/// tables can still be tested on the host.
 pub fn invlpg(address: u64) void {
-    asm volatile ("invlpg (%[address])"
-        :
-        : [address] "r" (address),
-        : .{ .memory = true });
+    if (comptime @import("builtin").os.tag == .freestanding) {
+        voryn_invlpg(address);
+    }
 }
+
+extern fn voryn_invlpg(address: u64) void;
 
 /// Executes the `CPUID` instruction.
 pub fn cpuid(leaf: u32, subleaf: u32) [4]u32 {
@@ -135,6 +141,55 @@ pub fn writeMsr(msr: u32, value: u64) void {
           [high] "{edx}" (high),
           [msr] "{ecx}" (msr),
         : .{ .memory = true });
+}
+
+/// The model specific register of the extended features of the processor.
+pub const msr_efer: u32 = 0xC000_0080;
+
+/// The bit of `EFER` that enables the no-execute bit of the page tables.
+pub const efer_nxe: u64 = 1 << 11;
+
+/// Reads the extended features register.
+pub fn readEfer() u64 {
+    return readMsr(msr_efer);
+}
+
+/// Writes the extended features register.
+pub fn writeEfer(value: u64) void {
+    writeMsr(msr_efer, value);
+}
+
+/// True when the processor reports the no-execute feature.
+///
+/// `CPUID` leaf `0x8000_0001` reports the feature in bit 20 of `EDX`. The
+/// extended leaf is only valid when the processor reports a maximum leaf of
+/// at least `0x8000_0001`.
+pub fn supportsNoExecute() bool {
+    const extended = cpuid(0x8000_0000, 0);
+    if (extended[0] < 0x8000_0001) return false;
+
+    const features = cpuid(0x8000_0001, 0);
+    return (features[3] & (1 << 20)) != 0;
+}
+
+/// Enables the no-execute bit of the page tables.
+///
+/// The bit of the page table entry is reserved until `EFER.NXE` is set, and
+/// a reserved bit raises a page fault. The function returns false when the
+/// processor does not support the feature, and leaves the register alone in
+/// that case.
+pub fn enableNoExecute() bool {
+    if (!supportsNoExecute()) return false;
+
+    const efer = readEfer();
+    if ((efer & efer_nxe) == 0) {
+        writeEfer(efer | efer_nxe);
+    }
+
+    // The register is read again: a write that the processor ignored would
+    // otherwise leave the kernel believing that the feature is on, and the
+    // first data page would fault.
+    return (readEfer() & efer_nxe) != 0;
 }
 
 /// Enables interrupts by setting the interrupt enable flag.

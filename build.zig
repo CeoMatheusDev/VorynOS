@@ -69,6 +69,46 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(boot_executable);
 
     // ------------------------------------------------------------------
+    // Native application produced by the toolchain.
+    //
+    // The application is a freestanding PIE, compiled by Zig. A small tool
+    // turns the resulting ELF into a Zig source file that exports the
+    // bytes, and the kernel imports that module to write the file into the
+    // RamFS. The loader does not know that the image came from a compiler.
+    // ------------------------------------------------------------------
+    const user_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .freestanding,
+        .abi = .none,
+    });
+    const user_module = b.createModule(.{
+        .root_source_file = b.path("user/hello.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+        .single_threaded = true,
+        .pic = true,
+    });
+    const user_executable = b.addExecutable(.{
+        .name = "voryn-native-hello",
+        .root_module = user_module,
+    });
+    user_executable.pie = true;
+
+    const converter_module = b.createModule(.{
+        .root_source_file = b.path("tools/bin2zig.zig"),
+        .target = b.resolveTargetQuery(.{}),
+        .optimize = .ReleaseFast,
+    });
+    const converter = b.addExecutable(.{
+        .name = "bin2zig",
+        .root_module = converter_module,
+    });
+
+    const conversion = b.addRunArtifact(converter);
+    conversion.addFileArg(user_executable.getEmittedBin());
+    const native_app_output = conversion.addOutputFileArg("native_app.zig");
+
+    // ------------------------------------------------------------------
     // Voryn Nucleus Kernel.
     // ------------------------------------------------------------------
     const kernel_target = b.resolveTargetQuery(.{
@@ -90,17 +130,22 @@ pub fn build(b: *std.Build) void {
         .error_tracing = false,
     });
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/entry.s"));
+    kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/cpu.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/segment.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/interrupt.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/task.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/syscall.s"));
     kernel_module.addImport("voryn_shared", shared);
+    kernel_module.addAnonymousImport("native_app", .{
+        .root_source_file = native_app_output,
+    });
     const kernel_executable = b.addExecutable(.{
         .name = "voryn-kernel",
         .root_module = kernel_module,
     });
     kernel_executable.entry = .{ .symbol_name = "voryn_kernel_entry" };
     kernel_executable.pie = true;
+    kernel_executable.step.dependOn(&conversion.step);
     b.installArtifact(kernel_executable);
 
     // ------------------------------------------------------------------
@@ -206,6 +251,21 @@ pub fn build(b: *std.Build) void {
         .root_module = ipc_test_module,
     });
     unit_test_step.dependOn(&b.addRunArtifact(ipc_tests).step);
+
+    // The RamFS and the ELF64 load planner are free of architecture
+    // specific code. They share a root at the top of the kernel tree
+    // because the loader imports the file system.
+    const host_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/host_root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    host_test_module.addImport("voryn_shared", shared);
+    const host_tests = b.addTest(.{
+        .name = "fs-loader-tests",
+        .root_module = host_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(host_tests).step);
 
     // The steps that use the image depend on the step that builds it: the
     // test has to run against the image of the tree, and not against the

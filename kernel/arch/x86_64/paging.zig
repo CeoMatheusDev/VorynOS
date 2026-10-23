@@ -56,6 +56,34 @@ pub const Flags = struct {
     pub const cache_disabled: u64 = 1 << 4;
     /// The entry refers to a large page.
     pub const large: u64 = 1 << 7;
+    /// The page may not be executed.
+    ///
+    /// The bit is only meaningful when `EFER.NXE` is set: without the bit
+    /// of the model specific register, bit 63 is reserved and a page table
+    /// entry that carries it raises a page fault. `cpu.enableNoExecute`
+    /// turns the support on before the kernel ever sets this bit.
+    pub const no_execute: u64 = 1 << 63;
+};
+
+/// The bits of an entry that hold the physical address of the page or of
+/// the table.
+///
+/// The processor reserves the bits above the physical address width. The
+/// mask stops at bit 51, which is the largest physical address of the
+/// four level paging of x86-64, and leaves the permission bits — including
+/// the no-execute bit of bit 63 — out of the address.
+pub const address_mask: u64 = 0x000F_FFFF_FFFF_F000;
+
+/// The permissions that the kernel gives to a page of the user mode.
+///
+/// A page is never writable and executable at the same time: the planner
+/// refuses an image that asks for both, and the materializer asks for one
+/// of the two.
+pub const UserPageFlags = struct {
+    /// The page may be written by the user mode.
+    writable: bool = false,
+    /// The page may be executed by the user mode.
+    executable: bool = false,
 };
 
 /// A page table with 512 entries.
@@ -75,7 +103,7 @@ const level2_count = 8;
 const level1_count = 32;
 
 /// Number of address spaces of the processes that the kernel supports.
-pub const max_process_spaces = 4;
+pub const max_process_spaces = 8;
 
 /// The root tables of the address spaces of the processes.
 ///
@@ -149,6 +177,8 @@ pub const Error = error{
     OutOfTables,
     /// The address is not aligned to the size of a page.
     UnalignedPage,
+    /// The page that the caller asked to protect is not mapped for the user.
+    NotMapped,
 };
 
 /// Maps a page of the kernel, with the same address in the physical and in
@@ -201,7 +231,7 @@ fn mapPage(virtual: u64, physical: u64, flags: u64) Error!void {
     }
 
     const level1 = tableOf(level2.entries[level2_index]);
-    level1.entries[level1_index] = (physical & ~@as(u64, 0xFFF)) | flags;
+    level1.entries[level1_index] = (physical & address_mask) | flags;
 }
 
 /// The attributes of the entries of the upper levels of the hierarchy.
@@ -324,7 +354,7 @@ fn mapKernelRange(virtual: u64, length: u64) Error!void {
 
         while (address < chunk_end) : (address += page_size) {
             const index = (address >> 12) & 511;
-            level1.entries[index] = (address & ~@as(u64, 0xFFF)) | Flags.present | Flags.writable;
+            level1.entries[index] = (address & address_mask) | Flags.present | Flags.writable;
         }
     }
 }
@@ -443,8 +473,31 @@ pub fn createAddressSpace(window: u64) ?*AddressSpace {
 ///
 /// The page is mapped with the bit that allows the access from the third
 /// level of privilege, and the table of the first level of the space is the
-/// one that receives the entry.
+/// one that receives the entry. The legacy form keeps the page writable and
+/// executable, which is what the embedded program of the first processes
+/// used; a process loaded from an ELF uses `mapUserPageInFlags` and gets
+/// the permissions of the segment.
 pub fn mapUserPageIn(space: *AddressSpace, virtual: u64, physical: u64) Error!void {
+    return mapUserPageInFlags(space, virtual, physical, .{
+        .writable = true,
+        .executable = true,
+    });
+}
+
+/// Maps a page of the user mode with explicit permissions.
+///
+/// The caller is responsible for the temporary permissions of a page that
+/// receives a copy: a page of code is mapped writable and **not**
+/// executable while the kernel copies the file into it, and is protected
+/// with `protectUserPageIn` before the task starts. The function does not
+/// flush the TLB; a page that is mapped for the first time has no stale
+/// entry, and a page whose permissions change has to be protected.
+pub fn mapUserPageInFlags(
+    space: *AddressSpace,
+    virtual: u64,
+    physical: u64,
+    flags: UserPageFlags,
+) Error!void {
     if (virtual & (page_size - 1) != 0) return error.UnalignedPage;
     if (physical & (page_size - 1) != 0) return error.UnalignedPage;
 
@@ -459,12 +512,103 @@ pub fn mapUserPageIn(space: *AddressSpace, virtual: u64, physical: u64) Error!vo
     // level of the space. A virtual address outside the window lands in a
     // table of the kernel, and writing the entry in the private table would
     // report a success for a page that the space does not describe.
-    if ((entry & ~@as(u64, 0xFFF)) != addressOf(space.level1)) {
+    if ((entry & address_mask) != addressOf(space.level1)) {
         return error.OutOfTables;
     }
 
-    space.level1.entries[level1_index] =
-        (physical & ~@as(u64, 0xFFF)) | Flags.present | Flags.writable | Flags.user;
+    space.level1.entries[level1_index] = (physical & address_mask) | userPageEntryFlags(flags);
+}
+
+/// Changes the permissions of a page that is already mapped for the user.
+///
+/// The physical address and the presence of the page are preserved, and the
+/// TLB entry of the address is invalidated: the processor may have cached
+/// the old permissions when the kernel copied the content of the page.
+pub fn protectUserPageIn(
+    space: *AddressSpace,
+    virtual: u64,
+    flags: UserPageFlags,
+) Error!void {
+    if (virtual & (page_size - 1) != 0) return error.UnalignedPage;
+
+    const level2_index = (virtual >> 21) & 511;
+    const level1_index = (virtual >> 12) & 511;
+
+    const entry2 = space.level2.entries[level2_index];
+    if (entry2 & Flags.present == 0) return error.OutOfTables;
+    if (entry2 & Flags.large != 0) return error.OutOfTables;
+    if ((entry2 & address_mask) != addressOf(space.level1)) {
+        return error.OutOfTables;
+    }
+
+    const entry1 = space.level1.entries[level1_index];
+    if (entry1 & Flags.present == 0 or entry1 & Flags.user == 0) {
+        return error.NotMapped;
+    }
+
+    space.level1.entries[level1_index] = (entry1 & address_mask) | userPageEntryFlags(flags);
+    cpu.invlpg(virtual);
+}
+
+/// Removes the mapping of a page of the user mode.
+///
+/// The materializer uses the function when it has to undo a partial load.
+/// The TLB entry is invalidated before the caller returns the physical page
+/// to the allocator, so that the processor cannot keep writing through a
+/// stale translation.
+pub fn unmapUserPageIn(space: *AddressSpace, virtual: u64) Error!void {
+    if (virtual & (page_size - 1) != 0) return error.UnalignedPage;
+
+    const level2_index = (virtual >> 21) & 511;
+    const level1_index = (virtual >> 12) & 511;
+
+    const entry2 = space.level2.entries[level2_index];
+    if (entry2 & Flags.present == 0) return error.OutOfTables;
+    if (entry2 & Flags.large != 0) return error.OutOfTables;
+    if ((entry2 & address_mask) != addressOf(space.level1)) {
+        return error.OutOfTables;
+    }
+
+    const entry1 = space.level1.entries[level1_index];
+    if (entry1 & Flags.present == 0 or entry1 & Flags.user == 0) {
+        return error.NotMapped;
+    }
+
+    space.level1.entries[level1_index] = 0;
+    cpu.invlpg(virtual);
+}
+
+/// Reads the permissions of a mapped page of the user mode.
+///
+/// The function is the verification side of the materializer: the boot
+/// report reads the entries that the hardware will use, instead of trusting
+/// the flags that the caller asked for.
+pub fn permissionsIn(space: *const AddressSpace, virtual: u64) ?UserPageFlags {
+    if (virtual & (page_size - 1) != 0) return null;
+
+    const level2_index = (virtual >> 21) & 511;
+    const level1_index = (virtual >> 12) & 511;
+
+    const entry2 = space.level2.entries[level2_index];
+    if (entry2 & Flags.present == 0) return null;
+    if (entry2 & Flags.large != 0) return null;
+    if ((entry2 & address_mask) != addressOf(space.level1)) return null;
+
+    const entry1 = space.level1.entries[level1_index];
+    if (entry1 & Flags.present == 0 or entry1 & Flags.user == 0) return null;
+
+    return .{
+        .writable = entry1 & Flags.writable != 0,
+        .executable = entry1 & Flags.no_execute == 0,
+    };
+}
+
+/// Encodes the permissions of a page of the user mode.
+fn userPageEntryFlags(flags: UserPageFlags) u64 {
+    var entry = Flags.present | Flags.user;
+    if (flags.writable) entry |= Flags.writable;
+    if (!flags.executable) entry |= Flags.no_execute;
+    return entry;
 }
 
 /// Makes the space of a process the active one.
@@ -551,7 +695,7 @@ fn isUserPageIn(space: *const AddressSpace, virtual: u64, writable: bool) bool {
     // the second level is the private table of the window: the entry of
     // another table belongs to the kernel, and the same index of the
     // private table would answer for a page that the space does not have.
-    if ((entry2 & ~@as(u64, 0xFFF)) != addressOf(space.level1)) return false;
+    if ((entry2 & address_mask) != addressOf(space.level1)) return false;
 
     const entry1 = space.level1.entries[level1_index];
     if (entry1 & Flags.present == 0) return false;
@@ -591,7 +735,7 @@ pub fn describe(virtual: u64) void {
     voryn.serial.printLine("[DBG]        l1[{d}] = 0x{x} (physical 0x{x}, user {})", .{
         level1_index,
         entry1,
-        entry1 & ~@as(u64, 0xFFF),
+        entry1 & address_mask,
         (entry1 & Flags.user) != 0,
     });
 }
@@ -680,7 +824,7 @@ fn allocateLevel1() ?*PageTable {
 
 /// Returns the table that an entry of a higher level points at.
 fn tableOf(entry: u64) *PageTable {
-    const address = entry & ~@as(u64, 0xFFF);
+    const address = entry & address_mask;
     return @ptrFromInt(address);
 }
 
@@ -763,4 +907,70 @@ test "a large mapping that crosses a gigabyte is refused" {
         2 * page_size,
         Flags.present | Flags.writable,
     ));
+}
+
+test "the permissions of a user page separate code from data" {
+    try setup(0x200000, 0x300000, 0, 0);
+    process_spaces_used = 0;
+
+    const window: u64 = 0x200000 - 0x4000;
+    const space = createAddressSpace(window).?;
+
+    // The code page is readable and executable, and is not writable.
+    try mapUserPageInFlags(space, window, 0x400000, .{
+        .writable = false,
+        .executable = true,
+    });
+    // The data page is writable, and the no-execute bit keeps it from being
+    // executed even when the bytes of the file are not code.
+    try mapUserPageInFlags(space, window + page_size, 0x401000, .{
+        .writable = true,
+        .executable = false,
+    });
+
+    const code_entry = space.level1.entries[(window >> 12) & 511];
+    try testing.expect(code_entry & Flags.present != 0);
+    try testing.expect(code_entry & Flags.user != 0);
+    try testing.expect(code_entry & Flags.writable == 0);
+    try testing.expect(code_entry & Flags.no_execute == 0);
+    try testing.expect((code_entry & address_mask) == 0x400000);
+
+    const data_entry = space.level1.entries[((window + page_size) >> 12) & 511];
+    try testing.expect(data_entry & Flags.present != 0);
+    try testing.expect(data_entry & Flags.user != 0);
+    try testing.expect(data_entry & Flags.writable != 0);
+    try testing.expect(data_entry & Flags.no_execute != 0);
+    try testing.expect((data_entry & address_mask) == 0x401000);
+
+    // The read-only page is not accepted as the destination of a write, and
+    // the writable page is not accepted as code.
+    try testing.expect(isUserRangeIn(space, window, page_size, false));
+    try testing.expect(!isUserRangeIn(space, window, page_size, true));
+    try testing.expect(isUserRangeIn(space, window + page_size, page_size, true));
+
+    const code = permissionsIn(space, window).?;
+    try testing.expect(!code.writable);
+    try testing.expect(code.executable);
+    const data = permissionsIn(space, window + page_size).?;
+    try testing.expect(data.writable);
+    try testing.expect(!data.executable);
+
+    // The materializer removes a partial mapping with the same hierarchy
+    // check, and the page is gone from the space afterwards.
+    try unmapUserPageIn(space, window);
+    try testing.expect(permissionsIn(space, window) == null);
+    try testing.expectError(error.NotMapped, unmapUserPageIn(space, window));
+}
+
+test "the encoding of the user page flags never sets writable and executable" {
+    const code = userPageEntryFlags(.{ .writable = false, .executable = true });
+    const data = userPageEntryFlags(.{ .writable = true, .executable = false });
+    const read_only = userPageEntryFlags(.{ .writable = false, .executable = false });
+
+    try testing.expect(code & Flags.writable == 0);
+    try testing.expect(code & Flags.no_execute == 0);
+    try testing.expect(data & Flags.writable != 0);
+    try testing.expect(data & Flags.no_execute != 0);
+    try testing.expect(read_only & Flags.writable == 0);
+    try testing.expect(read_only & Flags.no_execute != 0);
 }

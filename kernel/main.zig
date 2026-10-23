@@ -47,6 +47,11 @@ const heap = @import("memory/heap.zig");
 const capability = @import("security/capability.zig");
 const physical = @import("memory/physical.zig");
 const scheduler = @import("task/scheduler.zig");
+const fs = @import("fs/fs.zig");
+const elf_loader = @import("elf_loader.zig");
+const elf_materializer = @import("elf_materializer.zig");
+const native_image = @import("native_image.zig");
+const toolchain_app = @import("native_app");
 
 /// Version of the kernel, reported on the console.
 const kernel_version = "0.1.0-dev.1";
@@ -134,6 +139,39 @@ var second_task_stack: [task_stack_size]u8 align(16) = undefined;
 /// The stack of the kernel of the third process.
 var third_task_stack: [task_stack_size]u8 align(16) = undefined;
 
+/// The address space of the native process loaded from the RamFS.
+var native_space: ?*paging.AddressSpace = null;
+
+/// The entry point of the native process, already in the window.
+var native_entry: u64 = 0;
+
+/// The task of the native process.
+var native_task: ?*scheduler.Task = null;
+
+/// The address space of the toolchain process.
+var toolchain_space: ?*paging.AddressSpace = null;
+
+/// The entry point of the toolchain process.
+var toolchain_entry: u64 = 0;
+
+/// The task of the toolchain process.
+var toolchain_task: ?*scheduler.Task = null;
+
+/// The stack of the kernel of the toolchain task.
+var toolchain_task_stack: [task_stack_size]u8 align(16) = undefined;
+
+/// The stack of the kernel of the native task.
+var native_task_stack: [task_stack_size]u8 align(16) = undefined;
+
+/// The buffer that receives the native image read from the RamFS.
+var native_image_buffer: [native_image.max_image_size]u8 = undefined;
+
+/// The buffer that receives the toolchain image read from the RamFS.
+var toolchain_image_buffer: [toolchain_app.bytes.len]u8 = undefined;
+
+/// The number of bytes of the native image.
+var native_image_length: usize = 0;
+
 /// The virtual address of the program of the task that runs in user mode.
 fn userCodeAddress() u64 {
     return user_window_base + usermode.code_offset;
@@ -147,6 +185,21 @@ fn userDataAddress() u64 {
 /// The virtual address of the stack of the task that runs in user mode.
 fn userStackAddress() u64 {
     return user_window_base + usermode.stack_offset;
+}
+
+/// The virtual address of the data segment of the native image.
+fn nativeDataAddress() u64 {
+    return user_window_base + native_image.data_virtual_address;
+}
+
+/// The virtual address of the marker that the native program writes.
+fn nativeMarkerAddress() u64 {
+    return nativeDataAddress() + native_image.data_marker_offset;
+}
+
+/// The virtual address of the word that the relative relocation fills.
+fn nativeRelocationAddress() u64 {
+    return nativeDataAddress() + native_image.relocation_target_offset;
 }
 
 /// The value that the program of the user mode writes in its page of data.
@@ -398,6 +451,17 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
 
     reportProcessor();
 
+    // The pages of data and of the stack are marked as not executable in
+    // the page tables. The bit is reserved until the processor enables it,
+    // therefore the feature is turned on before the first user page is
+    // mapped, and the kernel does not boot without it: W^X would be a
+    // promise of the planner that the hardware would not enforce.
+    if (!cpu.enableNoExecute()) {
+        serial.printLine("[VNK] FATAL: the processor does not support the no-execute bit", .{});
+        port.haltForever();
+    }
+    serial.printLine("[VNK] paging: no-execute enabled", .{});
+
     // The information of the firmware is copied into the memory of the
     // kernel, because the page tables of the firmware are replaced later and
     // the structures that they describe are not mapped anymore.
@@ -414,10 +478,18 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     buildPageTables(boot);
     activatePageTables();
     installHeap();
+
+    // The RamFS is initialized before the processes: the native process is
+    // loaded from `/apps/hello.elf`, and the file has to exist when the
+    // materializer reads it.
+    installFs();
+
     // The task of the user mode is prepared after the tables are active:
     // the program is copied through them, and the tables of the firmware
     // would place the copy in another physical page.
     installUserTask();
+    installNativeProcess();
+    installToolchainProcess();
     // The system call of the user mode does not go through the interrupt
     // table: the instruction `syscall` reads the entry point and the
     // segments from the registers of model.
@@ -441,9 +513,6 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     installScheduler();
     installTimer();
 
-    // Initialize the file system.
-    installFs();
-
     // The main task waits until the workers have been scheduled a few
     // times, which proves that the scheduler works.
     while (scheduler.scheduler.statisticsOf().switches < 20) {
@@ -451,6 +520,8 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     }
     reportScheduler();
     reportUserTask();
+    reportNativeTask();
+    reportToolchainTask();
     reportCapabilities();
 
     // Sentinel consumed by the automated boot test.
@@ -706,9 +777,100 @@ fn installTimer() void {
 }
 
 /// Initializes the file system.
+///
+/// The RamFS lives in the image of the kernel. The initialization creates
+/// the first directory and a file, writes the file, reads it back and
+/// compares the content: a file system that reports success without the
+/// round trip would be a claim, and not a verification.
 fn installFs() void {
-    // TODO: Implement file system initialization
-    serial.printLine("[VNK] fs: file system initialization started", .{});
+    fs.init();
+
+    _ = fs.mkdir("/apps") catch |err| {
+        serial.printLine("[VNK] FATAL: the directory /apps could not be created: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    const descriptor = fs.create(0, "/apps/hello.txt", 0o644) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/hello.txt could not be created: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    const payload = "VorynOS";
+
+    const written = fs.write(0, descriptor, payload) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/hello.txt could not be written: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (written != payload.len) {
+        serial.printLine("[VNK] FATAL: the file /apps/hello.txt accepted {d} bytes", .{written});
+        port.haltForever();
+    }
+
+    fs.close(0, descriptor) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/hello.txt could not be closed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    var buffer: [8]u8 = undefined;
+    const count = fs.readFile("/apps/hello.txt", &buffer) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/hello.txt could not be read: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (count != payload.len or !std.mem.eql(u8, buffer[0..count], payload)) {
+        serial.printLine("[VNK] FATAL: the file /apps/hello.txt did not survive the round trip", .{});
+        port.haltForever();
+    }
+
+    // The native image. The bytes are built here, written into the RamFS
+    // and read back by the loader: the file system is part of the verified
+    // path, and not a decoration around an array of the kernel.
+    const image = native_image.build(&native_image_buffer) catch |err| {
+        serial.printLine("[VNK] FATAL: the native image could not be built: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    native_image_length = image.len;
+
+    const elf_descriptor = fs.create(0, "/apps/hello.elf", 0o755) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/hello.elf could not be created: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    const elf_written = fs.write(0, elf_descriptor, image) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/hello.elf could not be written: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (elf_written != image.len) {
+        serial.printLine("[VNK] FATAL: the file /apps/hello.elf accepted {d} bytes", .{elf_written});
+        port.haltForever();
+    }
+    fs.close(0, elf_descriptor) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/hello.elf could not be closed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    serial.printLine("[VNK] fs: ramfs ready, {d} blocks free", .{fs.freeBlockCount()});
+    serial.printLine("[VNK] fs: /apps/hello.txt round trip ok ({d} bytes)", .{count});
+    serial.printLine("[VNK] fs: /apps/hello.elf installed ({d} bytes)", .{image.len});
+
+    // The application produced by the toolchain. Its bytes come from the
+    // module generated during the build, and the file goes through the same
+    // RamFS as the bootstrap image.
+    const toolchain_descriptor = fs.create(0, "/apps/toolchain.elf", 0o755) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/toolchain.elf could not be created: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    const toolchain_written = fs.write(0, toolchain_descriptor, toolchain_app.bytes[0..]) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/toolchain.elf could not be written: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (toolchain_written != toolchain_app.bytes.len) {
+        serial.printLine("[VNK] FATAL: the file /apps/toolchain.elf accepted {d} bytes", .{toolchain_written});
+        port.haltForever();
+    }
+    fs.close(0, toolchain_descriptor) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/toolchain.elf could not be closed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    serial.printLine("[VNK] fs: /apps/toolchain.elf installed ({d} bytes)", .{toolchain_app.bytes.len});
 }
 
 /// Creates the capability of the channel of the VNX and gives it to the
@@ -823,6 +985,194 @@ fn installUserTask() void {
     }
 }
 
+/// Creates the process that runs the native ELF image from the RamFS.
+///
+/// The file is read back from the file system and planned with the window
+/// of the user mode as the load bias. The materializer copies the segments,
+/// applies the relocations and maps the stack. The process is created
+/// before the scheduler starts, so that no other task sees a half-built
+/// address space.
+fn installNativeProcess() void {
+    if (!enable_user_task) return;
+
+    const window = user_window_base;
+    const plan = elf_loader.planFromRamFs(
+        "/apps/hello.elf",
+        &native_image_buffer,
+        window,
+        window,
+        usermode.window_size,
+    ) catch |err| {
+        serial.printLine("[VNK] FATAL: the native image could not be planned: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    const space = paging.createAddressSpace(window) orelse {
+        serial.printLine("[VNK] FATAL: the native address space could not be created", .{});
+        port.haltForever();
+    };
+
+    const stack_base = window + usermode.stack_offset;
+    elf_materializer.materialize(
+        space,
+        &plan,
+        native_image_buffer[0..native_image_length],
+        window,
+        usermode.window_size,
+        stack_base,
+        usermode.stack_pages,
+    ) catch |err| {
+        serial.printLine("[VNK] FATAL: the native image could not be materialized: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    native_space = space;
+    native_entry = plan.entry;
+
+    verifyNativePermissions(space);
+
+    serial.printLine("[VNK] native: /apps/hello.elf entry=0x{x} base=0x{x} end=0x{x}, {d} segments", .{
+        plan.entry,
+        plan.base,
+        plan.end,
+        plan.segment_count,
+    });
+    serial.printLine("[VNK] native: process {d}, code R+X, data and stack R+W+NX, stack top 0x{x}", .{
+        space.id,
+        stack_base + usermode.stack_pages * handoff.page_size,
+    });
+    serial.printLine("[VNK] native: {d} relative relocation(s) applied", .{plan.relocation_count});
+}
+
+/// Creates the process that runs the ELF produced by the toolchain.
+fn installToolchainProcess() void {
+    if (!enable_user_task) return;
+
+    const window = user_window_base;
+    const plan = elf_loader.planFromRamFs(
+        "/apps/toolchain.elf",
+        &toolchain_image_buffer,
+        window,
+        window,
+        usermode.window_size,
+    ) catch |err| {
+        serial.printLine("[VNK] FATAL: the toolchain image could not be planned: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    const space = paging.createAddressSpace(window) orelse {
+        serial.printLine("[VNK] FATAL: the toolchain address space could not be created", .{});
+        port.haltForever();
+    };
+
+    const stack_base = window + usermode.stack_offset;
+    elf_materializer.materialize(
+        space,
+        &plan,
+        toolchain_image_buffer[0..toolchain_app.bytes.len],
+        window,
+        usermode.window_size,
+        stack_base,
+        usermode.stack_pages,
+    ) catch |err| {
+        serial.printLine("[VNK] FATAL: the toolchain image could not be materialized: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    verifyToolchainPermissions(space, &plan, stack_base);
+
+    toolchain_space = space;
+    toolchain_entry = plan.entry;
+
+    serial.printLine("[VNK] toolchain: /apps/toolchain.elf entry=0x{x} base=0x{x} end=0x{x}, {d} segments, {d} relocation(s)", .{
+        plan.entry,
+        plan.base,
+        plan.end,
+        plan.segment_count,
+        plan.relocation_count,
+    });
+}
+
+/// Verifies W^X for every page that the toolchain image uses.
+fn verifyToolchainPermissions(
+    space: *paging.AddressSpace,
+    plan: *const elf_loader.LoadPlan,
+    stack_base: u64,
+) void {
+    for (plan.segmentList()) |planned_segment| {
+        var page = planned_segment.page_start;
+        while (page < planned_segment.page_end) : (page += handoff.page_size) {
+            const permissions = paging.permissionsIn(space, page) orelse {
+                serial.printLine("[VNK] FATAL: a page of the toolchain image is not mapped", .{});
+                port.haltForever();
+            };
+            if (permissions.writable != planned_segment.isWritable() or
+                permissions.executable != planned_segment.isExecutable())
+            {
+                serial.printLine("[VNK] FATAL: a page of the toolchain image has the wrong permissions", .{});
+                port.haltForever();
+            }
+        }
+    }
+
+    var page = stack_base;
+    const stack_end = stack_base + usermode.stack_pages * handoff.page_size;
+    while (page < stack_end) : (page += handoff.page_size) {
+        const permissions = paging.permissionsIn(space, page) orelse {
+            serial.printLine("[VNK] FATAL: a page of the toolchain stack is not mapped", .{});
+            port.haltForever();
+        };
+        if (!permissions.writable or permissions.executable) {
+            serial.printLine("[VNK] FATAL: the toolchain stack is not R+W+NX", .{});
+            port.haltForever();
+        }
+    }
+
+    serial.printLine("[VNK] toolchain: page permissions verified", .{});
+}
+
+/// Reads the page tables of the native process and verifies W^X.
+///
+/// The materializer asks for the permissions, but the boot does not trust
+/// the request: the report reads the entries that the processor will walk.
+/// A page of code that is writable, or a page of data that is executable,
+/// is a fatal error.
+fn verifyNativePermissions(space: *paging.AddressSpace) void {
+    const code = paging.permissionsIn(space, user_window_base + native_image.code_virtual_address) orelse {
+        serial.printLine("[VNK] FATAL: the code page of the native process is not mapped", .{});
+        port.haltForever();
+    };
+    const data = paging.permissionsIn(space, nativeDataAddress()) orelse {
+        serial.printLine("[VNK] FATAL: the data page of the native process is not mapped", .{});
+        port.haltForever();
+    };
+    const stack_low = paging.permissionsIn(space, userStackAddress()) orelse {
+        serial.printLine("[VNK] FATAL: the stack of the native process is not mapped", .{});
+        port.haltForever();
+    };
+    const stack_high = paging.permissionsIn(space, userStackAddress() + handoff.page_size) orelse {
+        serial.printLine("[VNK] FATAL: the stack of the native process is not mapped", .{});
+        port.haltForever();
+    };
+
+    if (code.writable or !code.executable) {
+        serial.printLine("[VNK] FATAL: the code page is not R+X", .{});
+        port.haltForever();
+    }
+    if (!data.writable or data.executable) {
+        serial.printLine("[VNK] FATAL: the data page is not R+W+NX", .{});
+        port.haltForever();
+    }
+    if (!stack_low.writable or stack_low.executable or
+        !stack_high.writable or stack_high.executable)
+    {
+        serial.printLine("[VNK] FATAL: the stack is not R+W+NX", .{});
+        port.haltForever();
+    }
+
+    serial.printLine("[VNK] native: page permissions verified, code R+X, data and stack R+W+NX", .{});
+}
+
 /// Creates a process and returns its address space.
 ///
 /// The process has an address space of its own, a program, a page of data
@@ -865,21 +1215,35 @@ fn installProcess(role: u64) ?*paging.AddressSpace {
     const data_page = physical.manager.allocate() orelse return null;
     const user_stack_low = physical.manager.allocate() orelse return null;
     const user_stack_high = physical.manager.allocate() orelse return null;
-    // The pages of the user mode. The pages are mapped before the program is
-    // copied, because the tables are already the active ones.
-    paging.mapUserPageIn(space, userCodeAddress(), code_page) catch |err| {
+    // The pages of the user mode. The page of the program starts writable
+    // and **not** executable, because the kernel copies the program into it;
+    // it becomes read-only and executable before the task runs. The data
+    // and the stack are writable and not executable from the first moment.
+    paging.mapUserPageInFlags(space, userCodeAddress(), code_page, .{
+        .writable = true,
+        .executable = false,
+    }) catch |err| {
         serial.printLine("[VNK] FATAL: the page of the program could not be mapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
-    paging.mapUserPageIn(space, userDataAddress(), data_page) catch |err| {
+    paging.mapUserPageInFlags(space, userDataAddress(), data_page, .{
+        .writable = true,
+        .executable = false,
+    }) catch |err| {
         serial.printLine("[VNK] FATAL: the page of data could not be mapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
-    paging.mapUserPageIn(space, userStackAddress(), user_stack_low) catch |err| {
+    paging.mapUserPageInFlags(space, userStackAddress(), user_stack_low, .{
+        .writable = true,
+        .executable = false,
+    }) catch |err| {
         serial.printLine("[VNK] FATAL: the stack could not be mapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
-    paging.mapUserPageIn(space, userStackAddress() + handoff.page_size, user_stack_high) catch |err| {
+    paging.mapUserPageInFlags(space, userStackAddress() + handoff.page_size, user_stack_high, .{
+        .writable = true,
+        .executable = false,
+    }) catch |err| {
         serial.printLine("[VNK] FATAL: the stack could not be mapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
@@ -893,8 +1257,22 @@ fn installProcess(role: u64) ?*paging.AddressSpace {
 
     const saved_cr3 = cpu.readCr3();
     paging.activateSpace(space);
+
     const destination: [*]u8 = @ptrFromInt(userCodeAddress());
+    @memset(destination[0..@intCast(paging.page_size)], 0);
     @memcpy(destination[0..program_length], @as([*]const u8, @ptrFromInt(program_start))[0..program_length]);
+
+    // The copy is complete: the page becomes read-only and executable. A
+    // page that stayed writable would be a W^X violation that no check of
+    // the planner can see, because the planner does not own the mapping.
+    paging.protectUserPageIn(space, userCodeAddress(), .{
+        .writable = false,
+        .executable = true,
+    }) catch |err| {
+        serial.printLine("[VNK] FATAL: the page of the program could not be protected: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
     cpu.writeCr3(saved_cr3);
     paging.setActiveSpace(null);
 
@@ -992,6 +1370,45 @@ fn installScheduler() void {
             third_task.context.ss,
             third_task.context.rip,
             third_task.context.rsp,
+        });
+
+        // The native task runs the ELF image of the RamFS. Its entry comes
+        // from the plan, and the stack lives in the same window as the
+        // segments that the materializer mapped.
+        const native = scheduler.scheduler.spawnUser(
+            native_entry,
+            userStackAddress(),
+            usermode.stack_pages * handoff.page_size,
+            &native_task_stack,
+            user_window_base,
+            native_space,
+            3,
+        ) orelse return reportOutOfMemory();
+        native_task = native;
+        serial.printLine("[VNK] native: task {d} cs=0x{x} ss=0x{x} rip=0x{x} rsp=0x{x}", .{
+            native.id,
+            native.context.cs,
+            native.context.ss,
+            native.context.rip,
+            native.context.rsp,
+        });
+
+        const toolchain = scheduler.scheduler.spawnUser(
+            toolchain_entry,
+            userStackAddress(),
+            usermode.stack_pages * handoff.page_size,
+            &toolchain_task_stack,
+            user_window_base,
+            toolchain_space,
+            4,
+        ) orelse return reportOutOfMemory();
+        toolchain_task = toolchain;
+        serial.printLine("[VNK] toolchain: task {d} cs=0x{x} ss=0x{x} rip=0x{x} rsp=0x{x}", .{
+            toolchain.id,
+            toolchain.context.cs,
+            toolchain.context.ss,
+            toolchain.context.rip,
+            toolchain.context.rsp,
         });
     }
 
@@ -1396,6 +1813,90 @@ fn reportUserTask() void {
         serial.printLine("[VNK] user: the copy of the user mode with overlapping ranges moved {d} bytes", .{
             overlap,
         });
+    }
+}
+
+/// Reports that the native ELF image ran and terminated.
+///
+/// The report waits for two independent facts: the marker that the program
+/// wrote in its own data page, which proves that the user code executed,
+/// and the state of the task, which proves that the call of exit reached
+/// the scheduler. A task that wrote the marker and did not terminate is a
+/// failure, and the boot test refuses to pass.
+fn reportNativeTask() void {
+    const space = native_space orelse {
+        serial.printLine("[VNK] native: the process does not exist", .{});
+        return;
+    };
+    const task = native_task orelse {
+        serial.printLine("[VNK] native: the task does not exist", .{});
+        return;
+    };
+
+    var attempts: u64 = 0;
+    var marker: u64 = 0;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        marker = userWord(space, nativeMarkerAddress());
+        if (marker == native_image.marker and task.state == .terminated) break;
+        cpu.halt();
+    }
+
+    if (marker != native_image.marker) {
+        serial.printLine("[VNK] native: the data page holds 0x{x}, expected 0x{x}", .{
+            marker,
+            native_image.marker,
+        });
+    } else {
+        serial.printLine("[VNK] native: the ELF task wrote 0x{x} in its data page", .{marker});
+    }
+
+    // A realocação relativa vale `load_bias + addend`; com o addend zero do
+    // arquivo, o alvo tem de conter a base da janela. O valor foi escrito
+    // pelo materializador, e não pelo programa.
+    const relocated = userWord(space, nativeRelocationAddress());
+    if (relocated != user_window_base) {
+        serial.printLine("[VNK] native: the relocation holds 0x{x}, expected 0x{x}", .{
+            relocated,
+            user_window_base,
+        });
+    } else {
+        serial.printLine("[VNK] native: the relative relocation holds the load bias 0x{x}", .{relocated});
+    }
+
+    if (task.state != .terminated) {
+        serial.printLine("[VNK] native: the task did not terminate", .{});
+    } else if (task.exit_code != 0) {
+        serial.printLine("[VNK] native: the task terminated with code 0x{x}", .{task.exit_code});
+    } else {
+        serial.printLine("[VNK] native: the ELF task terminated with code 0", .{});
+    }
+
+    if (marker == native_image.marker and task.state == .terminated and task.exit_code == 0 and
+        relocated == user_window_base)
+    {
+        serial.printLine("[VNK] native: /apps/hello.elf ran from the RamFS", .{});
+    }
+}
+
+/// Reports that the application produced by the toolchain ran.
+fn reportToolchainTask() void {
+    const task = toolchain_task orelse {
+        serial.printLine("[VNK] toolchain: the task does not exist", .{});
+        return;
+    };
+
+    var attempts: u64 = 0;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        if (task.state == .terminated) break;
+        cpu.halt();
+    }
+
+    if (task.state != .terminated) {
+        serial.printLine("[VNK] toolchain: the task did not terminate", .{});
+    } else if (task.exit_code != 0) {
+        serial.printLine("[VNK] toolchain: the task terminated with code 0x{x}", .{task.exit_code});
+    } else {
+        serial.printLine("[VNK] toolchain: /apps/toolchain.elf ran from the toolchain", .{});
     }
 }
 
