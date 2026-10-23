@@ -758,20 +758,39 @@ fn presentGraphicsDemo() void {
         return;
     };
 
-    // Cores codificadas em BGRA (GOP 32 bpp convencional).
-    // Modos com máscaras diferentes exigem conversão explícita.
-    if (framebuffer.red_mask != 0x00ff0000 or
-        framebuffer.green_mask != 0x0000ff00 or
-        framebuffer.blue_mask != 0x000000ff)
-    {
-        serial.printLine("[VNK] graphics: unsupported pixel masks", .{});
+    // GOP descreve layouts RGB/BGR também pelo enum. Alguns firmwares
+    // deixam as máscaras zeradas nos modos predefinidos.
+    const masks_absent = framebuffer.red_mask == 0 and
+        framebuffer.green_mask == 0 and framebuffer.blue_mask == 0;
+    const is_bgr = if (masks_absent)
+        framebuffer.pixel_format == .bgr32
+    else
+        framebuffer.red_mask == 0x00ff0000 and
+            framebuffer.green_mask == 0x0000ff00 and
+            framebuffer.blue_mask == 0x000000ff;
+    const is_rgb = if (masks_absent)
+        framebuffer.pixel_format == .rgb32
+    else
+        framebuffer.red_mask == 0x000000ff and
+            framebuffer.green_mask == 0x0000ff00 and
+            framebuffer.blue_mask == 0x00ff0000;
+    if (!is_bgr and !is_rgb) {
+        serial.printLine("[VNK] graphics: unsupported pixel layout format={d} masks=0x{x}/0x{x}/0x{x}", .{
+            @intFromEnum(framebuffer.pixel_format),
+            framebuffer.red_mask,
+            framebuffer.green_mask,
+            framebuffer.blue_mask,
+        });
         return;
     }
+    const background: [4]u8 = if (is_bgr) .{ 0x20, 0x17, 0x10, 0 } else .{ 0x10, 0x17, 0x20, 0 };
+    const front: [4]u8 = if (is_bgr) .{ 0xb0, 0x86, 0x30, 0 } else .{ 0x30, 0x86, 0xb0, 0 };
+    const back: [4]u8 = if (is_bgr) .{ 0x70, 0x36, 0x1e, 0 } else .{ 0x1e, 0x36, 0x70, 0 };
     const windows = [_]compositor.Window{
-        .{ .x = width / 8, .y = height / 8, .width = width / 2, .height = height / 2, .color = .{ 0x70, 0x36, 0x1e, 0 } },
-        .{ .x = width / 4, .y = height / 4, .width = width / 2, .height = height / 3, .color = .{ 0xb0, 0x86, 0x30, 0 } },
+        .{ .x = width / 8, .y = height / 8, .width = width / 2, .height = height / 2, .color = back },
+        .{ .x = width / 4, .y = height / 4, .width = width / 2, .height = height / 3, .color = front },
     };
-    compositor.compose(&surface, .{ 0x20, 0x17, 0x10, 0 }, &windows);
+    compositor.compose(&surface, background, &windows);
     serial.printLine("[VNK] graphics: framebuffer scene presented ({d}x{d})", .{ width, height });
 }
 
