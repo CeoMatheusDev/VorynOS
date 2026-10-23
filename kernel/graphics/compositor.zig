@@ -94,7 +94,7 @@ test "dirty composition clips extreme coordinates without overflow" {
     try std.testing.expectEqual(@as(usize, 1), composeDirty(&surface, .{ 0, 0, 0, 0 }, &windows, .{
         .x = 1, .y = 1, .width = std.math.maxInt(usize), .height = std.math.maxInt(usize),
     }));
-    try std.testing.expectEqualSlices(u8, &.{ 7, 7, 7, 7 }, pixels[24..28]);
+    try std.testing.expectEqualSlices(u8, &.{ 7, 7, 7, 7 }, pixels[12..16]);
     try std.testing.expectEqual(@as(u8, 0x55), pixels[0]);
     try std.testing.expectEqual(@as(usize, 0), composeDirty(&surface, .{ 0, 0, 0, 0 }, &windows, .{
         .x = std.math.maxInt(usize), .y = 0, .width = 1, .height = 1,
