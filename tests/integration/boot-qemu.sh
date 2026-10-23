@@ -150,6 +150,7 @@ qemu-system-x86_64 \
     -drive "if=pflash,format=$OVMF_CODE_FORMAT,readonly=on,file=$OVMF_CODE_PATH" \
     -drive "if=pflash,format=$OVMF_VARS_FORMAT,file=$WORK_DIRECTORY/vars.fd" \
     -serial "file:$SERIAL_LOG" \
+    -monitor "unix:$WORK_DIRECTORY/monitor.sock,server=on,wait=off" \
     -display none \
     -no-reboot \
     >/dev/null 2>&1 &
@@ -163,7 +164,24 @@ QEMU_PID=$!
 # The wait makes the test both fast and deterministic: the emulator does
 # not run until the timeout when the kernel is already at the end.
 DEADLINE=$(( SECONDS + TIMEOUT ))
+KEY_SENT=0
+
 while (( SECONDS < DEADLINE )); do
+    if [[ "$KEY_SENT" -eq 0 ]] && grep -qF "[VNK] keyboard: ready for PS/2 input" "$SERIAL_LOG" 2>/dev/null; then
+        # HMP envia make e break pela controladora PS/2 virtualizada.
+        # A janela de 50 ticks mantém o kernel disponível para o evento.
+        if python3 - "$WORK_DIRECTORY/monitor.sock" <<'PY'
+import socket
+import sys
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
+    monitor.settimeout(2)
+    monitor.connect(sys.argv[1])
+    monitor.sendall(b"sendkey a 50\\n")
+PY
+        then
+            KEY_SENT=1
+        fi
+    fi
     if grep -q "VORYN-KERNEL-READY" "$SERIAL_LOG" 2>/dev/null; then
         # The self test of the kernel runs after the marker, and the
         # console needs a moment to write the rest of the report.
@@ -173,7 +191,7 @@ while (( SECONDS < DEADLINE )); do
     if ! kill -0 "$QEMU_PID" 2>/dev/null; then
         break
     fi
-    sleep 0.2
+    sleep 0.01
 done
 
 kill "$QEMU_PID" 2>/dev/null || true
@@ -228,6 +246,10 @@ require_marker "[VNK] segments: task state segment loaded"
 require_marker "[VNK] paging: cr3"
 require_marker "[VNK] paging: no-execute enabled"
 require_marker "[VNK] timer:"
+require_marker "[VNK] keyboard: ready for PS/2 input"
+require_pattern '\\[VNK\\] keyboard: key scancode=0x1e extended=0 pressed=1' 'PS/2 A key press'
+require_pattern '\\[VNK\\] keyboard: key scancode=0x1e extended=0 pressed=0' 'PS/2 A key release'
+
 require_marker "[VNK] fs: ramfs ready"
 require_marker "[VNK] fs: /apps/hello.txt round trip ok"
 require_marker "[VNK] fs: /apps/hello.elf installed"
