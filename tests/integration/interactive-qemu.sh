@@ -173,6 +173,7 @@ state = "boot"
 steps = ["right", "down", "left", "up", "left", "right"]
 step = 0
 old_position = None
+stage_origin = None
 before_path = os.path.join(work_dir, "before.ppm")
 after_path = os.path.join(work_dir, "after.ppm")
 movement_pattern = re.compile(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)")
@@ -242,6 +243,7 @@ while time.monotonic() < deadline:
             sys.exit("FAIL: interactive loop started before readiness")
         screenshot(before_path)
         old_position, width, height = initial_position(before_path)
+        stage_origin = old_position
         if edges:
             x, y = old_position
             stride = max(1, width // 32)
@@ -270,7 +272,7 @@ while time.monotonic() < deadline:
                 import subprocess
                 result = subprocess.run(
                     [sys.executable, "tests/integration/compare-framebuffer.py",
-                     before_path, after_path, *map(str, (*old_position, *new_position))],
+                     before_path, after_path, *map(str, (*stage_origin, *new_position))],
                     check=False, capture_output=True, text=True,
                 )
                 print(result.stdout, end="", flush=True)
@@ -286,6 +288,7 @@ while time.monotonic() < deadline:
             old_position = new_position
             if not edges or steps[step - 1] != steps[step]:
                 before_path, after_path = after_path, before_path
+                stage_origin = new_position
             baseline = len(positions)
             monitor_command("sendkey " + steps[step] + " 50")
     try:
