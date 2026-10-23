@@ -135,6 +135,12 @@ pub fn build(b: *std.Build) void {
         // raise a fault in the middle of a message of the console.
         .error_tracing = false,
     });
+    const kernel_keyboard_module = b.createModule(.{
+        .root_source_file = b.path("kernel/input/keyboard.zig"),
+        .target = kernel_target,
+        .optimize = optimize,
+    });
+    kernel_module.addImport("voryn_keyboard", kernel_keyboard_module);
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/entry.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/cpu.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/segment.s"));
