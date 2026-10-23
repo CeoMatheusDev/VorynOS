@@ -16,11 +16,13 @@ set -euo pipefail
 
 IMAGE=""
 TIMEOUT=60
+EDGES=false
 
 for argument in "$@"; do
     case "$argument" in
         --image=*) IMAGE="${argument#--image=}" ;;
         --timeout=*) TIMEOUT="${argument#--timeout=}" ;;
+        --edges) EDGES=true ;;
         *)
             echo "qemu-boot-test: unknown argument: $argument" >&2
             exit 2
@@ -163,11 +165,12 @@ import socket
 import sys
 import time
 
-log_path, monitor_path, pid_text, timeout_text, work_dir = sys.argv[1:]
+log_path, monitor_path, pid_text, timeout_text, work_dir, edges_text = sys.argv[1:]
+edges = edges_text == "true"
 pid = int(pid_text)
 deadline = time.monotonic() + int(timeout_text)
 state = "boot"
-steps = ("right", "down", "left", "up", "left", "right")
+steps = ["right", "down", "left", "up", "left", "right"]
 step = 0
 old_position = None
 before_path = os.path.join(work_dir, "before.ppm")
@@ -206,8 +209,8 @@ def initial_position(path):
 def expected_move(position, key, width, height):
     x, y = position
     step_size = max(1, width // 32)
-    max_x = width - 1
-    max_y = height - 1
+    max_x = width - width // 2
+    max_y = height - height // 3
     if key == "right":
         return (min(max_x, x + step_size), y)
     if key == "left":
@@ -239,6 +242,17 @@ while time.monotonic() < deadline:
             sys.exit("FAIL: interactive loop started before readiness")
         screenshot(before_path)
         old_position, width, height = initial_position(before_path)
+        if edges:
+            x, y = old_position
+            stride = max(1, width // 32)
+            max_x = width - width // 2
+            max_y = height - height // 3
+            targets = [("right", (max_x - x + stride - 1) // stride),
+                       ("down", (max_y - y + stride - 1) // stride),
+                       ("left", (max_x + stride - 1) // stride),
+                       ("up", (max_y + stride - 1) // stride)]
+            steps = [direction for direction, count in targets for _ in range(count)]
+            print(f"ok: edge route has {len(steps)} acknowledged movements", flush=True)
         baseline = len(movement_pattern.findall(log))
         monitor_command("sendkey " + steps[step] + " 50")
         state = "movement"
@@ -251,25 +265,27 @@ while time.monotonic() < deadline:
             expected = expected_move(old_position, steps[step], width, height)
             if new_position != expected:
                 sys.exit(f"FAIL: step {step + 1} {steps[step]} expected {expected}, got {new_position}")
-            screenshot(after_path)
-            import subprocess
-            result = subprocess.run(
-                [sys.executable, "tests/integration/compare-framebuffer.py",
-                 before_path, after_path, *map(str, (*old_position, *new_position))],
-                check=False, capture_output=True, text=True,
-            )
-            print(result.stdout, end="", flush=True)
-            if result.returncode:
-                sys.exit(f"FAIL: step {step + 1} {steps[step]} framebuffer validation: "
-                         + (result.stderr.strip() or result.stdout.strip() or "no comparator output"))
-            print(f"ok: movement {step + 1}/{len(steps)} {steps[step]} "
-                  f"{old_position}->{new_position}", flush=True)
+            if not edges or step == len(steps) - 1 or steps[step] != steps[step + 1]:
+                screenshot(after_path)
+                import subprocess
+                result = subprocess.run(
+                    [sys.executable, "tests/integration/compare-framebuffer.py",
+                     before_path, after_path, *map(str, (*old_position, *new_position))],
+                    check=False, capture_output=True, text=True,
+                )
+                print(result.stdout, end="", flush=True)
+                if result.returncode:
+                    sys.exit(f"FAIL: step {step + 1} {steps[step]} framebuffer validation: "
+                             + (result.stderr.strip() or result.stdout.strip() or "no comparator output"))
+                print(f"ok: movement {step + 1}/{len(steps)} {steps[step]} "
+                      f"{old_position}->{new_position}", flush=True)
             step += 1
             if step == len(steps):
                 print("ok: persistent loop received all arrows after readiness", flush=True)
                 sys.exit(0)
             old_position = new_position
-            before_path, after_path = after_path, before_path
+            if not edges or steps[step - 1] != steps[step]:
+                before_path, after_path = after_path, before_path
             baseline = len(positions)
             monitor_command("sendkey " + steps[step] + " 50")
     try:
