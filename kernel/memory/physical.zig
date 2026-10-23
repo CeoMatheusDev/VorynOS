@@ -16,10 +16,11 @@
 //! page is marked as used when it is reserved by the firmware, when it
 //! belongs to the kernel image or when it was handed out by the manager.
 //!
-//! The bitmap describes the manageable physical address space, as determined
-//! from the firmware memory map during initialization. The manager supports
-//! physical memory beyond 4 GiB by sizing the bitmap according to the actual
-//! reported memory, rather than a fixed compile-time constant.
+//! The bitmap describes the first four gigabytes of the physical address
+//! space, which covers every machine the kernel supports today. The limit is
+//! a compile time constant: a machine with more memory than that is
+//! reported as an error during the initialisation instead of being silently
+//! ignored.
 
 const std = @import("std");
 const voryn = @import("voryn_shared");
@@ -29,6 +30,15 @@ const handoff = voryn.handoff;
 /// Size of a page.
 pub const page_size: u64 = handoff.page_size;
 
+/// The physical address space described by the bitmap.
+pub const managed_address_space: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Number of pages described by the bitmap.
+pub const managed_pages: u32 = @intCast(managed_address_space / page_size);
+
+/// Size of the bitmap in bytes.
+pub const bitmap_size: usize = (managed_pages + 7) / 8;
+
 /// The lowest physical address that the manager hands out.
 ///
 /// The first megabyte of a PC holds the structures of the firmware, the
@@ -36,21 +46,6 @@ pub const page_size: u64 = handoff.page_size;
 /// firmware reports part of that area as ordinary memory, but the kernel
 /// never uses it.
 pub const minimum_address: u64 = 1024 * 1024;
-
-/// Maximum manageable address space (1 tebibyte).
-///
-/// The bitmap covers the full range so the manager supports physical memory
-/// beyond 4 GiB up to 1 TiB. The bitmap size is 32 KiB (1 TiB / 4 KiB per page / 8).
-pub const max_manageable_address: u64 = 1024 * 1024 * 1024 * 1024;
-
-/// Size of the bitmap in bytes, covering the full 1 TiB address space.
-///
-/// Each bit represents one page (4 KiB), so the bitmap has 1 TiB / 4 KiB / 8 = 32 KiB.
-/// 32 KiB = 32 * 1024 = 32768 bytes, covering 32768 * 8 = 262144 pages = 1 TiB / 4 KiB.
-pub const max_bitmap_size: usize = 32768;
-
-/// Maximum number of pages the bitmap can track.
-pub const max_pages: u32 = @as(u32, max_bitmap_size * 8);
 
 /// Summary of the state of the manager.
 pub const Statistics = struct {
@@ -67,25 +62,16 @@ pub const Statistics = struct {
 /// The physical memory manager.
 pub const Manager = struct {
     /// The bitmap, one bit per page: a set bit marks a used page.
-    /// The bitmap covers the full 1 TeBibyte address space (32 KiB bitmap).
-    /// At runtime, only the pages reported by the firmware memory map are
-    /// considered valid; pages beyond the manageable limit are treated as used.
-    bitmap: [max_bitmap_size]u8 = @splat(0),
+    bitmap: [bitmap_size]u8 = @splat(0),
     /// The state of the manager.
     statistics: Statistics = .{},
     /// The next page that the manager tries to hand out.
     hint: u32 = 0,
 
-    /// The number of pages in the manageable address space, as reported by
-    /// the firmware memory map during initialization.
-    total_pages: u32 = 0,
-
     /// Prepares the manager with the memory map of the firmware.
     ///
     /// The regions that are not ordinary memory are marked as used, the
-    /// ordinary memory is marked as free. The bitmap size is fixed at 32 KiB
-    /// to cover the full 1 TiB address space, so the manager supports
-    /// physical memory beyond 4 GiB up to 1 TiB.
+    /// ordinary memory is marked as free.
     pub fn init(self: *Manager, map: []const handoff.MemoryDescriptor) void {
         // Everything starts as **used**: the only pages that the manager
         // hands out are the pages that the firmware described as ordinary
@@ -95,71 +81,48 @@ pub const Manager = struct {
         self.bitmap = @splat(0xFF);
         self.statistics = .{};
         self.hint = 0;
-        self.total_pages = 0;
-
-        // Compute the total number of manageable pages from the firmware
-        // memory map. The bitmap covers the full 1 TiB address space, but
-        // only pages within the reported ordinary memory are considered free.
-        var total_pages: u32 = 0;
-        var highest_address: u64 = 0;
 
         // The ordinary memory is freed first...
         for (map) |region| {
             if (!region.isUsableRam()) continue;
 
-            // Cut the region at the end of the manageable address space.
-            const end = @min(region.endAddress(), max_manageable_address);
-            if (end <= region.physical_start) continue;
+            // The bitmap describes the managed space, and a region that
+            // reaches above it is cut at the end of the space: a page that
+            // the bitmap cannot describe is not a page that the manager
+            // can hand out, and counting it would break the account.
+            const start = region.physical_start;
+            const end = @min(region.endAddress(), managed_address_space);
+            if (end <= start) continue;
 
-            const first_page: u32 = @as(u32, @intCast(region.physical_start / page_size));
-            const last_page: u32 = @as(u32, @intCast((end + page_size - 1) / page_size));
+            const first_page = @as(u32, @intCast(start / page_size));
+            const last_page = @as(u32, @intCast((end + page_size - 1) / page_size));
 
-            // Clamp to bitmap capacity.
-            const effective_last: u32 = @as(u32, @min(@as(u64, last_page), @as(u64, max_bitmap_size * 8)));
-            const count: u32 = effective_last - first_page;
-            if (count > 0) {
-                self.statistics.total_pages += count;
-                total_pages += count;
-                self.markRange(first_page, effective_last, false);
-            }
+            self.statistics.total_pages += last_page - first_page;
+            self.markRange(first_page, last_page, false);
 
-            if (end > highest_address) {
-                highest_address = end;
+            if (end > self.statistics.highest_address) {
+                self.statistics.highest_address = end;
             }
         }
 
-        // Also count pages from regions that are not ordinary memory but
-        // still need to be tracked as used (reserved, MMIO, etc.).
-        // These are already marked as used (0xFF) in the bitmap init, but we
-        // track the highest address for diagnostics.
+        // ...and the regions that are not ordinary memory are used again,
+        // for the maps that describe the same address two times.
         for (map) |region| {
             if (region.isUsableRam()) continue;
 
-            const end = @min(region.endAddress(), max_manageable_address);
-            if (end <= region.physical_start) continue;
+            const start = region.physical_start;
+            const end = @min(region.endAddress(), managed_address_space);
+            if (end <= start) continue;
 
-            const first_page: u32 = @as(u32, @intCast(region.physical_start / page_size));
-            const last_page: u32 = @as(u32, @intCast((end + page_size - 1) / page_size));
+            const first_page = @as(u32, @intCast(start / page_size));
+            const last_page = @as(u32, @intCast((end + page_size - 1) / page_size));
 
-            const effective_last: u32 = @as(u32, @min(@as(u64, last_page), @as(u64, max_bitmap_size * 8)));
-            self.markRange(first_page, effective_last, true);
-
-            if (end > highest_address) {
-                highest_address = end;
-            }
+            self.markRange(first_page, last_page, true);
         }
-
-        self.total_pages = total_pages;
-        self.statistics.total_pages = total_pages;
 
         // Every page of ordinary memory starts free, and the reservation
         // of the first megabyte is what takes the first ones out of the
         // count.
-        // The bitmap was initialized to all 1s (used). We now mark the
-        // ordinary memory pages as free (0 bits). The reserve of the first
-        // megabyte will set those pages back to used.
-        // At this point, free_pages equals total_pages because all ordinary
-        // memory pages start free.
         self.statistics.free_pages = self.statistics.total_pages;
 
         // The first megabyte is never handed out.
@@ -182,15 +145,16 @@ pub const Manager = struct {
         if (length == 0) return;
 
         // The end of the range is computed with the check of the overflow,
-        // and the range is cut at the end of the manageable address space.
-        const end = std.math.add(u64, address, length) catch max_manageable_address;
+        // and the range is cut at the end of the managed space: the bitmap
+        // has no page above it.
+        const end = std.math.add(u64, address, length) catch managed_address_space;
         if (end <= address) return;
 
-        const first_page: u32 = @as(u32, @intCast(address / page_size));
-        const last_page: u32 = @as(u32, @intCast((@min(end, max_manageable_address) + page_size - 1) / page_size));
+        const first_page = @as(u32, @intCast(address / page_size));
+        const last_page = @as(u32, @intCast((@min(end, managed_address_space) + page_size - 1) / page_size));
 
-        var page: u32 = first_page;
-        while (page < last_page and page < max_pages) : (page += 1) {
+        var page = first_page;
+        while (page < last_page and page < managed_pages) : (page += 1) {
             if (!self.isPageUsed(page)) {
                 self.setUsed(page, true);
                 self.statistics.used_pages += 1;
@@ -206,8 +170,8 @@ pub const Manager = struct {
     pub fn allocate(self: *Manager) ?u64 {
         var page = self.hint;
         var attempts: u32 = 0;
-        while (attempts < max_pages) : (attempts += 1) {
-            if (page >= max_pages) page = 0;
+        while (attempts < managed_pages) : (attempts += 1) {
+            if (page >= managed_pages) page = 0;
             if (!self.isPageUsed(page)) {
                 self.setUsed(page, true);
                 self.statistics.used_pages += 1;
@@ -224,8 +188,8 @@ pub const Manager = struct {
     /// Returns a page to the manager.
     pub fn free(self: *Manager, address: u64) void {
         if (address % page_size != 0) return;
-        const page: u32 = @as(u32, @intCast(address / page_size));
-        if (page >= max_pages) return;
+        const page = @as(u32, @intCast(address / page_size));
+        if (page >= managed_pages) return;
         if (!self.isPageUsed(page)) return;
 
         self.setUsed(page, false);
@@ -237,8 +201,8 @@ pub const Manager = struct {
     /// True when the page that holds `address` is in use.
     pub fn isUsed(self: *const Manager, address: u64) bool {
         if (address % page_size != 0) return true;
-        const page: u32 = @as(u32, @intCast(address / page_size));
-        if (page >= max_pages) return true;
+        const page = @as(u32, @intCast(address / page_size));
+        if (page >= managed_pages) return true;
         return self.isPageUsed(page);
     }
 
@@ -257,8 +221,8 @@ pub const Manager = struct {
     }
 
     fn markRange(self: *Manager, first_page: u32, last_page: u32, used: bool) void {
-        var page: u32 = first_page;
-        while (page < last_page and page < max_pages) : (page += 1) {
+        var page = first_page;
+        while (page < last_page and page < managed_pages) : (page += 1) {
             self.setUsed(page, used);
         }
     }
