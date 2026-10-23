@@ -249,6 +249,17 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(damage_tests).step);
 
+    const motion_module = b.createModule(.{
+        .root_source_file = b.path("kernel/graphics/keyboard_motion.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const motion_tests = b.addTest(.{
+        .name = "keyboard-motion-tests",
+        .root_module = motion_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(motion_tests).step);
+
     // F6.6: fila de eventos e decodificação de teclado PS/2 no host.
     const keyboard_test_module = b.createModule(.{
         .root_source_file = b.path("kernel/input/keyboard.zig"),
