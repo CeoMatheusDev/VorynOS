@@ -731,3 +731,5 @@ Contributions are subject to the conditions established in [CONTRIBUTING.md](CON
 </div>
 
 F6.14 (pending Fedora validation): `zig build qemu-interactive-test` now injects six successive arrow keys (right, down, left, up, left, right), checks each logged position against the expected movement, and compares QEMU framebuffer captures pixel by pixel after every step. The PPM comparator also verifies restoration and window overlap. This is an integration regression test, not a compositor performance benchmark.
+
+F6.14 validated on Fedora/QEMU: six successive arrow movements passed exact framebuffer comparisons, including background restoration and overlap. F6.15 (pending Fedora validation) adds Zig unit regressions for keyboard movement clamping at all framebuffer edges, oversized windows, and incremental compositor clipping (partial/offscreen/re-entry), checked against full composition. Run `zig build test` and `zig build qemu-interactive-test` before marking F6.15 complete.
