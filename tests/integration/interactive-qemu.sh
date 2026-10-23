@@ -172,7 +172,7 @@ step = 0
 old_position = None
 before_path = os.path.join(work_dir, "before.ppm")
 after_path = os.path.join(work_dir, "after.ppm")
-movement_pattern = re.compile(r"\\[VNK\\] graphics: keyboard move x=(\\d+) y=(\\d+)")
+movement_pattern = re.compile(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)")
 
 def monitor_command(command):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
