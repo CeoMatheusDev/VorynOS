@@ -252,7 +252,7 @@ require_pattern '\[VNK\] keyboard: key scancode=0x1e extended=0 pressed=1' 'PS/2
 require_pattern '\[VNK\] keyboard: key scancode=0x1e extended=0 pressed=0' 'PS/2 A key release'
 
 require_pattern '\[VNK\] graphics: keyboard move x=[0-9]+ y=[0-9]+ redraw=[1-9][0-9]* pixels' 'keyboard-driven incremental redraw'
-require_pattern '\\[VNK\\] graphics: event pump [1-9][0-9]* arrow presses over ([5-9][0-9]|[1-9][0-9]{2,}) ticks' 'continuous graphics event pump'
+require_pattern '\[VNK\] graphics: event pump [1-9][0-9]* arrow presses over ([5-9][0-9]|[1-9][0-9]{2,}) ticks' 'continuous graphics event pump'
 require_marker "[VNK] fs: ramfs ready"
 require_marker "[VNK] fs: /apps/hello.txt round trip ok"
 require_marker "[VNK] fs: /apps/hello.elf installed"
