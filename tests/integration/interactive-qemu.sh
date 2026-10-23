@@ -219,9 +219,15 @@ while time.monotonic() < deadline:
             positions = re.findall(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)", log)
             new_position = tuple(map(int, positions[-1]))
             if old_position is None:
-                # The initial presentation shifts the front window by width/16.
-                # Screen geometry is read from the screenshot comparator below.
-                sys.exit("FAIL: initial keyboard position unavailable")
+                # No keyboard move precedes the first screenshot.
+                # The initial scene places the front window at width/4, height/4.
+                with open(before_path, "rb") as ppm:
+                    if ppm.readline().strip() != b"P6":
+                        sys.exit("FAIL: invalid initial QEMU screenshot")
+                    dimensions = []
+                    while len(dimensions) < 2:
+                        dimensions.extend(ppm.readline().split(b"#", 1)[0].split())
+                    old_position = (int(dimensions[0]) // 4, int(dimensions[1]) // 4)
             if "[VNK] EXCEPTION 6: invalid opcode" in log:
                 sys.exit("FAIL: fatal self-test executed in interactive mode")
             screenshot(after_path)
