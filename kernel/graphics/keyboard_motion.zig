@@ -8,7 +8,7 @@
 //! Política pura: não acessa MMIO, não aloca, não altera z-order.
 
 const std = @import("std");
-const keyboard = @import("../input/keyboard.zig");
+const keyboard = @import("voryn_keyboard");
 const compositor = @import("compositor.zig");
 
 pub fn move(window: *compositor.Window, bounds: compositor.Rect, event: keyboard.KeyEvent, step: usize) bool {
