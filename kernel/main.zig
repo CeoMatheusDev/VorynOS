@@ -55,6 +55,7 @@ const toolchain_app = @import("native_app");
 const raster = @import("graphics/raster.zig");
 const compositor = @import("graphics/compositor.zig");
 const damage = @import("graphics/damage.zig");
+const ps2 = @import("input/ps2.zig");
 
 /// Version of the kernel, reported on the console.
 const kernel_version = "0.1.0-dev.1";
@@ -846,6 +847,34 @@ fn installTimer() void {
     }
 
     serial.printLine("[VNK] timer: {d} Hz, {d} ticks", .{ timer.ticksPerSecond(), timer.ticks() });
+
+    // F6.7.1: janela de teste de entrada real via QEMU HMP sendkey.
+    // O produtor é IRQ1. Aqui as interrupções são desabilitadas apenas
+    // durante o consumo da fila, evitando corrida com o handler.
+    serial.printLine("[VNK] keyboard: ready for PS/2 input", .{});
+    const input_start = timer.ticks();
+    while (timer.ticks() - input_start < 50) {
+        cpu.halt();
+    }
+    cpu.disableInterrupts();
+    var key_count: usize = 0;
+    var pressed: usize = 0;
+    var released: usize = 0;
+    while (ps2.popIrqsDisabled()) |event| {
+        key_count += 1;
+        if (event.pressed) {
+            pressed += 1;
+        } else {
+            released += 1;
+        }
+        serial.printLine("[VNK] keyboard: key scancode=0x{x} extended={d} pressed={d}", .{
+            event.scancode, @intFromBool(event.extended), @intFromBool(event.pressed),
+        });
+    }
+    serial.printLine("[VNK] keyboard: {d} events, {d} pressed, {d} released, {d} bytes, {d} dropped", .{
+        key_count, pressed, released, ps2.receivedIrqsDisabled(), ps2.droppedIrqsDisabled(),
+    });
+    cpu.enableInterrupts();
 }
 
 /// Initializes the file system.
