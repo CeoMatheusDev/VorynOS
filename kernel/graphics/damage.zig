@@ -145,3 +145,37 @@ test "F6.10 successive moves restore background and preserve overlapping back wi
         try std.testing.expectEqualSlices(u8, &reference_pixels, &pixels);
     }
 }
+
+test "F6.15 clipping restores pixels when window moves partially offscreen" {
+    const background: [4]u8 = .{ 0, 0, 0, 0 };
+    const back: [4]u8 = .{ 1, 1, 1, 1 };
+    const front: [4]u8 = .{ 2, 2, 2, 2 };
+    var pixels: [96]u8 = @splat(0);
+    var surface = try raster.Surface.init(&pixels, 6, 4, 24);
+    var windows = [_]Window{
+        .{ .x = 1, .y = 1, .width = 4, .height = 2, .color = back },
+        .{ .x = 2, .y = 1, .width = 3, .height = 2, .color = front },
+    };
+    const bounds: Rect = .{ .x = 0, .y = 0, .width = 6, .height = 4 };
+    compositor.compose(&surface, background, &windows);
+    const positions = [_][2]usize{
+        .{ 5, 3 }, // Only one pixel remains visible.
+        .{ 6, 4 }, // Entire front window is outside the framebuffer.
+        .{ 0, 0 }, // Re-enter at the top-left corner.
+        .{ 4, 2 }, // Right/bottom clipping.
+        .{ 2, 1 }, // Restore the initial overlap.
+    };
+    for (positions) |position| {
+        var next = windows[1];
+        next.x = position[0];
+        next.y = position[1];
+        var tracker: Tracker = .{};
+        updateWindow(&tracker, bounds, &windows[1], next);
+        _ = tracker.redraw(&surface, background, &windows);
+
+        var expected_pixels: [96]u8 = @splat(0);
+        var reference = try raster.Surface.init(&expected_pixels, 6, 4, 24);
+        compositor.compose(&reference, background, &windows);
+        try std.testing.expectEqualSlices(u8, &expected_pixels, &pixels);
+    }
+}
