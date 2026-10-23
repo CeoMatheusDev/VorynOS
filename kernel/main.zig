@@ -844,6 +844,8 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
     if (!keyboard_motion.move(&next, bounds, event, @max(@as(usize, 1), width / 32))) return;
     var tracker: damage.Tracker = .{};
     damage.updateWindow(&tracker, bounds, &windows[1], next);
+    // Render the updated geometry, not the stale window coordinates.
+    windows[1] = next;
     const pixels = tracker.redraw(&surface, background, &windows);
     graphics_front_x = next.x;
     graphics_front_y = next.y;
