@@ -19,7 +19,7 @@
 [**Documentation**](#documentation) ·
 [**Release Notes**](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.3)
 
-![VorynOS Logo](Logos_VorynOS.png)
+![VorynOS Logo](assets/branding/logos/Logos_VorynOS.png)
 
 </div>
 
