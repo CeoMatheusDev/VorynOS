@@ -176,7 +176,7 @@ import sys
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
     monitor.settimeout(2)
     monitor.connect(sys.argv[1])
-    monitor.sendall(b"sendkey a 50\\n")
+    monitor.sendall(b"sendkey a 50\n")
 PY
         then
             KEY_SENT=1
@@ -247,8 +247,8 @@ require_marker "[VNK] paging: cr3"
 require_marker "[VNK] paging: no-execute enabled"
 require_marker "[VNK] timer:"
 require_marker "[VNK] keyboard: ready for PS/2 input"
-require_pattern '\\[VNK\\] keyboard: key scancode=0x1e extended=0 pressed=1' 'PS/2 A key press'
-require_pattern '\\[VNK\\] keyboard: key scancode=0x1e extended=0 pressed=0' 'PS/2 A key release'
+require_pattern '\[VNK\] keyboard: key scancode=0x1e extended=0 pressed=1' 'PS/2 A key press'
+require_pattern '\[VNK\] keyboard: key scancode=0x1e extended=0 pressed=0' 'PS/2 A key release'
 
 require_marker "[VNK] fs: ramfs ready"
 require_marker "[VNK] fs: /apps/hello.txt round trip ok"
