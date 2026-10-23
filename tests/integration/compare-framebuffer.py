@@ -23,31 +23,82 @@ def read_ppm(path):
         return width, height, pixels
 
 
-def compare(before, after):
+def compare(before, after, old_x, old_y, new_x, new_y):
     width, height, original = read_ppm(before)
     new_width, new_height, updated = read_ppm(after)
     if (width, height) != (new_width, new_height):
         raise ValueError("framebuffer resolution changed")
+    if not (0 <= old_x < width and 0 <= new_x < width
+            and 0 <= old_y < height and 0 <= new_y < height):
+        raise ValueError("window position outside framebuffer")
+
+    front_width, front_height = width // 2, height // 3
+    back_rect = (width // 8, height // 8, width // 2, height // 2)
+    front_before = (old_x, old_y, front_width, front_height)
+    front_after = (new_x, new_y, front_width, front_height)
+
+    def contains(rect, x, y):
+        rx, ry, rw, rh = rect
+        return rx <= x < rx + rw and ry <= y < ry + rh
+
+    def pixel(data, x, y):
+        index = (y * width + x) * 3
+        return data[index:index + 3]
+
+    # The demo paints three opaque solid-color layers. Sampling known,
+    # unoccluded points avoids assumptions about GOP RGB/BGR byte ordering.
+    background = pixel(original, 0, 0)
+    back = pixel(original, width // 8, height // 8)
+    front = pixel(original, old_x, old_y)
+    if len({background, back, front}) != 3:
+        raise ValueError("scene colors are not distinguishable")
+
+    def expected(x, y, front_rect):
+        if contains(front_rect, x, y):
+            return front
+        if contains(back_rect, x, y):
+            return back
+        return background
+
     changed = 0
-    left, top, right, bottom = width, height, -1, -1
-    for offset in range(0, len(original), 3):
-        if original[offset:offset + 3] == updated[offset:offset + 3]:
-            continue
-        pixel = offset // 3
-        x, y = pixel % width, pixel // width
-        changed += 1
-        left, top = min(left, x), min(top, y)
-        right, bottom = max(right, x), max(bottom, y)
+    mismatch_before = 0
+    mismatch_after = 0
+    first_error = None
+    for y in range(height):
+        for x in range(width):
+            previous = pixel(original, x, y)
+            current = pixel(updated, x, y)
+            want_before = expected(x, y, front_before)
+            want_after = expected(x, y, front_after)
+            if previous != want_before:
+                mismatch_before += 1
+                if first_error is None:
+                    first_error = ("before", x, y, previous, want_before)
+            if current != want_after:
+                mismatch_after += 1
+                if first_error is None:
+                    first_error = ("after", x, y, current, want_after)
+            if previous != current:
+                changed += 1
+    if mismatch_before or mismatch_after:
+        raise ValueError(
+            f"geometry mismatch: before={mismatch_before} after={mismatch_after}, "
+            f"first={first_error}"
+        )
     if changed == 0:
         raise ValueError("no visible pixels changed after arrow key")
-    print(f"ok: QEMU framebuffer changed {changed} pixels, bbox=({left},{top})-({right},{bottom})")
+    print(
+        f"ok: QEMU framebuffer geometry exact, {changed} changed pixels, "
+        f"front ({old_x},{old_y})->({new_x},{new_y}), "
+        f"background restoration and overlap verified"
+    )
 
 
 if __name__ == "__main__":
     try:
-        if len(sys.argv) != 3:
-            raise ValueError("usage: compare-framebuffer.py before.ppm after.ppm")
-        compare(sys.argv[1], sys.argv[2])
+        if len(sys.argv) != 7:
+            raise ValueError("usage: compare-framebuffer.py before.ppm after.ppm old_x old_y new_x new_y")
+        compare(sys.argv[1], sys.argv[2], *map(int, sys.argv[3:]))
     except (OSError, ValueError) as error:
         print(f"framebuffer comparison failed: {error}", file=sys.stderr)
         sys.exit(1)
