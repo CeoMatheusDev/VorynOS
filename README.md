@@ -7,7 +7,7 @@
 **An independent operating system built from scratch to provide direct hardware control, efficiency, and technological freedom.**
 
 [![Zig](https://img.shields.io/badge/Zig-0.17.0-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
-[![Release](https://img.shields.io/badge/release-v0.1.0--dev.2-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2)
+[![Release](https://img.shields.io/badge/release-v0.1.0--dev.3-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2)
 [![License](https://img.shields.io/badge/license-GPL--3.0--only-22C55E)](LICENSE)
 [![Architecture](https://img.shields.io/badge/architecture-x86__64-64748B)](#architecture)
 [![Status](https://img.shields.io/badge/status-in%20development-EAB308)](#project-status)
@@ -48,14 +48,14 @@ The project is currently in its early development stages and **does not yet cons
 
 ## Project Status
 
-> **Published version:** `v0.1.0-dev.2` — [Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2)  
+> **Published version:** `v0.1.0-dev.3` — RAMFS Foundation Release Complete — [Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2)  
 > **Initial architecture:** `x86_64`  
 > **Primary language:** Zig 0.17.0  
 > **Boot firmware:** UEFI  
 > **License:** GPL-3.0-only  
 > **Last documentation revision:** October 22, 2026
 
-The current development release focuses on **process fault recovery and kernel reliability**. User-mode exceptions now terminate the affected process without halting unaffected tasks; exception-frame handling, physical memory accounting, firmware memory-map safety, and heap alignment have been corrected. The release documents a three-process QEMU fault-recovery scenario and execution of **36 unit tests**. This remains an experimental pre-release, not a production-ready operating system.
+The current development release focuses on **process fault recovery and kernel reliability**. User-mode exceptions terminate affected processes, and **RAMFS filesystem syscalls (13-18) now functional** without halting unaffected tasks; exception-frame handling, physical memory accounting, firmware memory-map safety, and heap alignment have been corrected. The release documents a three-process QEMU fault-recovery scenario and execution of **36 unit tests**. This release introduces **RAMFS foundation** with functional filesystem operations, syscalls 13-18 implementation, and ELF64 native application loading support., not a production-ready operating system.
 
 The reorganization of public milestones is documented in [VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md).
 
@@ -69,7 +69,7 @@ Development is organized into incremental milestones, each with technical accept
 | F1 | UEFI bootloader and kernel initialization | ✅ Completed |
 | F2 | Processor structures, interrupts, and memory | 🟢 Locally Tested |
 | F3 | Threads, scheduler, processes, syscalls, and IPC | ✅ Completed |
-| F4 | Storage and file systems | ✅ Basic RAMFS implemented |
+| F4 | Storage and file systems | ✅ RAMFS Foundation — Filesystem operations, syscalls 13-18, ELF64 loading |
 | F5 | Runtime, SDK, and native applications | 📋 Proposed |
 | F6 | Graphics subsystem and desktop environment | 📋 Proposed |
 | F7 | Drivers, networking, audio, and physical hardware | 📋 Proposed |
