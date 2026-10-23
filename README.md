@@ -56,7 +56,7 @@ The project is currently in its early development stages and **does not yet cons
 > - **License:** GPL-3.0-only
 > - **Last documentation revision:** October 23, 2026
 
-The active development branch is **`feat/native-sdk`**. In addition to the native ELF64 and toolchain execution paths, the branch contains the experimental **F6 graphics stack**: GOP framebuffer rendering, opaque window composition, damage tracking, PS/2 Set 1 keyboard decoding through IRQ1, arrow-key window movement, and an event pump during a bounded boot-test window. **F6.9 was verified on Fedora** using `zig build test && zig build && zig build qemu-test` at commit `4a6beb2`; the QEMU test reported four key events, zero drops, and one arrow-key graphics update. **F6.10 is under development**: a regression test compares incremental redraw against a full-frame reference after successive overlapping window movements. That new test has not yet been validated on Fedora. Persistent graphical interaction, a production SDK, and persistent storage are still pending. These branch-specific features are not a production-ready desktop or a tagged release.
+The active development branch is **`feat/native-sdk`**. In addition to the native ELF64 and toolchain execution paths, the branch contains the experimental **F6 graphics stack**: GOP framebuffer rendering, opaque window composition, damage tracking, PS/2 Set 1 keyboard decoding through IRQ1, arrow-key window movement, and an event pump during a bounded boot-test window. **F6.9 was verified on Fedora** using `zig build test && zig build && zig build qemu-test` at commit `4a6beb2`; the QEMU test reported four key events, zero drops, and one arrow-key graphics update. **F6.10 was verified on Fedora** at commit `9c144b3`: the full `zig build test && zig build && zig build qemu-test` sequence passed, including the pixel-equivalence regression for successive overlapping window movements. **F6.11 is now under development**: pressing the I key during the PS/2 boot input window selects an experimental persistent event loop after the readiness marker and syscall self-test; normal automated boots still run the fatal invalid-opcode self-test. This new mode has not yet been validated on Fedora. Persistent graphical interaction, a production SDK, and persistent storage are still pending. These branch-specific features are not a production-ready desktop or a tagged release.
 
 The reorganization of public milestones is documented in [VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md).
 
@@ -72,13 +72,13 @@ Development is organized into incremental milestones, each with technical accept
 | F3 | Threads, scheduler, processes, syscalls, and IPC | ✅ Completed |
 | F4 | Storage and file systems | 🚧 RamFS core verified — persistence and VFSX pending |
 | F5 | Runtime, SDK, and native applications | 🚧 In progress — native ELF and toolchain app verified; SDK pending |
-| F6 | Graphics subsystem and desktop environment | 🚧 Experimental on `feat/native-sdk` — F6.9 QEMU-verified; F6.10 tests pending |
+| F6 | Graphics subsystem and desktop environment | 🚧 Experimental on `feat/native-sdk` — F6.10 QEMU-verified; F6.11 interactive mode pending |
 | F7 | Drivers, networking, audio, and physical hardware | 📋 Proposed |
 | F8 | Compatibility with external formats and APIs | 📋 Proposed |
 | F9 | Artificial intelligence infrastructure | 📋 Proposed |
 | F10 | Installation, security, recovery, and production readiness | 📋 Proposed |
 
-**Important:** These statuses reflect the documented content published on the `main` branch. Features developed only in local environments are not considered implemented in the public repository.
+**Important:** These milestone statuses describe the active `feat/native-sdk` development branch where indicated; they do not imply that the same functionality has been merged into `main` or released.
 
 See the [technical roadmap](docs/roadmap/phase-status.md) for each milestone's objectives, acceptance criteria, limitations, and risks.
 
@@ -217,7 +217,7 @@ The development branch includes a custom framebuffer rasterizer, opaque window c
 
 **Verified on Fedora at `4a6beb2`:** `zig build test`, `zig build`, and `zig build qemu-test` passed. The serial output reported `4 events, 2 pressed, 2 released, 6 bytes, 0 dropped` and `event pump 1 arrow presses over 237 ticks`. This is evidence of input handling and redraw execution, **not a framebuffer screenshot or end-to-end input latency benchmark**.
 
-**F6.10 (unverified pending Fedora run):** `kernel/graphics/damage.zig` now contains a pixel-by-pixel regression comparing dirty redraw with full composition after four window movements, including overlaps. The GUI is not persistent and has no focus manager or user-space graphics service.
+**F6.10 (verified on Fedora at `9c144b3`):** `kernel/graphics/damage.zig` now contains a pixel-by-pixel regression comparing dirty redraw with full composition after four window movements, including overlaps. **F6.11 (not yet validated):** the experimental persistent loop can be selected by pressing the **I key** during the initial keyboard input window; it processes subsequent PS/2 events after `VORYN-KERNEL-READY` instead of running the fatal `ud2` test. Normal automated boots do not select this mode and retain their existing exception test. The GUI still has no focus manager or user-space graphics service.
 
 Run on the development branch:
 
