@@ -18,6 +18,7 @@ IMAGE=""
 TIMEOUT=60
 EDGES=false
 STRESS=false
+BOUNDS=false
 
 for argument in "$@"; do
     case "$argument" in
@@ -25,6 +26,7 @@ for argument in "$@"; do
         --timeout=*) TIMEOUT="${argument#--timeout=}" ;;
         --edges) EDGES=true ;;
         --stress) STRESS=true ;;
+        --bounds) BOUNDS=true ;;
         *)
             echo "qemu-boot-test: unknown argument: $argument" >&2
             exit 2
@@ -160,18 +162,19 @@ trap 'cleanup_qemu; rm -rf "$WORK_DIRECTORY"' EXIT
 
 # The script injects I during boot, then RIGHT only after the persistent
 # loop marker. This distinguishes the permanent loop from the boot pump.
-if ! python3 - "$SERIAL_LOG" "$MONITOR_SOCKET" "$QEMU_PID" "$TIMEOUT" "$WORK_DIRECTORY" "$EDGES" "$STRESS" <<'PY'
+if ! python3 - "$SERIAL_LOG" "$MONITOR_SOCKET" "$QEMU_PID" "$TIMEOUT" "$WORK_DIRECTORY" "$EDGES" "$STRESS" "$BOUNDS" <<'PY'
 import os
 import re
 import socket
 import sys
 import time
 
-log_path, monitor_path, pid_text, timeout_text, work_dir, edges_text, stress_text = sys.argv[1:]
+log_path, monitor_path, pid_text, timeout_text, work_dir, edges_text, stress_text, bounds_text = sys.argv[1:]
 edges = edges_text == "true"
 stress = stress_text == "true"
-if edges and stress:
-    sys.exit("FAIL: --edges and --stress are mutually exclusive")
+bounds = bounds_text == "true"
+if sum((edges, stress, bounds)) > 1:
+    sys.exit("FAIL: --edges, --stress and --bounds are mutually exclusive")
 pid = int(pid_text)
 deadline = time.monotonic() + int(timeout_text)
 state = "boot"
@@ -249,7 +252,7 @@ while time.monotonic() < deadline:
         screenshot(before_path)
         old_position, width, height = initial_position(before_path)
         stage_origin = old_position
-        if edges:
+        if edges or bounds:
             x, y = old_position
             stride = max(1, width // 32)
             max_x = width - width // 2
@@ -258,8 +261,9 @@ while time.monotonic() < deadline:
                        ("down", (max_y - y + stride - 1) // stride),
                        ("left", (max_x + stride - 1) // stride),
                        ("up", (max_y + stride - 1) // stride)]
-            steps = [direction for direction, count in targets for _ in range(count)]
-            print(f"ok: edge route has {len(steps)} acknowledged movements", flush=True)
+            steps = [direction for direction, count in targets
+                     for _ in range(count + (3 if bounds else 0))]
+            print(f"ok: {'bounds' if bounds else 'edge'} route has {len(steps)} acknowledged movements", flush=True)
         if stress:
             # Alternate directions repeatedly, checking the complete scene
             # after each segment to detect accumulated rendering artifacts.
@@ -278,7 +282,11 @@ while time.monotonic() < deadline:
             expected = expected_move(old_position, steps[step], width, height)
             if new_position != expected:
                 sys.exit(f"FAIL: step {step + 1} {steps[step]} expected {expected}, got {new_position}")
-            if not (edges or stress) or step == len(steps) - 1 or steps[step] != steps[step + 1]:
+            reached_limit = bounds and new_position != old_position and expected_move(new_position, steps[step], width, height) == new_position
+            verify = (not (edges or stress or bounds) or step == len(steps) - 1
+                      or steps[step] != steps[step + 1] or reached_limit
+                      or (bounds and new_position == old_position))
+            if verify:
                 screenshot(after_path)
                 import subprocess
                 result = subprocess.run(
@@ -297,7 +305,7 @@ while time.monotonic() < deadline:
                 print("ok: persistent loop received all arrows after readiness", flush=True)
                 sys.exit(0)
             old_position = new_position
-            if not (edges or stress) or steps[step - 1] != steps[step]:
+            if verify:
                 before_path, after_path = after_path, before_path
                 stage_origin = new_position
             baseline = len(positions)
