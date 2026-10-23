@@ -247,6 +247,8 @@ require_pattern '\[VNK\] tasks: [0-9]+ ready' 'the report of the ready tasks'
 require_pattern '\[VNK\] tasks: [0-9]+ blocks' 'the report of the blocked tasks'
 require_marker "switch cost"
 require_marker "[VNK] framebuffer: write probe succeeded"
+require_pattern '\[VNK\] graphics: framebuffer scene presented \([0-9]+x[0-9]+\)' 'the framebuffer scene presentation'
+require_pattern '\[VNK\] graphics: incremental redraw [1-9][0-9]* pixels' 'the incremental graphics redraw'
 require_marker "[VNK] syscall: instruction installed and verified"
 require_marker "[VNK] user: process 0"
 require_marker "[VNK] user: process 1"
