@@ -249,6 +249,18 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(damage_tests).step);
 
+    // F6.6: fila de eventos e decodificação de teclado PS/2 no host.
+    const keyboard_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/input/keyboard.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const keyboard_tests = b.addTest(.{
+        .name = "keyboard-tests",
+        .root_module = keyboard_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(keyboard_tests).step);
+
     // The memory managers of the kernel are free of architecture specific
     // code and are tested on the host as well.
     const kernel_test_module = b.createModule(.{
