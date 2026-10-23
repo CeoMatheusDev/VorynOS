@@ -34,6 +34,40 @@ pub const Number = struct {
     pub const fs_mkdir: u64 = 18;
 };
 
+/// Códigos de erro estáveis definidos por VSC-0001 v9.
+pub const Error = enum(u64) {
+    unknown_call = 1,
+    invalid_address = 2,
+    invalid_length = 3,
+    not_allowed = 4,
+    empty_queue = 5,
+    unknown_channel = 6,
+    full_queue = 7,
+    unknown_process = 8,
+    wait_impossible = 9,
+    not_authorized = 10,
+    unknown_kind = 11,
+    invalid_rights = 12,
+    timeout = 13,
+    no_such_file = 14,
+    no_space = 15,
+    bad_descriptor = 16,
+    too_many_open_files = 17,
+    name_exists = 18,
+    invalid_name = 19,
+    file_too_large = 20,
+    io_error = 21,
+};
+
+/// Preserva códigos futuros ou desconhecidos como null.
+pub fn knownError(status: u64) ?Error {
+    const code = errorCode(status) orelse return null;
+    return switch (code) {
+        1...21 => @enumFromInt(code),
+        else => null,
+    };
+}
+
 pub const Result = struct {
     status: u64,
     value: u64,
@@ -80,4 +114,12 @@ test "negative status decoding" {
     try std.testing.expect(!isError(0));
     try std.testing.expect(!isError(0x42));
     try std.testing.expectEqual(@as(?u64, 13), errorCode(0 -% @as(u64, 13)));
+}
+
+test "error catalog and unknown codes" {
+    const std = @import("std");
+    try std.testing.expectEqual(@as(?Error, .not_authorized), knownError(0 -% @as(u64, 10)));
+    try std.testing.expectEqual(@as(?Error, .timeout), knownError(0 -% @as(u64, 13)));
+    try std.testing.expectEqual(@as(?Error, null), knownError(0));
+    try std.testing.expectEqual(@as(?Error, null), knownError(0 -% @as(u64, 99)));
 }
