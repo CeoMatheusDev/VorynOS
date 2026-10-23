@@ -173,7 +173,7 @@ def sendkey(key):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(2)
         sock.connect(monitor_path)
-        sock.sendall(("sendkey " + key + " 50\\n").encode("ascii"))
+        sock.sendall(("sendkey " + key + " 50\n").encode("ascii"))
 
 while time.monotonic() < deadline:
     try:
@@ -193,14 +193,14 @@ while time.monotonic() < deadline:
     elif state == "interactive" and "[VNK] graphics: interactive event loop ready" in log:
         if "VORYN-KERNEL-READY" not in log:
             sys.exit("FAIL: interactive loop started before readiness")
-        baseline = len(re.findall(r"\\[VNK\\] graphics: keyboard move x=", log))
+        baseline = len(re.findall(r"\[VNK\] graphics: keyboard move x=", log))
         try:
             sendkey("right")
         except (OSError, TimeoutError) as exc:
             sys.exit("FAIL: could not send right arrow: " + str(exc))
         state = "movement"
     elif state == "movement":
-        count = len(re.findall(r"\\[VNK\\] graphics: keyboard move x=", log))
+        count = len(re.findall(r"\[VNK\] graphics: keyboard move x=", log))
         if count > baseline:
             if "[VNK] EXCEPTION 6: invalid opcode" in log:
                 sys.exit("FAIL: fatal self-test executed in interactive mode")
