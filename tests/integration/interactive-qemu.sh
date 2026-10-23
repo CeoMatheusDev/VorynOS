@@ -229,6 +229,7 @@ def expected_move(position, key, width, height):
     return (x, max(0, y - step_size))
 
 baseline = 0
+no_op_deadline = None
 while time.monotonic() < deadline:
     try:
         with open(log_path, "r", encoding="utf-8", errors="replace") as stream:
@@ -273,9 +274,39 @@ while time.monotonic() < deadline:
         baseline = len(movement_pattern.findall(log))
         monitor_command("sendkey " + steps[step] + " 50")
         state = "movement"
+        if bounds and expected_move(old_position, steps[step], width, height) == old_position:
+            no_op_deadline = time.monotonic() + 0.25
     elif state == "movement":
         positions = movement_pattern.findall(log)
-        if len(positions) > baseline:
+        no_op = bounds and expected_move(old_position, steps[step], width, height) == old_position
+        if no_op and no_op_deadline is not None and time.monotonic() >= no_op_deadline:
+            if len(positions) != baseline:
+                sys.exit(f"FAIL: unexpected movement while clamped at step {step + 1}")
+            screenshot(after_path)
+            import subprocess
+            result = subprocess.run(
+                [sys.executable, "tests/integration/compare-framebuffer.py",
+                 before_path, after_path, *map(str, (*old_position, *old_position))],
+                check=False, capture_output=True, text=True,
+            )
+            print(result.stdout, end="", flush=True)
+            if result.returncode:
+                sys.exit(f"FAIL: step {step + 1} clamped framebuffer validation: "
+                         + (result.stderr.strip() or result.stdout.strip() or "no comparator output"))
+            print(f"ok: clamped step {step + 1}/{len(steps)} {steps[step]} "
+                  f"at {old_position} (framebuffer unchanged)", flush=True)
+            step += 1
+            if step == len(steps):
+                print("ok: persistent loop received all arrows after readiness", flush=True)
+                sys.exit(0)
+            before_path, after_path = after_path, before_path
+            stage_origin = old_position
+            baseline = len(positions)
+            no_op_deadline = None
+            monitor_command("sendkey " + steps[step] + " 50")
+            if bounds and expected_move(old_position, steps[step], width, height) == old_position:
+                no_op_deadline = time.monotonic() + 0.25
+        elif len(positions) > baseline:
             if len(positions) != baseline + 1:
                 sys.exit("FAIL: unexpected additional keyboard movements")
             new_position = tuple(map(int, positions[-1]))
@@ -310,6 +341,8 @@ while time.monotonic() < deadline:
                 stage_origin = new_position
             baseline = len(positions)
             monitor_command("sendkey " + steps[step] + " 50")
+            if bounds and expected_move(old_position, steps[step], width, height) == old_position:
+                no_op_deadline = time.monotonic() + 0.25
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
