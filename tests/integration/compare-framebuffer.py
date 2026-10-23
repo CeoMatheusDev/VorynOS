@@ -85,8 +85,10 @@ def compare(before, after, old_x, old_y, new_x, new_y):
             f"geometry mismatch: before={mismatch_before} after={mismatch_after}, "
             f"first={first_error}"
         )
-    if changed == 0:
+    if changed == 0 and (old_x, old_y) != (new_x, new_y):
         raise ValueError("no visible pixels changed after arrow key")
+    if changed != 0 and (old_x, old_y) == (new_x, new_y):
+        raise ValueError("framebuffer changed despite clamped keyboard movement")
     print(
         f"ok: QEMU framebuffer geometry exact, {changed} changed pixels, "
         f"front ({old_x},{old_y})->({new_x},{new_y}), "
