@@ -68,8 +68,8 @@ Development is organized into incremental milestones, each with technical accept
 | F0 | Foundation, toolchain, build system, and documentation | ✅ Completed |
 | F1 | UEFI bootloader and kernel initialization | ✅ Completed |
 | F2 | Processor structures, interrupts, and memory | 🟢 Locally Tested |
-| F3 | Threads, scheduler, processes, syscalls, and IPC | 🟡 In Development |
-| F4 | Storage and file systems | 📋 Proposed |
+| F3 | Threads, scheduler, processes, syscalls, and IPC | ✅ Completed |
+| F4 | Storage and file systems | ✅ Basic RAMFS implemented |
 | F5 | Runtime, SDK, and native applications | 📋 Proposed |
 | F6 | Graphics subsystem and desktop environment | 📋 Proposed |
 | F7 | Drivers, networking, audio, and physical hardware | 📋 Proposed |
