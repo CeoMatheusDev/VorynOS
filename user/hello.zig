@@ -14,7 +14,7 @@ export fn _start() noreturn {
     // Smoke test da ABI antes de usar o console.
     if (sdk.ping() != 0x42) sdk.exit(2);
     // F4/F5: exercita syscalls de arquivo pelo SDK, sem acesso ao kernel.
-    const fd = sdk.fsOpen("/apps/hello.txt", 1);
+    const fd = sdk.fsOpen("/apps/hello.txt", 0);
     if (sdk.syscall.isError(fd)) sdk.exit(3);
     var data: [7]u8 = undefined;
     const count = sdk.fsRead(fd, &data);
