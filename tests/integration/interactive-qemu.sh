@@ -220,14 +220,14 @@ while time.monotonic() < deadline:
             new_position = tuple(map(int, positions[-1]))
             if old_position is None:
                 # No keyboard move precedes the first screenshot.
-                # The initial scene places the front window at width/4, height/4.
+                # The boot-time incremental redraw moves the front window by width/16.
                 with open(before_path, "rb") as ppm:
                     if ppm.readline().strip() != b"P6":
                         sys.exit("FAIL: invalid initial QEMU screenshot")
                     dimensions = []
                     while len(dimensions) < 2:
                         dimensions.extend(ppm.readline().split(b"#", 1)[0].split())
-                    old_position = (int(dimensions[0]) // 4, int(dimensions[1]) // 4)
+                    old_position = (int(dimensions[0]) // 4 + max(1, int(dimensions[0]) // 16), int(dimensions[1]) // 4)
             if "[VNK] EXCEPTION 6: invalid opcode" in log:
                 sys.exit("FAIL: fatal self-test executed in interactive mode")
             screenshot(after_path)
@@ -239,7 +239,7 @@ while time.monotonic() < deadline:
             )
             print(result.stdout, end="")
             if result.returncode:
-                sys.exit("FAIL: framebuffer validation: " + result.stderr)
+                sys.exit("FAIL: framebuffer validation (exit " + str(result.returncode) + "): " + (result.stderr.strip() or result.stdout.strip() or "no comparator output"))
             print("ok: persistent loop received arrow after readiness")
             sys.exit(0)
     try:
