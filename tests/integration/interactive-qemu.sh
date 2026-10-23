@@ -167,10 +167,12 @@ log_path, monitor_path, pid_text, timeout_text, work_dir = sys.argv[1:]
 pid = int(pid_text)
 deadline = time.monotonic() + int(timeout_text)
 state = "boot"
-baseline = 0
+steps = ("right", "down", "left", "up", "left", "right")
+step = 0
 old_position = None
 before_path = os.path.join(work_dir, "before.ppm")
 after_path = os.path.join(work_dir, "after.ppm")
+movement_pattern = re.compile(r"\\[VNK\\] graphics: keyboard move x=(\\d+) y=(\\d+)")
 
 def monitor_command(command):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
@@ -179,6 +181,8 @@ def monitor_command(command):
         sock.sendall((command + "\n").encode("ascii"))
 
 def screenshot(path):
+    if os.path.exists(path):
+        os.unlink(path)
     monitor_command("screendump " + path)
     for _ in range(100):
         if os.path.isfile(path) and os.path.getsize(path) > 100:
@@ -186,6 +190,33 @@ def screenshot(path):
         time.sleep(0.02)
     sys.exit("FAIL: QEMU screendump missing: " + path)
 
+def initial_position(path):
+    with open(path, "rb") as ppm:
+        if ppm.readline().strip() != b"P6":
+            sys.exit("FAIL: invalid initial QEMU screenshot")
+        dimensions = []
+        while len(dimensions) < 2:
+            line = ppm.readline()
+            if not line:
+                sys.exit("FAIL: truncated initial PPM header")
+            dimensions.extend(line.split(b"#", 1)[0].split())
+        width, height = map(int, dimensions[:2])
+        return (width // 4 + max(1, width // 16), height // 4), width, height
+
+def expected_move(position, key, width, height):
+    x, y = position
+    step_size = max(1, width // 32)
+    max_x = width - 1
+    max_y = height - 1
+    if key == "right":
+        return (min(max_x, x + step_size), y)
+    if key == "left":
+        return (max(0, x - step_size), y)
+    if key == "down":
+        return (x, min(max_y, y + step_size))
+    return (x, max(0, y - step_size))
+
+baseline = 0
 while time.monotonic() < deadline:
     try:
         with open(log_path, "r", encoding="utf-8", errors="replace") as stream:
@@ -194,6 +225,8 @@ while time.monotonic() < deadline:
         log = ""
     if "FATAL" in log:
         sys.exit("FAIL: fatal error in interactive boot")
+    if "[VNK] EXCEPTION 6: invalid opcode" in log:
+        sys.exit("FAIL: fatal self-test executed in interactive mode")
     if state == "boot" and "[VNK] keyboard: ready for PS/2 input" in log:
         try:
             monitor_command("sendkey i 50")
@@ -204,50 +237,48 @@ while time.monotonic() < deadline:
     elif state == "interactive" and "[VNK] graphics: interactive event loop ready" in log:
         if "VORYN-KERNEL-READY" not in log:
             sys.exit("FAIL: interactive loop started before readiness")
-        positions = re.findall(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)", log)
-        old_position = tuple(map(int, positions[-1])) if positions else None
-        baseline = len(positions)
-        try:
-            screenshot(before_path)
-            monitor_command("sendkey right 50")
-        except (OSError, TimeoutError) as exc:
-            sys.exit("FAIL: could not send right arrow: " + str(exc))
+        screenshot(before_path)
+        old_position, width, height = initial_position(before_path)
+        baseline = len(movement_pattern.findall(log))
+        monitor_command("sendkey " + steps[step] + " 50")
         state = "movement"
     elif state == "movement":
-        count = len(re.findall(r"\[VNK\] graphics: keyboard move x=", log))
-        if count > baseline:
-            positions = re.findall(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)", log)
+        positions = movement_pattern.findall(log)
+        if len(positions) > baseline:
+            if len(positions) != baseline + 1:
+                sys.exit("FAIL: unexpected additional keyboard movements")
             new_position = tuple(map(int, positions[-1]))
-            if old_position is None:
-                # No keyboard move precedes the first screenshot.
-                # The boot-time incremental redraw moves the front window by width/16.
-                with open(before_path, "rb") as ppm:
-                    if ppm.readline().strip() != b"P6":
-                        sys.exit("FAIL: invalid initial QEMU screenshot")
-                    dimensions = []
-                    while len(dimensions) < 2:
-                        dimensions.extend(ppm.readline().split(b"#", 1)[0].split())
-                    old_position = (int(dimensions[0]) // 4 + max(1, int(dimensions[0]) // 16), int(dimensions[1]) // 4)
-            if "[VNK] EXCEPTION 6: invalid opcode" in log:
-                sys.exit("FAIL: fatal self-test executed in interactive mode")
+            expected = expected_move(old_position, steps[step], width, height)
+            if new_position != expected:
+                sys.exit(f"FAIL: step {step + 1} {steps[step]} expected {expected}, got {new_position}")
             screenshot(after_path)
             import subprocess
             result = subprocess.run(
-                [sys.executable, "tests/integration/compare-framebuffer.py", before_path, after_path,
-                 *map(str, (*old_position, *new_position))],
+                [sys.executable, "tests/integration/compare-framebuffer.py",
+                 before_path, after_path, *map(str, (*old_position, *new_position))],
                 check=False, capture_output=True, text=True,
             )
-            print(result.stdout, end="")
+            print(result.stdout, end="", flush=True)
             if result.returncode:
-                sys.exit("FAIL: framebuffer validation (exit " + str(result.returncode) + "): " + (result.stderr.strip() or result.stdout.strip() or "no comparator output"))
-            print("ok: persistent loop received arrow after readiness")
-            sys.exit(0)
+                sys.exit(f"FAIL: step {step + 1} {steps[step]} framebuffer validation: "
+                         + (result.stderr.strip() or result.stdout.strip() or "no comparator output"))
+            print(f"ok: movement {step + 1}/{len(steps)} {steps[step]} "
+                  f"{old_position}->{new_position}", flush=True)
+            step += 1
+            if step == len(steps):
+                print("ok: persistent loop received all arrows after readiness", flush=True)
+                sys.exit(0)
+            old_position = new_position
+            before_path, after_path = after_path, before_path
+            baseline = len(positions)
+            monitor_command("sendkey " + steps[step] + " 50")
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         sys.exit("FAIL: QEMU exited before interactive validation")
     time.sleep(0.02)
-sys.exit("FAIL: timeout waiting for interactive state " + state)
+sys.exit(f"FAIL: timeout waiting for interactive state {state}, step {step + 1}")
+
 PY
 then
     echo "----- serial console -----"
