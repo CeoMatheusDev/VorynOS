@@ -62,6 +62,8 @@ const keyboard = @import("voryn_keyboard");
 var graphics_front_x: usize = 0;
 var graphics_front_y: usize = 0;
 var graphics_ready: bool = false;
+// F6.11: tecla I (Set 1, 0x17) seleciona o modo interativo durante o boot.
+var interactive_requested: bool = false;
 
 /// Version of the kernel, reported on the console.
 const kernel_version = "0.1.0-dev.1";
@@ -541,6 +543,10 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // it separates a broken gate from a broken transition of privilege.
     syscallSelfTest();
 
+    // F6.11: a tecla I durante a janela PS/2 seleciona o modo interativo.
+    // O boot automatizado nao envia I, preservando o autoteste fatal UD2.
+    if (interactive_requested) runInteractiveEventLoop();
+
     // The self test of the exception handling runs at the very end, because
     // an exception stops the kernel.
     selfTest();
@@ -909,6 +915,8 @@ fn installTimer() void {
             } else {
                 released += 1;
             }
+            if (event.pressed and !event.extended and event.scancode == 0x17)
+                interactive_requested = true;
             applyKeyboardGraphics(event);
             serial.printLine("[VNK] keyboard: key scancode=0x{x} extended={d} pressed={d}", .{
                 event.scancode, @intFromBool(event.extended), @intFromBool(event.pressed),
@@ -932,6 +940,8 @@ fn installTimer() void {
         } else {
             released += 1;
         }
+        if (event.pressed and !event.extended and event.scancode == 0x17)
+            interactive_requested = true;
         applyKeyboardGraphics(event);
         serial.printLine("[VNK] keyboard: key scancode=0x{x} extended={d} pressed={d}", .{
             event.scancode, @intFromBool(event.extended), @intFromBool(event.pressed),
@@ -947,6 +957,24 @@ fn installTimer() void {
     serial.printLine("[VNK] graphics: event pump {d} arrow presses over {d} ticks", .{
         graphics_updates, timer.ticks() - input_start,
     });
+}
+
+/// F6.11: loop de eventos permanente, selecionado pela tecla I no boot.
+/// Retira um evento com IRQs desabilitadas; compoe com IRQs habilitadas.
+fn runInteractiveEventLoop() noreturn {
+    serial.printLine("[VNK] graphics: interactive event loop ready", .{});
+    while (true) {
+        cpu.disableInterrupts();
+        const maybe_event = ps2.popIrqsDisabled();
+        cpu.enableInterrupts();
+        if (maybe_event) |event| {
+            applyKeyboardGraphics(event);
+        } else {
+            // O timer de 100 Hz garante novo despertar mesmo se IRQ1
+            // chegar entre a leitura da fila e HLT.
+            cpu.halt();
+        }
+    }
 }
 
 /// Initializes the file system.
