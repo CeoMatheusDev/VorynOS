@@ -81,6 +81,11 @@ pub fn build(b: *std.Build) void {
         .os_tag = .freestanding,
         .abi = .none,
     });
+    const sdk_module = b.createModule(.{
+        .root_source_file = b.path("sdk/src/root.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
     const user_module = b.createModule(.{
         .root_source_file = b.path("user/hello.zig"),
         .target = user_target,
@@ -88,6 +93,7 @@ pub fn build(b: *std.Build) void {
         .single_threaded = true,
         .pic = true,
     });
+    user_module.addImport("voryn_sdk", sdk_module);
     const user_executable = b.addExecutable(.{
         .name = "voryn-native-hello",
         .root_module = user_module,
@@ -194,6 +200,18 @@ pub fn build(b: *std.Build) void {
         .root_module = shared_test_module,
     });
     unit_test_step.dependOn(&b.addRunArtifact(shared_tests).step);
+
+    // SDK: testes de contratos e decodificação de erros no host.
+    const sdk_test_module = b.createModule(.{
+        .root_source_file = b.path("sdk/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const sdk_tests = b.addTest(.{
+        .name = "sdk-tests",
+        .root_module = sdk_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(sdk_tests).step);
 
     // The memory managers of the kernel are free of architecture specific
     // code and are tested on the host as well.
