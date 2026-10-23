@@ -55,3 +55,17 @@ aplicação termina com código zero. O teste de boot atual verifica a
 execução, mas não identifica separadamente cada falha do SDK.
 **Não considerar F4–F6 concluídas** com base apenas neste incremento:
 faltam persistência, VFSX, compositor, entrada e janelas.
+
+### F6.1 — Compositor de janelas opacas
+
+O módulo `kernel/graphics/compositor.zig` implementa composição
+determinística de retângulos opacos em uma `raster.Surface`. A última
+janela visível na lista tem prioridade de desenho. Não há alocação dinâmica
+nem dependência de dispositivos; a superfície de destino precisa ter sido
+validada e mapeada pelo chamador.
+
+Os testes de sobreposição, visibilidade e clipping estão ligados ao
+`zig build test`. Ainda faltam o driver de apresentação, a composição
+incremental (dirty rectangles), eventos de entrada e uma API de janelas
+para processos usuários. **Não confundir o compositor de host com uma
+interface gráfica em execução no VorynOS.**
