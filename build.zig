@@ -237,6 +237,18 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(compositor_tests).step);
 
+    // F6.4: rastreamento de regiões modificadas e mutações de janelas.
+    const damage_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/graphics/damage.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const damage_tests = b.addTest(.{
+        .name = "damage-tests",
+        .root_module = damage_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(damage_tests).step);
+
     // The memory managers of the kernel are free of architecture specific
     // code and are tested on the host as well.
     const kernel_test_module = b.createModule(.{
