@@ -407,6 +407,9 @@ export fn voryn_interrupt_handler(vector: u64, frame: *const Registers) callconv
             return if (must_switch) 1 else 0;
         }
 
+        if (vector == first_hardware_vector + 1) {
+            @import("../../input/ps2.zig").onInterrupt();
+        }
         timer.acknowledge(@intCast(vector));
     }
 
