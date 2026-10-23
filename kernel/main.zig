@@ -57,7 +57,7 @@ const compositor = @import("graphics/compositor.zig");
 const damage = @import("graphics/damage.zig");
 const ps2 = @import("input/ps2.zig");
 const keyboard_motion = @import("graphics/keyboard_motion.zig");
-const keyboard = @import("input/keyboard.zig");
+const keyboard = @import("voryn_keyboard");
 
 var graphics_front_x: usize = 0;
 var graphics_front_y: usize = 0;
