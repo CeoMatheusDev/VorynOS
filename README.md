@@ -7,7 +7,7 @@
 **An independent operating system built from scratch to provide direct hardware control, efficiency, and technological freedom.**
 
 [![Zig](https://img.shields.io/badge/Zig-0.17.0-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
-[![Release](https://img.shields.io/badge/release-v0.1.0--dev.3-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2)
+[![Release](https://img.shields.io/badge/release-v0.1.0--dev.3-2563EB)](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.3)
 [![License](https://img.shields.io/badge/license-GPL--3.0--only-22C55E)](LICENSE)
 [![Architecture](https://img.shields.io/badge/architecture-x86__64-64748B)](#architecture)
 [![Status](https://img.shields.io/badge/status-in%20development-EAB308)](#project-status)
@@ -17,7 +17,7 @@
 [**Building**](#building) ·
 [**Architecture**](#architecture) ·
 [**Documentation**](#documentation) ·
-[**Release Notes**](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2)
+[**Release Notes**](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.3)
 
 ![VorynOS Logo](Logos_VorynOS.png)
 
@@ -48,14 +48,14 @@ The project is currently in its early development stages and **does not yet cons
 
 ## Project Status
 
-> **Published version:** `v0.1.0-dev.3` — RAMFS Foundation Release Complete — [Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2)  
+> **Published version:** `v0.1.0-dev.3` — RAMFS Foundation & Native ELF64 Support — [Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.3)  
 > **Initial architecture:** `x86_64`  
 > **Primary language:** Zig 0.17.0  
 > **Boot firmware:** UEFI  
 > **License:** GPL-3.0-only  
-> **Last documentation revision:** October 22, 2026
+> **Last documentation revision:** October 23, 2026
 
-The current development release focuses on **process fault recovery and kernel reliability**. User-mode exceptions terminate affected processes, and **RAMFS filesystem syscalls (13-18) now functional** without halting unaffected tasks; exception-frame handling, physical memory accounting, firmware memory-map safety, and heap alignment have been corrected. The release documents a three-process QEMU fault-recovery scenario and execution of **36 unit tests**. This release introduces **RAMFS foundation** with functional filesystem operations, syscalls 13-18 implementation, and ELF64 native application loading support., not a production-ready operating system.
+The `v0.1.0-dev.3` development preview introduces the **RAMFS foundation**, initial filesystem operations, and the first steps toward native ELF64 application loading. Earlier milestones established UEFI boot, memory management, user processes, scheduling, IPC, capabilities, and process fault recovery. Filesystem integration and native application execution remain under active development; this is **not a production-ready operating system**. The release notes document the scope and limitations of the current preview.
 
 The reorganization of public milestones is documented in [VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md).
 
@@ -69,8 +69,8 @@ Development is organized into incremental milestones, each with technical accept
 | F1 | UEFI bootloader and kernel initialization | ✅ Completed |
 | F2 | Processor structures, interrupts, and memory | 🟢 Locally Tested |
 | F3 | Threads, scheduler, processes, syscalls, and IPC | ✅ Completed |
-| F4 | Storage and file systems | ✅ RAMFS Foundation — Filesystem operations, syscalls 13-18, ELF64 loading |
-| F5 | Runtime, SDK, and native applications | 📋 Proposed |
+| F4 | Storage and file systems | ✅ RAMFS foundation implemented; filesystem interfaces under validation |
+| F5 | Runtime, SDK, and native applications | 🚧 In progress — initial ELF64 loader and SDK groundwork |
 | F6 | Graphics subsystem and desktop environment | 📋 Proposed |
 | F7 | Drivers, networking, audio, and physical hardware | 📋 Proposed |
 | F8 | Compatibility with external formats and APIs | 📋 Proposed |
@@ -194,6 +194,19 @@ The structure includes versioning and structural integrity checks.
 
 **Specification:** [Boot Handoff Specification](docs/specs/boot-handoff-spec.md)
 
+### RAMFS Foundation (F4)
+
+The kernel includes an initial RAM-based filesystem for file and directory operations. This is **volatile storage**: RAMFS contents do not persist after reboot.
+
+- File creation, reading, writing, and directory management.
+- Filesystem syscall integration, with ABI numbering subject to documentation reconciliation.
+- RAMFS regression-test infrastructure.
+- Initial ELF64 application loader groundwork; full end-to-end native execution is not yet established.
+
+**Implementation:** `kernel/fs/ramfs.zig`, `kernel/arch/x86_64/syscall.zig`, and `kernel/elf_loader.zig`.
+
+**Release:** [v0.1.0-dev.3 — RAMFS Foundation & Native ELF64 Support](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.3)
+
 ### Disk Image Tool
 
 The project includes a custom FAT16 image builder implemented in Zig.
@@ -212,17 +225,17 @@ The following limitations are known and documented:
 
 | Subsystem | Limitation |
 |---|---|
-| Physical memory | Bitmap covering up to 4 GiB |
+| Physical memory | Bitmap-based allocator; extended-memory behavior requires ongoing validation |
 | Heap | Fixed 256 KiB region |
 | Virtual memory | Kernel image and framebuffer mappings, with a dedicated window for each process |
 | Processes | Three processes; the address-space limit is a constant defined in the paging module |
 | TSS | 64-bit mode structure with a layout verified at compile time |
 | Exceptions | A user-mode exception kills the process; an exception in the kernel is fatal |
-| Syscalls | Eleven system calls, with verified return to user mode |
+| Syscalls | Existing process/IPC interface plus filesystem extensions; syscall numbering and ABI documentation require reconciliation |
 | IPC | Message delivery and waiting between two processes are verified; ordering, guaranteed delivery, and synchronization are not provided |
-| Waiting | A wait has a timeout, in ticks of the timer; a task still waits on one channel and one endpoint, and a wait on several channels is not provided |
-| Capabilities | The model covers the channels of the VNX; the process still accesses its entire address space |
-| Storage | No operational kernel file system |
+| Waiting | Timed and multi-channel waiting are implemented in development; full regression coverage remains ongoing |
+| Capabilities | Channel and process capabilities; device-related capabilities are under development |
+| Storage | Initial in-memory RAMFS; no persistent storage across reboot |
 | Drivers | No general-purpose driver infrastructure |
 | Graphical interface | Not implemented |
 | Physical hardware | No documented validation |
@@ -238,8 +251,8 @@ Interprocess memory copying performs an actual data copy: the calling process's 
 Features that do not yet exist include:
 
 - Threads.
-- Timed waiting.
-- The VNC capability model.
+- A stable, fully documented filesystem ABI.
+- End-to-end native ELF64 application execution validation.
 - Physical hardware validation.
 
 These features belong to upcoming development increments.
@@ -294,10 +307,10 @@ cd VorynOS
 To obtain the exact published milestone:
 
 ```bash
-git checkout v0.1.0-dev.2
+git checkout v0.1.0-dev.3
 ```
 
-**About release artifacts:** The `v0.1.0-dev.2` release provides source distribution artifacts.
+**About release artifacts:** The `v0.1.0-dev.3` release provides source distribution artifacts.
 
 No binaries are distributed with this release because the project does not yet maintain a sufficiently reproducible build pipeline to designate a binary artifact as official.
 
@@ -617,7 +630,7 @@ VorynOS maintains technical documentation alongside its source code.
 | [ADR-0010](docs/adr/ADR-0010-wait-timeout.md) | The wait with a timeout |
 | [Boot Handoff](docs/specs/boot-handoff-spec.md) | Boot handoff contract specification |
 | [Syscall ABI](docs/specs/syscall-abi.md) | System call contract |
-| [v0.1.0-dev.2 Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.2) | Process fault recovery, kernel reliability fixes, and validation results |
+| [v0.1.0-dev.2 Release Notes](https://github.com/CeoMatheusDev/VorynOS/releases/tag/v0.1.0-dev.3) | Process fault recovery, kernel reliability fixes, and validation results |
 | [Roadmap](docs/roadmap/phase-status.md) | Milestone status and planning |
 | [Testing Strategy](docs/testing/testing-strategy.md) | Validation strategy |
 | [VVS-0001](docs/standards/VVS-0001.md) | Versioning policy |
