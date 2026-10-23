@@ -56,7 +56,7 @@ The project is currently in its early development stages and **does not yet cons
 > - **License:** GPL-3.0-only
 > - **Last documentation revision:** October 23, 2026
 
-The current development line is **F5 — Runtime, SDK and native applications**. The RamFS has a verified core: block allocator, files with direct blocks, directories, path lookup and a descriptor facade. The ELF64 **planner and materializer** now load `/apps/hello.elf` from the RamFS into a fourth process: the kernel maps code R+X and data/stack R+W+NX with hardware NX, applies a relative relocation, and executes the image in QEMU. The embedded processes also use W^X. The host suite has 89 tests, and the boot test still covers process fault recovery, IPC, capabilities and the timeout. The native SDK/toolchain and persistent storage remain pending. This increment is verified in the working tree and has not been tagged yet. This is not a production-ready operating system.
+The active development branch is **`feat/native-sdk`**. In addition to the native ELF64 and toolchain execution paths, the branch contains the experimental **F6 graphics stack**: GOP framebuffer rendering, opaque window composition, damage tracking, PS/2 Set 1 keyboard decoding through IRQ1, arrow-key window movement, and an event pump during a bounded boot-test window. **F6.9 was verified on Fedora** using `zig build test && zig build && zig build qemu-test` at commit `4a6beb2`; the QEMU test reported four key events, zero drops, and one arrow-key graphics update. **F6.10 is under development**: a regression test compares incremental redraw against a full-frame reference after successive overlapping window movements. That new test has not yet been validated on Fedora. Persistent graphical interaction, a production SDK, and persistent storage are still pending. These branch-specific features are not a production-ready desktop or a tagged release.
 
 The reorganization of public milestones is documented in [VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md).
 
@@ -72,7 +72,7 @@ Development is organized into incremental milestones, each with technical accept
 | F3 | Threads, scheduler, processes, syscalls, and IPC | ✅ Completed |
 | F4 | Storage and file systems | 🚧 RamFS core verified — persistence and VFSX pending |
 | F5 | Runtime, SDK, and native applications | 🚧 In progress — native ELF and toolchain app verified; SDK pending |
-| F6 | Graphics subsystem and desktop environment | 📋 Proposed |
+| F6 | Graphics subsystem and desktop environment | 🚧 Experimental on `feat/native-sdk` — F6.9 QEMU-verified; F6.10 tests pending |
 | F7 | Drivers, networking, audio, and physical hardware | 📋 Proposed |
 | F8 | Compatibility with external formats and APIs | 📋 Proposed |
 | F9 | Artificial intelligence infrastructure | 📋 Proposed |
@@ -208,6 +208,24 @@ The project includes a custom FAT16 image builder implemented in Zig.
 This tool prepares the bootable volume used in system tests.
 
 **Implementation:** `tools/fatimg.zig`
+
+---
+
+### Experimental graphics and PS/2 input (`feat/native-sdk`)
+
+The development branch includes a custom framebuffer rasterizer, opaque window compositor, dirty-rectangle tracker, PS/2 keyboard Set 1 decoder and IRQ1 event queue. QEMU's HMP monitor injects the A key and right arrow during the integration test. F6.9 processes queued input during a bounded timer window instead of waiting until its end.
+
+**Verified on Fedora at `4a6beb2`:** `zig build test`, `zig build`, and `zig build qemu-test` passed. The serial output reported `4 events, 2 pressed, 2 released, 6 bytes, 0 dropped` and `event pump 1 arrow presses over 237 ticks`. This is evidence of input handling and redraw execution, **not a framebuffer screenshot or end-to-end input latency benchmark**.
+
+**F6.10 (unverified pending Fedora run):** `kernel/graphics/damage.zig` now contains a pixel-by-pixel regression comparing dirty redraw with full composition after four window movements, including overlaps. The GUI is not persistent and has no focus manager or user-space graphics service.
+
+Run on the development branch:
+
+```bash
+git switch feat/native-sdk
+git pull --ff-only origin feat/native-sdk
+zig build test && zig build && zig build qemu-test
+```
 
 ---
 
