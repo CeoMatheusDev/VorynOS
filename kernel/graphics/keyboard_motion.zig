@@ -51,3 +51,34 @@ test "left up and down clamp to framebuffer" {
     try std.testing.expect(move(&window, bounds, .{ .scancode = 0x50, .extended = true, .pressed = true }, 8));
     try std.testing.expectEqual(@as(usize, 2), window.y);
 }
+
+test "F6.15 clamps a large window to the last fully visible position" {
+    var window: compositor.Window = .{ .x = 2, .y = 2, .width = 6, .height = 4, .color = .{ 1, 2, 3, 0 } };
+    const bounds: compositor.Rect = .{ .x = 0, .y = 0, .width = 10, .height = 8 };
+    const right: keyboard.KeyEvent = .{ .scancode = 0x4d, .extended = true, .pressed = true };
+    const down: keyboard.KeyEvent = .{ .scancode = 0x50, .extended = true, .pressed = true };
+    const left: keyboard.KeyEvent = .{ .scancode = 0x4b, .extended = true, .pressed = true };
+    const up: keyboard.KeyEvent = .{ .scancode = 0x48, .extended = true, .pressed = true };
+
+    try std.testing.expect(move(&window, bounds, right, 100));
+    try std.testing.expectEqual(@as(usize, 4), window.x);
+    try std.testing.expect(!move(&window, bounds, right, 100));
+    try std.testing.expect(move(&window, bounds, down, 100));
+    try std.testing.expectEqual(@as(usize, 4), window.y);
+    try std.testing.expect(!move(&window, bounds, down, 100));
+    try std.testing.expect(move(&window, bounds, left, 100));
+    try std.testing.expect(move(&window, bounds, up, 100));
+    try std.testing.expectEqual(@as(usize, 0), window.x);
+    try std.testing.expectEqual(@as(usize, 0), window.y);
+    try std.testing.expect(!move(&window, bounds, left, 100));
+    try std.testing.expect(!move(&window, bounds, up, 100));
+}
+
+test "F6.15 oversized window cannot move outside framebuffer" {
+    var window: compositor.Window = .{ .x = 0, .y = 0, .width = 12, .height = 10, .color = .{ 1, 2, 3, 0 } };
+    const bounds: compositor.Rect = .{ .x = 0, .y = 0, .width = 10, .height = 8 };
+    try std.testing.expect(!move(&window, bounds, .{ .scancode = 0x4d, .extended = true, .pressed = true }, 1));
+    try std.testing.expect(!move(&window, bounds, .{ .scancode = 0x50, .extended = true, .pressed = true }, 1));
+    try std.testing.expectEqual(@as(usize, 0), window.x);
+    try std.testing.expectEqual(@as(usize, 0), window.y);
+}
