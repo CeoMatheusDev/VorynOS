@@ -52,6 +52,8 @@ const elf_loader = @import("elf_loader.zig");
 const elf_materializer = @import("elf_materializer.zig");
 const native_image = @import("native_image.zig");
 const toolchain_app = @import("native_app");
+const raster = @import("graphics/raster.zig");
+const compositor = @import("graphics/compositor.zig");
 
 /// Version of the kernel, reported on the console.
 const kernel_version = "0.1.0-dev.1";
@@ -708,6 +710,9 @@ fn activatePageTables() void {
     // The framebuffer is written after the new tables are active, which
     // proves that the mapping of the device memory works.
     probeFramebuffer();
+    // F6.2: cena inicial diretamente no framebuffer GOP mapeado.
+    // A integração ocorre antes da ativação do timer e das tarefas.
+    presentGraphicsDemo();
 }
 
 /// Writes a value into the first pixel of the framebuffer and reads it back.
@@ -730,6 +735,44 @@ fn probeFramebuffer() void {
     } else {
         serial.printLine("[VNK] framebuffer: write probe failed (readback=0x{x})", .{readback});
     }
+}
+
+/// F6.2: desenha uma cena de diagnóstico no framebuffer fornecido pelo UEFI.
+/// Não altera o contrato do boot nem expõe MMIO a processos de usuário.
+fn presentGraphicsDemo() void {
+    const framebuffer = boot_info.framebuffer;
+    if (boot_info.flags & handoff.flag_framebuffer == 0) return;
+    if (framebuffer.base == 0 or framebuffer.bits_per_pixel != 32) return;
+    if (framebuffer.width == 0 or framebuffer.height == 0) return;
+    if (framebuffer.size > std.math.maxInt(usize)) return;
+    if (framebuffer.base >= handoff.identity_mapped_limit) return;
+    if (framebuffer.size > handoff.identity_mapped_limit - framebuffer.base) return;
+
+    const size: usize = @intCast(framebuffer.size);
+    const width: usize = @intCast(framebuffer.width);
+    const height: usize = @intCast(framebuffer.height);
+    const pitch: usize = @intCast(framebuffer.pitch);
+    const ptr: [*]u8 = @ptrFromInt(framebuffer.base);
+    var surface = raster.Surface.init(ptr[0..size], width, height, pitch) catch {
+        serial.printLine("[VNK] graphics: invalid framebuffer geometry", .{});
+        return;
+    };
+
+    // Cores codificadas em BGRA (GOP 32 bpp convencional).
+    // Modos com máscaras diferentes exigem conversão explícita.
+    if (framebuffer.red_mask != 0x00ff0000 or
+        framebuffer.green_mask != 0x0000ff00 or
+        framebuffer.blue_mask != 0x000000ff)
+    {
+        serial.printLine("[VNK] graphics: unsupported pixel masks", .{});
+        return;
+    }
+    const windows = [_]compositor.Window{
+        .{ .x = width / 8, .y = height / 8, .width = width / 2, .height = height / 2, .color = .{ 0x70, 0x36, 0x1e, 0 } },
+        .{ .x = width / 4, .y = height / 4, .width = width / 2, .height = height / 3, .color = .{ 0xb0, 0x86, 0x30, 0 } },
+    };
+    compositor.compose(&surface, .{ 0x20, 0x17, 0x10, 0 }, &windows);
+    serial.printLine("[VNK] graphics: framebuffer scene presented ({d}x{d})", .{ width, height });
 }
 
 /// Prepares the heap of the kernel and verifies that it works.
