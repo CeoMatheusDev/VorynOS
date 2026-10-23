@@ -17,12 +17,14 @@ set -euo pipefail
 IMAGE=""
 TIMEOUT=60
 EDGES=false
+STRESS=false
 
 for argument in "$@"; do
     case "$argument" in
         --image=*) IMAGE="${argument#--image=}" ;;
         --timeout=*) TIMEOUT="${argument#--timeout=}" ;;
         --edges) EDGES=true ;;
+        --stress) STRESS=true ;;
         *)
             echo "qemu-boot-test: unknown argument: $argument" >&2
             exit 2
@@ -158,15 +160,18 @@ trap 'cleanup_qemu; rm -rf "$WORK_DIRECTORY"' EXIT
 
 # The script injects I during boot, then RIGHT only after the persistent
 # loop marker. This distinguishes the permanent loop from the boot pump.
-if ! python3 - "$SERIAL_LOG" "$MONITOR_SOCKET" "$QEMU_PID" "$TIMEOUT" "$WORK_DIRECTORY" "$EDGES" <<'PY'
+if ! python3 - "$SERIAL_LOG" "$MONITOR_SOCKET" "$QEMU_PID" "$TIMEOUT" "$WORK_DIRECTORY" "$EDGES" "$STRESS" <<'PY'
 import os
 import re
 import socket
 import sys
 import time
 
-log_path, monitor_path, pid_text, timeout_text, work_dir, edges_text = sys.argv[1:]
+log_path, monitor_path, pid_text, timeout_text, work_dir, edges_text, stress_text = sys.argv[1:]
 edges = edges_text == "true"
+stress = stress_text == "true"
+if edges and stress:
+    sys.exit("FAIL: --edges and --stress are mutually exclusive")
 pid = int(pid_text)
 deadline = time.monotonic() + int(timeout_text)
 state = "boot"
@@ -255,6 +260,12 @@ while time.monotonic() < deadline:
                        ("up", (max_y + stride - 1) // stride)]
             steps = [direction for direction, count in targets for _ in range(count)]
             print(f"ok: edge route has {len(steps)} acknowledged movements", flush=True)
+        if stress:
+            # Alternate directions repeatedly, checking the complete scene
+            # after each segment to detect accumulated rendering artifacts.
+            steps = ["right"] * 4 + ["down"] * 4 + ["left"] * 4 + ["up"] * 4
+            steps *= 3
+            print(f"ok: stress route has {len(steps)} acknowledged movements", flush=True)
         baseline = len(movement_pattern.findall(log))
         monitor_command("sendkey " + steps[step] + " 50")
         state = "movement"
@@ -267,7 +278,7 @@ while time.monotonic() < deadline:
             expected = expected_move(old_position, steps[step], width, height)
             if new_position != expected:
                 sys.exit(f"FAIL: step {step + 1} {steps[step]} expected {expected}, got {new_position}")
-            if not edges or step == len(steps) - 1 or steps[step] != steps[step + 1]:
+            if not (edges or stress) or step == len(steps) - 1 or steps[step] != steps[step + 1]:
                 screenshot(after_path)
                 import subprocess
                 result = subprocess.run(
@@ -286,7 +297,7 @@ while time.monotonic() < deadline:
                 print("ok: persistent loop received all arrows after readiness", flush=True)
                 sys.exit(0)
             old_position = new_position
-            if not edges or steps[step - 1] != steps[step]:
+            if not (edges or stress) or steps[step - 1] != steps[step]:
                 before_path, after_path = after_path, before_path
                 stage_origin = new_position
             baseline = len(positions)
