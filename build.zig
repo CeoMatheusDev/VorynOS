@@ -254,6 +254,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const motion_keyboard_module = b.createModule(.{
+        .root_source_file = b.path("kernel/input/keyboard.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    motion_module.addImport("voryn_keyboard", motion_keyboard_module);
     const motion_tests = b.addTest(.{
         .name = "keyboard-motion-tests",
         .root_module = motion_module,
