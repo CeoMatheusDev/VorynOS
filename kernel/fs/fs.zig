@@ -354,6 +354,8 @@ pub fn read(process_id: u64, fd: Fd, buffer: []u8) Error!usize {
 pub fn write(process_id: u64, fd: Fd, data: []const u8) Error!usize {
     const entry = descriptor(process_id, fd) orelse return error.BadDescriptor;
     if (!writable(entry.flags)) return error.NotWritable;
+    // Uma escrita vazia não altera nem o arquivo nem o offset, inclusive em O_APPEND.
+    if (data.len == 0) return 0;
 
     // O_APPEND é uma propriedade da operação de escrita, não apenas
     // do deslocamento inicial da abertura. Outros descritores podem
@@ -938,4 +940,61 @@ test "truncateFile handles paths and frees RamFS blocks" {
     try testing.expectEqual(@as(u64, 0), try sizeOf("/path-trunc"));
     try testing.expectError(error.EntryNotFound, truncateFile("/missing", 0));
     try close(0, fd);
+}
+
+// M0.3.17: append/truncate semantics and descriptor lifetime regressions.
+test "zero-length append write preserves offset even when EOF changes" {
+    init();
+    const appender = try open(0, "/append-empty", O_CREAT | O_RDWR | O_APPEND);
+    const writer = try open(1, "/append-empty", O_RDWR);
+    try testing.expectEqual(@as(usize, 4), try write(1, writer, "data"));
+    try seek(0, appender, 2);
+    const blocks_before = freeBlockCount();
+    try testing.expectEqual(@as(usize, 0), try write(0, appender, ""));
+    try testing.expectEqual(@as(usize, 2), try tell(0, appender));
+    try testing.expectEqual(blocks_before, freeBlockCount());
+    try testing.expectEqual(@as(u64, 4), try sizeOf("/append-empty"));
+    try testing.expectEqual(@as(usize, 1), try write(0, appender, "!"));
+    try testing.expectEqual(@as(usize, 5), try tell(0, appender));
+    var buffer: [8]u8 = undefined;
+    const count = try readFile("/append-empty", &buffer);
+    try testing.expectEqualStrings("data!", buffer[0..count]);
+    try closeAll(0);
+    try closeAll(1);
+}
+
+test "append follows truncate and retains inode after unlink until last close" {
+    init();
+    const appender = try open(0, "/append-lifetime", O_CREAT | O_RDWR | O_APPEND);
+    const reader = try open(1, "/append-lifetime", O_RDONLY);
+    try testing.expectEqual(@as(usize, 6), try write(0, appender, "abcdef"));
+    try truncateFd(0, appender, 2);
+    try testing.expectEqual(@as(usize, 1), try write(0, appender, "!"));
+    try testing.expectEqual(@as(usize, 3), try tell(0, appender));
+    const inode_num = (try stat("/append-lifetime")).inode;
+    const blocks_before = freeBlockCount();
+    try unlink("/append-lifetime");
+    try closeAll(0);
+    try testing.expectEqual(blocks_before, freeBlockCount());
+    try testing.expect(ramfs.inodeKind(inode_num) != null);
+    var buffer: [8]u8 = undefined;
+    const count = try read(1, reader, &buffer);
+    try testing.expectEqualStrings("ab!", buffer[0..count]);
+    try closeAll(1);
+    try testing.expectEqual(blocks_before + 1, freeBlockCount());
+    try testing.expect(ramfs.inodeKind(inode_num) == null);
+}
+
+test "truncate does not validate stale checked handles as live descriptors" {
+    init();
+    const original = try open(2, "/truncate-handle", O_CREAT | O_RDWR);
+    const stale = try checkedFd(2, original);
+    try close(2, original);
+    const reused = try open(2, "/truncate-handle", O_RDWR);
+    try testing.expectEqual(original, reused);
+    try testing.expectError(error.BadDescriptor, validateCheckedFd(2, stale));
+    try testing.expectEqual(@as(usize, 4), try write(2, reused, "data"));
+    try truncateFd(2, reused, 2);
+    try testing.expectEqual(@as(u64, 2), try sizeOf("/truncate-handle"));
+    try closeAll(2);
 }
