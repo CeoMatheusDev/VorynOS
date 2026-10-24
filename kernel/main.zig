@@ -117,7 +117,7 @@ const RenderLatency = struct {
             }
             sorted[j] = value;
         }
-        const rank = (@as(usize, @min(percentile, 100)) * (self.recent_count - 1) + 99) / 100;
+        const rank = if (percentile == 0) 0 else (@as(usize, @min(percentile, 100)) * self.recent_count + 99) / 100 - 1;
         return sorted[rank];
     }
 
