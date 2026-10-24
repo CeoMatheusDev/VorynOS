@@ -887,7 +887,7 @@ test "writeFileAt NoSpace rolls back partial block allocation" {
         held_count += 1;
     }
     const before_free = freeBlockCount();
-    var payload: [block_size * 2 + 1]u8 = @splat(0x5a);
+    const payload: [block_size * 2 + 1]u8 = @splat(0x5a);
     try testing.expectError(error.NoSpace, writeFileAt(target, 0, &payload));
     try testing.expectEqual(original_size, sizeOf(target).?);
     try testing.expectEqual(original_block, inodes[target].i_block[0]);
