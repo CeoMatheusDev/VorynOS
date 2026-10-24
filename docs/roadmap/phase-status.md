@@ -5,7 +5,7 @@
 | **State** | ALIVE |
 | **Date** | 2026-10-24 |
 | **Published version** | `v0.1.0-dev.3` (tag) |
-| **Working tree** | F6.22.2/F6.23/F6.24 increment, verified locally in QEMU, not yet tagged |
+| **Working tree** | F6.25 display metadata increment, verified locally in QEMU, not yet tagged |
 
 The state below reflects the **existing and verified code**, and not the
 intention. An item is only marked as completed when it meets every criterion
@@ -326,7 +326,8 @@ service and a desktop shell remain future work.
 | F6.22.2 monitor/ACK instrumentation | TESTED LOCALLY | HMP round trips and ACK-window timings distinguish the harness from the kernel |
 | F6.23 kernel phase timing | TESTED LOCALLY | TSC calibration against the PIT; PS/2 IRQ, motion, ACK log, render and trailing log are reported per eight arrows |
 | F6.24 exposed-strip damage | TESTED LOCALLY | opaque moves invalidate only the exposed strips; 16-event throughput rose from 0.4 to 6.7 events/s in Debug/TCG |
-| User-space graphics service | PROPOSED | the compositor still runs in the kernel; there is no graphics syscall or window manager |
+| F6.25 display metadata call | TESTED LOCALLY | syscall 19 (`display_info`, ABI 10) returns the versioned `DisplayInfo` to the native SDK application; no framebuffer address is exposed |
+| User-space graphics service | PROPOSED | `present`, the display capability and the user-space compositor are designed in ADR-0015; the compositor still runs in the kernel |
 
 Measured environment for F6.22.2/F6.23/F6.24: Fedora 44, Zig 0.17.0,
 QEMU 10.2.2, OVMF, `-smp 1`, 256 MiB, no KVM (TCG), GOP mode 2048x2048.
@@ -338,7 +339,8 @@ by QEMU's key-hold pacing.
 
 Known limitations of the verified F6 core:
 
-- there is no user-space graphics API, window manager, focus model or cursor;
+- `display_info` is the only user-space graphics call; there is no
+  presentation API, window manager, focus model or cursor;
 - text and general shapes are not part of the rasterizer yet;
 - input is PS/2 Set 1 only; there is no mouse or USB HID;
 - the bootloader prefers the largest 32 bpp GOP mode, which in QEMU is

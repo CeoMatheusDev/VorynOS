@@ -55,6 +55,7 @@ const toolchain_app = @import("native_app");
 const raster = @import("graphics/raster.zig");
 const compositor = @import("graphics/compositor.zig");
 const damage = @import("graphics/damage.zig");
+const display = @import("graphics/display.zig");
 const ps2 = @import("input/ps2.zig");
 const keyboard_motion = @import("graphics/keyboard_motion.zig");
 const keyboard = @import("voryn_keyboard");
@@ -705,11 +706,13 @@ fn reportMemory() void {
 /// Reports the framebuffer.
 fn reportFramebuffer(boot: *const handoff.BootHandoff) void {
     if (boot.flags & handoff.flag_framebuffer == 0) {
+        display.clear();
         serial.printLine("[VNK] framebuffer: none", .{});
         return;
     }
 
     const framebuffer = boot.framebuffer;
+    display.install(framebuffer);
     serial.printLine("[VNK] framebuffer: {d}x{d} bpp={d} pitch={d} base=0x{x}", .{
         framebuffer.width,
         framebuffer.height,

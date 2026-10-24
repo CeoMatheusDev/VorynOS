@@ -3,9 +3,9 @@
 | Field | Value |
 |-------|-------|
 | **State** | ACCEPTED |
-| **Date** | 2026-10-22 |
+| **Date** | 2026-10-24 |
 | **Scope** | The interface between the user mode and the kernel |
-| **Contract version** | `syscall_abi = 9` |
+| **Contract version** | `syscall_abi = 10` |
 
 ## 1. Objective
 
@@ -25,7 +25,8 @@ that the calls of the channel use. Version 5 adds the **kind** of the
 capability to the calls that give and take it, so that a process can
 delegate the capability of an address space as well as the capability of a
 channel. Version 6 adds the call that waits for a message with a timeout.
-Version 9 adds the file system calls 13 to 18.
+Version 9 adds the file system calls 13 to 18. Version 10 adds the
+read-only display metadata call 19.
 
 The calls of the earlier versions **do not change their number**. Their
 behavior changes in the points that the sections 9 and 10 describe: the
@@ -140,6 +141,7 @@ next interrupt. The exit code is registered in the task.
 | 16 | `fs_write` | `RDI` descriptor, `RSI` buffer, `RDX` length | the number of bytes written |
 | 17 | `fs_create` | `RDI` path address, `RSI` path length | the descriptor |
 | 18 | `fs_mkdir` | `RDI` path address, `RSI` path length | zero |
+| 19 | `display_info` | `RDI` structure address, `RSI` structure length | the number of bytes written |
 
 The number 12 is reserved and is **not** defined by this version: the kernel
 refuses it with the error 1, as it refuses any unknown number.
@@ -345,10 +347,10 @@ limited to 255 bytes.
 | `O_TRUNC` | `0o1000` | truncate the file on open |
 | `O_APPEND` | `0o2000` | start the descriptor at the end of the file |
 
-`fs_open` returns a descriptor in the range `0..15`. The table is global,
-because the contract does not have a process-scoped file table yet: two
-processes that open the same path share the same entries. The limit is 16
-open files.
+`fs_open` returns a descriptor in the range `0..15`. The table is **per
+process**, as decided in ADR-0014: two processes that open the same path
+have independent descriptors and offsets. The limit is 16 open files per
+process.
 
 `fs_close` releases the descriptor. A descriptor that is not open is
 refused with the error 16, `bad_descriptor`.
@@ -363,9 +365,52 @@ reading and writing. `fs_mkdir` creates a directory and returns zero. The
 calls do not create the parent directory: a path whose parent does not
 exist is refused with the error 14, `no_such_file`.
 
-The version 9 does **not** have `seek`, `stat`, `unlink`, `rename`, indirect
-blocks, persistence or a per-process descriptor table. The RamFS is still a
-kernel-side file system with a small user-facing window.
+The version 10 does **not** have `seek`, `stat`, `unlink`, `rename`,
+indirect blocks or persistence. The RamFS is still a kernel-side file
+system with a small user-facing window.
+
+### 5.8 `display_info`
+
+Writes the display metadata into a structure of the user mode. The call is
+**read-only**, and it exposes neither the physical base address nor the
+size of the framebuffer mapping. The user mode never receives access to the
+MMIO window; a future presentation call is the only path that writes
+pixels.
+
+The structure is `DisplayInfo`, defined in `shared/display.zig` and in the
+SDK as `sdk.display.DisplayInfo`:
+
+| Offset | Size | Field | Meaning |
+|-------:|-----:|-------|---------|
+| 0 | 4 | `version` | `info_version`, currently 1 |
+| 4 | 4 | `width` | visible width in pixels |
+| 8 | 4 | `height` | visible height in pixels |
+| 12 | 4 | `pitch` | bytes between the start of two rows |
+| 16 | 4 | `bits_per_pixel` | bits per pixel |
+| 20 | 4 | `pixel_format` | 0 RGB32, 1 BGR32, `0xFFFFFFFF` unknown |
+| 24 | 4 | `red_mask` | red channel mask |
+| 28 | 4 | `green_mask` | green channel mask |
+| 32 | 4 | `blue_mask` | blue channel mask |
+| 36 | 1 | `red_shift` | red channel shift |
+| 37 | 1 | `green_shift` | green channel shift |
+| 38 | 1 | `blue_shift` | blue channel shift |
+| 39 | 1 | `reserved` | zero in version 1 |
+
+The structure is 40 bytes and has alignment 4. The caller passes the
+address of a writable range of the user mode and its length. A length
+smaller than 40 is refused with the error 3, `invalid_length`; a larger
+length is accepted, so a caller built against a future, larger version
+still works with this kernel. The kernel writes exactly 40 bytes and
+returns 40. The `version` field tells the caller which layout it received.
+
+The call does not require a capability: the geometry of the display is
+public information. The address of the framebuffer is not part of the
+structure, and the call cannot be used to write a pixel. A boot without a
+framebuffer answers with the error 22, `no_display`.
+
+The decision about the user-space graphics service, including the future
+capability of the display and the presentation call, is in
+[`ADR-0015`](../adr/ADR-0015-user-space-graphics-service.md).
 
 ## 6. The result and the errors
 
@@ -396,9 +441,13 @@ the code of the error:
 | 19 | invalid name | the path or a component of it is not valid |
 | 20 | file too large | the file exceeds the limit of the file system |
 | 21 | I/O error | the file system refused the operation for another reason |
+| 22 | no display | the firmware did not provide a usable display |
 
 The limit of the length is **64 KiB** per call, and it exists so that the
-kernel does not spend an undetermined time inside a call.
+kernel does not spend an undetermined time inside a call. The
+`display_info` call is the exception: it writes at most 40 bytes and
+accepts a larger length so that a future, larger structure still works
+with this kernel.
 
 A result that is not negative is the number of bytes processed, and it is
 never negative, so that the user program tells the two cases apart without
@@ -431,21 +480,27 @@ knowing the error codes.
 12. A change to the arguments of an existing call is a break of the
     contract, and it increments the version, as a new call does.
 
-## 8. What version 9 does not have
+## 8. What version 10 does not have
 
 - **The capability that carries a memory range.** A capability is about a
   subject of the kernel, and a range of memory is not one of them.
 - **The rights of read and of execution over a process.** The capability
   of a process carries the right to write in its address space, and not the
   right to read it nor to execute its code.
-- **The capability of a device.** No driver exists to hold one.
+- **The capability of a device.** No driver exists to hold one, and there
+  is no display capability yet.
+- **A presentation or surface call.** `display_info` only reads geometry
+  and pixel layout. There is no call that writes pixels, allocates a
+  surface, shares a surface between processes or receives input events.
+  The design is in ADR-0015 and the implementation is the next increment.
 - **The console and the files in the same call.** The `write` call knows
   only the console, and the file system has the calls 13 to 18. The
   `write` call does not accept a descriptor.
-- **Seek, stat, unlink and rename.** The version 9 opens, closes, reads,
+- **Seek, stat, unlink and rename.** The version 10 opens, closes, reads,
   writes, creates and creates directories, and nothing else.
-- **A descriptor table per process.** The table is global and has 16
-  entries, because the contract has no process-scoped file table yet.
+- **Descriptor passing.** A descriptor belongs to one process and cannot be
+  passed to another; the channel carries a kind and a value, not a
+  descriptor.
 - **Persistence.** The RamFS lives in the memory of the kernel and
   disappears when the machine is turned off.
 - **Message structure.** There is no message format defined, and the
@@ -527,3 +582,17 @@ The decision about the separation between the load planner and the
 materialization of an ELF64 image is in
 [`ADR-0011`](../adr/ADR-0011-elf64-load-plan.md). The RamFS layout and its
 limits are documented in the increment report and in the roadmap.
+
+## 13. The version 10
+
+The version 10 is **additive**. It adds the call 19, `display_info`, and the
+error 22, `no_display`, and it does not change the number nor the meaning of
+any existing call. A program compiled against the version 9 keeps working
+without a change.
+
+The call is the first user-facing part of the graphics service. It returns
+the visible geometry and the pixel layout, but not the framebuffer base or
+mapping size. The user mode therefore learns how large the display is
+without receiving a way to write it. The decision, including the capability
+that a future presentation call will require, is in
+[`ADR-0015`](../adr/ADR-0015-user-space-graphics-service.md).

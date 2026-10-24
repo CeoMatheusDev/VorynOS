@@ -194,9 +194,13 @@ pub const Scheduler = struct {
         // continues at the function that was chosen for it.
         const top = @intFromPtr(stack.ptr) + stack.len;
         const aligned = top & ~@as(usize, 0xF);
+        // The function entry expects `RSP + 8` to be aligned to 16 bytes,
+        // because a call would have pushed the return address. The task is
+        // not called, so the initial stack emulates that call frame.
+        const entry_stack = aligned - 8;
 
         task.context = .{
-            .rsp = aligned,
+            .rsp = entry_stack,
             // The interrupt flag and the reserved bit of the flags.
             .rflags = 0x202,
             .rip = @intFromPtr(entry),
@@ -235,11 +239,17 @@ pub const Scheduler = struct {
         const task = self.allocate() orelse return null;
 
         const user_top = (user_stack_address + user_stack_length) & ~@as(u64, 0xF);
+        // The entry of a function expects `RSP + 8` to be aligned to 16
+        // bytes, because a call would have pushed the return address. The
+        // task is not called, but a freestanding compiler may still use
+        // aligned SSE spills in the prologue: the initial stack emulates
+        // the frame of a call so that those spills are valid.
+        const user_entry = user_top - 8;
 
         task.context = .{
             .rbx = window_base,
             .rcx = role,
-            .rsp = user_top,
+            .rsp = user_entry,
             .rflags = 0x202,
             .rip = entry,
             .cs = user_code_selector,

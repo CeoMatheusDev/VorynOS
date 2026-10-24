@@ -68,6 +68,7 @@ const serial = voryn.serial;
 const channel_module = @import("../../ipc/channel.zig");
 const capability = @import("../../security/capability.zig");
 const fs_module = @import("../../fs/fs.zig");
+const display = @import("../../graphics/display.zig");
 const cpu = @import("cpu.zig");
 const paging = @import("paging.zig");
 const segment = @import("segment.zig");
@@ -226,6 +227,12 @@ pub const Number = struct {
     pub const fs_create: u64 = 17;
     /// Make a directory in the RAMFS filesystem.
     pub const fs_mkdir: u64 = 18;
+    /// Read the display metadata into a structure of the user mode.
+    ///
+    /// The call is read-only and exposes no framebuffer address: the user
+    /// receives the geometry and the pixel layout, and the pixels are
+    /// written only by the future presentation call.
+    pub const display_info: u64 = 19;
 };
 
 /// The result that the kernel answers to the call of the probe.
@@ -290,6 +297,8 @@ pub const Error = struct {
     pub const file_too_large: u64 = 20;
     /// The file system refused the operation for another reason.
     pub const io_error: u64 = 21;
+    /// The firmware did not provide a usable display.
+    pub const no_display: u64 = 22;
 };
 
 /// The largest block that a call copies in one go.
@@ -576,6 +585,14 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
                 frame.rax,
             });
         },
+        Number.display_info => {
+            frame.rax = displayInfo(frame.rdi, frame.rsi, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} display_info result 0x{x}", .{
+                number,
+                caller,
+                frame.rax,
+            });
+        },
         Number.grant => {
             frame.rax = grant(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
             const kind = capability.kindFromWire(frame.rsi);
@@ -738,6 +755,32 @@ fn fsMkdir(path_address: u64, path_length: u64, privilege: u64) u64 {
 
     _ = fs_module.mkdir(path) catch |err| return fsFailure(err);
     return 0;
+}
+
+/// Writes the display metadata into a structure of the user mode.
+///
+/// The structure is versioned and the caller passes its length. A length
+/// smaller than the current structure is refused; a larger one is accepted
+/// so that a caller built against a future, larger version still works
+/// with this kernel. The kernel writes exactly the current size and
+/// returns it.
+///
+/// The call is read-only and does not require a capability: the geometry
+/// of the display is public information, and it contains neither the
+/// physical base address nor the size of the framebuffer mapping.
+fn displayInfo(address: u64, length: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    const size: usize = @sizeOf(voryn.display.DisplayInfo);
+    const wire_size: u64 = @intCast(size);
+    if (length < wire_size) return failure(Error.invalid_length);
+    if (!paging.isUserRange(address, wire_size, true)) return failure(Error.invalid_address);
+
+    const info = display.info() orelse return failure(Error.no_display);
+    var copy = info;
+    const destination: [*]u8 = @ptrFromInt(address);
+    @memcpy(destination[0..size], std.mem.asBytes(&copy)[0..]);
+    return wire_size;
 }
 
 /// Writes a buffer of the user mode in the console.

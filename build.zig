@@ -81,11 +81,20 @@ pub fn build(b: *std.Build) void {
         .os_tag = .freestanding,
         .abi = .none,
     });
+    // The display metadata is a public contract shared by the kernel and
+    // the SDK. The SDK imports only this module, not the whole shared tree
+    // with the serial and port drivers.
+    const display_contract = b.createModule(.{
+        .root_source_file = b.path("shared/display.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
     const sdk_module = b.createModule(.{
         .root_source_file = b.path("sdk/src/root.zig"),
         .target = user_target,
         .optimize = .ReleaseSmall,
     });
+    sdk_module.addImport("voryn_display", display_contract);
     const user_module = b.createModule(.{
         .root_source_file = b.path("user/hello.zig"),
         .target = user_target,
@@ -213,6 +222,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const display_host_module = b.createModule(.{
+        .root_source_file = b.path("shared/display.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sdk_test_module.addImport("voryn_display", display_host_module);
     const sdk_tests = b.addTest(.{
         .name = "sdk-tests",
         .root_module = sdk_test_module,
@@ -254,6 +269,19 @@ pub fn build(b: *std.Build) void {
         .root_module = damage_test_module,
     });
     unit_test_step.dependOn(&b.addRunArtifact(damage_tests).step);
+
+    // F6.25: registro da metadata do display, sem tocar no framebuffer.
+    const display_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/graphics/display.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    display_test_module.addImport("voryn_shared", shared_test_module);
+    const display_tests = b.addTest(.{
+        .name = "display-tests",
+        .root_module = display_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(display_tests).step);
 
     const motion_module = b.createModule(.{
         .root_source_file = b.path("kernel/graphics/keyboard_motion.zig"),

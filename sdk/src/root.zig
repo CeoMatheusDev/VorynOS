@@ -12,6 +12,9 @@
 
 pub const syscall = @import("syscall.zig");
 
+/// Contrato público da metadata do display, compartilhado com o kernel.
+pub const display = @import("voryn_display");
+
 pub const CapabilityKind = enum(u64) {
     channel = 0,
     process = 1,
@@ -87,6 +90,18 @@ pub fn fsCreate(path: []const u8) u64 {
 
 pub fn fsMkdir(path: []const u8) u64 {
     return syscall.call(syscall.Number.fs_mkdir, @intFromPtr(path.ptr), path.len, 0, 0).status;
+}
+
+/// Preenche `info` com a geometria e o formato do display visível.
+/// O resultado é o tamanho escrito, ou um código de erro negativo.
+pub fn displayInfo(info: *display.DisplayInfo) u64 {
+    return syscall.call(
+        syscall.Number.display_info,
+        @intFromPtr(info),
+        @sizeOf(display.DisplayInfo),
+        0,
+        0,
+    ).status;
 }
 
 test {
