@@ -89,12 +89,18 @@ pub fn build(b: *std.Build) void {
         .target = user_target,
         .optimize = .ReleaseSmall,
     });
+    const input_contract = b.createModule(.{
+        .root_source_file = b.path("shared/input.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
     const sdk_module = b.createModule(.{
         .root_source_file = b.path("sdk/src/root.zig"),
         .target = user_target,
         .optimize = .ReleaseSmall,
     });
     sdk_module.addImport("voryn_display", display_contract);
+    sdk_module.addImport("voryn_input", input_contract);
     const user_module = b.createModule(.{
         .root_source_file = b.path("user/hello.zig"),
         .target = user_target,
@@ -227,7 +233,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const input_host_module = b.createModule(.{
+        .root_source_file = b.path("shared/input.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     sdk_test_module.addImport("voryn_display", display_host_module);
+    sdk_test_module.addImport("voryn_input", input_host_module);
     const sdk_tests = b.addTest(.{
         .name = "sdk-tests",
         .root_module = sdk_test_module,

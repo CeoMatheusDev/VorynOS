@@ -15,9 +15,14 @@ pub const syscall = @import("syscall.zig");
 /// Contrato público da metadata do display, compartilhado com o kernel.
 pub const display = @import("voryn_display");
 
+/// Contrato público dos eventos de entrada, compartilhado com o kernel.
+pub const input = @import("voryn_input");
+
 pub const CapabilityKind = enum(u64) {
     channel = 0,
     process = 1,
+    display = 2,
+    input = 3,
 };
 
 pub const Right = struct {
@@ -25,6 +30,7 @@ pub const Right = struct {
     pub const receive: u64 = 2;
     pub const delegate: u64 = 4;
     pub const write: u64 = 8;
+    pub const read: u64 = 16;
 };
 
 pub fn ping() u64 {
@@ -111,6 +117,19 @@ pub fn present(request: *const display.PresentRequest) u64 {
         syscall.Number.present,
         @intFromPtr(request),
         @sizeOf(display.PresentRequest),
+        0,
+        0,
+    ).status;
+}
+
+/// Retira um evento da fila de entrada do serviço gráfico.
+/// O resultado é 1 quando um evento foi escrito, 0 quando a fila está
+/// vazia, ou um código de erro negativo.
+pub fn inputPoll(event: *input.InputEvent) u64 {
+    return syscall.call(
+        syscall.Number.input_poll,
+        @intFromPtr(event),
+        @sizeOf(input.InputEvent),
         0,
         0,
     ).status;

@@ -69,6 +69,7 @@ const channel_module = @import("../../ipc/channel.zig");
 const capability = @import("../../security/capability.zig");
 const fs_module = @import("../../fs/fs.zig");
 const display = @import("../../graphics/display.zig");
+const ps2 = @import("../../input/ps2.zig");
 const cpu = @import("cpu.zig");
 const paging = @import("paging.zig");
 const segment = @import("segment.zig");
@@ -239,6 +240,12 @@ pub const Number = struct {
     /// to hold the display capability with the right of writing. The
     /// framebuffer address is never exposed to the user mode.
     pub const present: u64 = 20;
+    /// Take one input event from the queue of the graphics service.
+    ///
+    /// The caller has to hold the input capability with the right of
+    /// reading. The result is 1 when an event was written, 0 when the
+    /// queue is empty, or a negative error.
+    pub const input_poll: u64 = 21;
 };
 
 /// The result that the kernel answers to the call of the probe.
@@ -309,6 +316,8 @@ pub const Error = struct {
     pub const invalid_geometry: u64 = 23;
     /// The pixel format of the presentation is not supported.
     pub const invalid_format: u64 = 24;
+    /// The kernel has no input queue for the user mode.
+    pub const no_input: u64 = 25;
 };
 
 /// The largest block that a call copies in one go.
@@ -611,6 +620,19 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
                 frame.rax,
             });
         },
+        Number.input_poll => {
+            frame.rax = inputPoll(frame.rdi, frame.rsi, privilege);
+            // The empty result is the common case of the non-blocking
+            // probe; logging it would flood the serial and change the
+            // timing of the test.
+            if (frame.rax != 0) {
+                serial.printLine("[VNK] syscall {d} from {s} input_poll result 0x{x}", .{
+                    number,
+                    caller,
+                    frame.rax,
+                });
+            }
+        },
         Number.grant => {
             frame.rax = grant(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
             const kind = capability.kindFromWire(frame.rsi);
@@ -873,6 +895,34 @@ fn present(address: u64, length: u64, privilege: u64) u64 {
     });
 
     return 0;
+}
+
+/// Takes one event from the queue of the graphics service.
+///
+/// The capability is checked before the output is touched, and the output
+/// is validated before the queue is popped: a bad address does not lose an
+/// event. The call is non-blocking; it returns 1 when it wrote an event, 0
+/// when the queue is empty. The gate of the system call clears the local
+/// interrupts, therefore the pop is safe without another CLI.
+fn inputPoll(address: u64, length: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+    if (!capability.holdsSubject(process, .input, 0, capability.Rights.read)) {
+        return failure(Error.not_authorized);
+    }
+
+    const event_size: usize = @sizeOf(voryn.input.InputEvent);
+    const wire_size: u64 = @intCast(event_size);
+    if (length < wire_size) return failure(Error.invalid_length);
+    if (!paging.isUserRange(address, wire_size, true)) return failure(Error.invalid_address);
+    if (!ps2.userQueueReady()) return failure(Error.no_input);
+
+    const maybe_event = ps2.popUserIrqsDisabled() orelse return 0;
+    var copy = voryn.input.keyEvent(maybe_event.scancode, maybe_event.extended, maybe_event.pressed);
+    const destination: [*]u8 = @ptrFromInt(address);
+    @memcpy(destination[0..event_size], std.mem.asBytes(&copy)[0..]);
+    return 1;
 }
 
 /// Writes a buffer of the user mode in the console.
@@ -1232,15 +1282,17 @@ fn revoke(process_id: u64, kind_value: u64, subject: u64, privilege: u64) u64 {
 /// True when the subject of a capability of the kind exists.
 ///
 /// The subject of a channel is the identifier of the channel, the subject
-/// of a process is the identifier of the process, and the subject of the
-/// display is zero. They are resolved in the module that owns them, and not
-/// in the table of capabilities: the table may hold a capability of a
-/// subject that is already gone.
+/// of a process is the identifier of the process, the subject of the
+/// display is zero, and the subject of the input queue is zero. They are
+/// resolved in the module that owns them, and not in the table of
+/// capabilities: the table may hold a capability of a subject that is
+/// already gone.
 fn subjectExists(kind: capability.Kind, subject: u64) bool {
     return switch (kind) {
         .channel => channel_module.get(subject) != null,
         .process => paging.spaceById(subject) != null,
         .display => subject == 0 and display.surface() != null,
+        .input => subject == 0 and ps2.userQueueReady(),
     };
 }
 
@@ -1250,6 +1302,7 @@ fn subjectError(kind: capability.Kind) u64 {
         .channel => Error.unknown_channel,
         .process => Error.unknown_process,
         .display => Error.no_display,
+        .input => Error.no_input,
     };
 }
 

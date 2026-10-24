@@ -5,7 +5,7 @@
 | **State** | ACCEPTED |
 | **Date** | 2026-10-24 |
 | **Scope** | The interface between the user mode and the kernel |
-| **Contract version** | `syscall_abi = 11` |
+| **Contract version** | `syscall_abi = 12` |
 
 ## 1. Objective
 
@@ -28,6 +28,8 @@ channel. Version 6 adds the call that waits for a message with a timeout.
 Version 9 adds the file system calls 13 to 18. Version 10 adds the
 read-only display metadata call 19. Version 11 adds the display
 presentation call 20, the display capability and the errors 23 and 24.
+Version 12 adds the input event call 21, the input capability and the
+error 25.
 
 The calls of the earlier versions **do not change their number**. Their
 behavior changes in the points that the sections 9 and 10 describe: the
@@ -144,6 +146,7 @@ next interrupt. The exit code is registered in the task.
 | 18 | `fs_mkdir` | `RDI` path address, `RSI` path length | zero |
 | 19 | `display_info` | `RDI` structure address, `RSI` structure length | the number of bytes written |
 | 20 | `present` | `RDI` request address, `RSI` request length | zero |
+| 21 | `input_poll` | `RDI` event address, `RSI` event length | 1 when an event was written, 0 when the queue is empty |
 
 The number 12 is reserved and is **not** defined by this version: the kernel
 refuses it with the error 1, as it refuses any unknown number.
@@ -235,14 +238,15 @@ be a busy loop, and not a wait.
 
 The calls 9 and 10 entered the contract in the version 4, and the version 5
 added the kind of the capability. A capability is about a **subject**, and
-the subject is a channel, a process or the display: the kind says which one
-the call names.
+the subject is a channel, a process, the display or the input queue: the
+kind says which one the call names.
 
 | Kind | Value | Subject |
 |---|---|---|
 | channel | 0 | the identifier of the channel |
 | process | 1 | the identifier of the process whose address space the capability describes |
 | display | 2 | always 0, because the kernel has one visible display |
+| input | 3 | always 0, because the kernel has one input queue for the graphics service |
 
 A kind that does not have one of the values above is refused with the error
 11, `unknown_kind`. The kernel does not guess what a value that it does not
@@ -266,8 +270,9 @@ The rights of this version are:
 |---|---|---|---|
 | `send` | 1 | The right to put a message in the subject | channel |
 | `receive` | 2 | The right to take a message of the subject | channel |
-| `delegate` | 4 | The right to give the capability to another process | channel, process, display |
+| `delegate` | 4 | The right to give the capability to another process | channel, process, display, input |
 | `write` | 8 | The right to write in the address space of the subject, or to present pixels to the display | process, display |
+| `read` | 16 | The right to take one event from the input queue | input |
 
 A right that belongs to another kind is refused with the error 12,
 `invalid_rights`, and so is an empty set of rights: a capability that
@@ -275,9 +280,10 @@ authorizes nothing is not a capability.
 
 The call answers with the error 6 when the channel does not exist, with the
 error 8 when the process does not exist, with the error 22 when the display
-does not exist, and with the error 10 when the caller does not hold the
-capability, when the rights are wider than the rights of the caller, or when
-the target process does not exist.
+does not exist, with the error 25 when the input queue does not exist, and
+with the error 10 when the caller does not hold the capability, when the
+rights are wider than the rights of the caller, or when the target process
+does not exist.
 
 #### 5.5.2 `revoke`
 
@@ -291,8 +297,9 @@ gave it to.
 
 The call answers with the error 6 when the channel does not exist, with the
 error 8 when the process does not exist, with the error 22 when the display
-does not exist, and with the error 10 when the caller does not hold the
-capability with the right of delegation.
+does not exist, with the error 25 when the input queue does not exist, and
+with the error 10 when the caller does not hold the capability with the
+right of delegation.
 
 ### 5.6 `receive_timeout`
 
@@ -466,7 +473,7 @@ The kernel validates, in this order:
 Only after the ten checks does the kernel copy the rows. The call returns
 zero on success. The copy is synchronous: when the call returns, the pixels
 are in the device. There is no queue, no double buffering and no vsync in
-version 11.
+version 12.
 
 A boot without a display, or a framebuffer that does not cover the
 rectangle, answers with the error 22, `no_display`. A version, stride or
@@ -475,6 +482,49 @@ length that the kernel cannot accept answers with the error 3,
 23, `invalid_geometry`; a format that the display or the call does not
 support answers with the error 24, `invalid_format`; a buffer that is not a
 readable range answers with the error 2, `invalid_address`.
+
+### 5.10 `input_poll`
+
+Takes one input event from the queue of the graphics service. The call is
+**non-blocking**: it returns 1 when it wrote an event, 0 when the queue is
+empty, or a negative error. An empty queue is not an error and does not
+consume anything.
+
+The caller has to hold the capability of the input: kind 3, subject 0, with
+the right of reading (`read`, value 16). The check happens before the output
+is touched, and the output range is validated before the queue is popped, so
+a bad address does not lose an event. The event is `InputEvent`, defined in
+`shared/input.zig` and in the SDK as `sdk.input.InputEvent`:
+
+| Offset | Size | Field | Meaning |
+|-------:|-----:|-------|---------|
+| 0 | 4 | `version` | `input_version`, currently 1 |
+| 4 | 4 | `kind` | `kind_key`, currently 1 |
+| 8 | 4 | `code` | make code of PS/2 set 1 for a key event |
+| 12 | 4 | `flags` | bit 0 pressed, bit 1 extended; the other bits are zero |
+
+The structure is 16 bytes and has alignment 4. The caller passes the
+address of a writable range of the user mode and its length. A length
+smaller than 16 is refused with the error 3, `invalid_length`; a larger
+length is accepted, so a caller built against a future, larger structure
+still works with this kernel. The kernel writes exactly 16 bytes and
+returns 1. A range that is not writable answers with the error 2,
+`invalid_address`; a process without the capability answers with the error
+10, `not_authorized`; a boot without an input queue answers with the error
+25, `no_input`.
+
+The queue is filled by the PS/2 interrupt. The kernel keeps a **separate**
+diagnostic queue for its own keyboard handling: the user reader consumes
+only the user queue, and the key that selects the kernel's interactive mode
+still reaches the kernel. The separation is part of the design and not an
+implementation detail; a future input service can replace the single queue
+with per-process queues without changing the event structure.
+
+The call does not wait, does not sleep and does not select a file
+descriptor. It is the first part of the input service: there is no blocking
+input wait, no pointer or mouse event, no focus and no per-process queue in
+version 12. The full compositor and window manager remain proposed in
+[`ADR-0015`](../adr/ADR-0015-user-space-graphics-service.md).
 
 ## 6. The result and the errors
 
@@ -508,18 +558,23 @@ the code of the error:
 | 22 | no display | there is no usable display, or the framebuffer does not cover the rectangle |
 | 23 | invalid geometry | the rectangle is empty or leaves the visible display |
 | 24 | invalid format | the pixel format is not supported by the display or by the call |
+| 25 | no input | the kernel has no input queue for the user mode |
 
 The limit of the length is **64 KiB** per call for the calls that copy a
 block, and it exists so that the kernel does not spend an undetermined time
 inside a call. `display_info` is an exception: it writes at most 40 bytes
 and accepts a larger length so that a future, larger structure still works
 with this kernel. `present` has its own limit of **64 MiB** for the pixel
-buffer, which bounds the copy.
+buffer, which bounds the copy. `input_poll` writes at most 16 bytes and
+accepts a larger length, like `display_info`.
 
-A result that is not negative is the number of bytes processed, and it is
-never negative, so that the user program tells the two cases apart without
-knowing the error codes. The calls whose contract says that they return
-zero (`fs_close`, `fs_mkdir` and `present`) return zero on success.
+A result that is not negative is the number of bytes processed, unless the
+call says otherwise, and it is never negative, so that the user program
+tells the two cases apart without knowing the error codes. The calls whose
+contract says that they return zero (`fs_close`, `fs_mkdir` and `present`)
+return zero on success. `input_poll` is the other exception: it returns 1
+when it wrote an event and 0 when the queue is empty; neither result is a
+byte count.
 
 ## 7. The rules of the contract
 
@@ -550,25 +605,29 @@ zero (`fs_close`, `fs_mkdir` and `present`) return zero on success.
 13. A call that writes the display needs the capability of the display with
     the right of writing, and the check of the capability happens **before**
     the pixel buffer is touched.
+14. A call that reads the input queue needs the capability of the input with
+    the right of reading, and the check happens **before** the output is
+    written and **before** an event is popped.
 
-## 8. What version 11 does not have
+## 8. What version 12 does not have
 
 - **The capability that carries a memory range.** A capability is about a
   subject of the kernel, and a range of memory is not one of them.
 - **The rights of read and of execution over a process.** The capability
   of a process carries the right to write in its address space, and not the
   right to read it nor to execute its code.
-- **The capability of a generic device.** The display capability exists,
-  but there is no capability of a driver or of another device.
+- **The capability of a generic device.** The display and input
+  capabilities exist, but there is no capability of a driver or of another
+  device.
 - **Surface sharing and a user-space compositor.** `present` writes a
-  rectangle, but there is no call that allocates or shares a surface, no
-  window manager and no delivery of input events. The design is in
-  ADR-0015, and the compositor and the input events are the next
-  increment.
+  rectangle and `input_poll` delivers one key event, but there is no call
+  that allocates or shares a surface, no window manager, no per-process
+  input queue, no pointer and no focus. The design is in ADR-0015, and the
+  compositor and the window manager are the next increment.
 - **The console and the files in the same call.** The `write` call knows
   only the console, and the file system has the calls 13 to 18. The
   `write` call does not accept a descriptor.
-- **Seek, stat, unlink and rename.** The version 11 opens, closes, reads,
+- **Seek, stat, unlink and rename.** The version 12 opens, closes, reads,
   writes, creates and creates directories, and nothing else.
 - **Descriptor passing.** A descriptor belongs to one process and cannot be
   passed to another; the channel carries a kind and a value, not a
@@ -685,6 +744,26 @@ validated before any pixel is written. The contract has no double
 buffering, no vsync, no surface allocation and no input event yet.
 
 The design of the user-space graphics service is in
-[`ADR-0015`](../adr/ADR-0015-user-space-graphics-service.md). The
-compositor and the input events remain proposed; the display metadata and
-the presentation are the implemented part.
+[`ADR-0015`](../adr/ADR-0015-user-space-graphics-service.md). At the time
+of version 11, the compositor and the input events remained proposed; the
+display metadata and the presentation were the implemented part. Version
+12 adds the first input event call.
+
+## 15. The version 12
+
+The version 12 is **additive**. It adds the call 21, `input_poll`, the
+capability of the input (kind 3, subject 0, right `read` value 16) and the
+error 25, `no_input`. It does not change the number nor the meaning of any
+existing call. A program compiled against the version 11 keeps working
+without a change.
+
+The call takes one event from the user input queue, which the PS/2 interrupt
+fills. The kernel keeps its diagnostic keyboard queue separate, so the user
+reader cannot steal the key that selects the interactive mode. The call is
+non-blocking and returns 1 when it wrote an event and 0 when the queue is
+empty; the output is validated before an event is popped.
+
+The version has no blocking input wait, no per-process input queue, no
+pointer or mouse event, no focus and no window manager. The full compositor
+and window manager remain proposed in
+[`ADR-0015`](../adr/ADR-0015-user-space-graphics-service.md).

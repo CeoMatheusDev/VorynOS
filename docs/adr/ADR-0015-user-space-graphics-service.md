@@ -17,16 +17,16 @@
 | **Status** | ACCEPTED |
 | **Date** | 2026-10-24 |
 | **Scope** | Graphics, system calls and process isolation |
-| **Implementation** | `display_info` and `present` TESTED LOCALLY; the compositor and the input service PROPOSED |
+| **Implementation** | `display_info`, `present` and `input_poll` TESTED LOCALLY; the compositor, the window manager and the input service PROPOSED |
 
 ## 1. Context
 
 The F6 compositor runs inside the kernel. It owns the framebuffer, the
 window list, the damage tracker and the keyboard path. That design made the
 first pixels possible and allowed the F6.22.2–F6.24 measurements, but it is
-not the desktop that the project needs: an application cannot create a
-window, cannot present its own pixels and cannot receive input through a
-permission-checked interface.
+not the desktop that the project needs: an application could not create a
+window, could not present its own pixels and could not receive input through
+a permission-checked interface.
 
 The framebuffer is mapped in the kernel page tables as writable MMIO and
 **without the user bit**. The user mode therefore cannot write it, and it
@@ -112,24 +112,41 @@ refused with the error 10, `not_authorized`.
 
 The first implementation has one compositor. In F6.26 the native toolchain
 application is the compositor stand-in: it receives the capability at boot
-and presents a 16x16 probe. The user-space compositor of F6.27 will receive
+and presents a 16x16 probe. The user-space compositor of F6.28 will receive
 the same capability; the kernel does not change the authority model for the
 demo. The capability model is used from the beginning, because adding it
 later would change the security properties of every existing presentation
 path.
 
-### 2.4 Input
+### 2.4 Input is a capability and a queue
 
-Input events stay in the kernel in F6.26. The future graphics service will
-receive them through a call of its own, with a bounded queue per process.
-The keyboard interrupt handler will not call into a user process, and the
-service will not read the PS/2 controller directly.
+The call 21, `input_poll`, takes one event from the user input queue. The
+caller holds a capability of kind `input`, value 3, subject 0, with the
+right `read`, value 16. The kernel checks the capability before the output
+range is touched and validates the output range before it pops an event, so
+a bad address does not lose an event and a process without the authority
+cannot use the call as a probe of the queue.
 
-The first input call will return one event per invocation, with a
-non-blocking and a blocking form, in the same style as the channel calls.
-The event carries the device, the key code, the pressed/released state and a
-monotonic timestamp. A process without the input capability will be
-refused.
+The event is a versioned 16-byte `InputEvent` in `shared/input.zig`. It
+carries the key code of PS/2 set 1 and the pressed and extended flags. The
+call is non-blocking: it returns 1 when it wrote an event, 0 when the queue
+is empty and a negative error otherwise. There is no blocking wait and no
+per-process queue in F6.27.
+
+The PS/2 interrupt fills **two** queues: the kernel diagnostic queue and the
+user input queue. The kernel's boot pump and the interactive loop consume
+the diagnostic queue; the graphics service consumes the user queue. The
+separation is deliberate: the boot test sends `A` and `right` to the
+kernel, and the user probe must not be able to steal the `I` key that
+selects the interactive mode. The first implementation has one user queue;
+a future input service can add per-process queues without changing the
+event structure.
+
+The first input call is a probe, not a full input service. It has no
+blocking form, no pointer or mouse event, no focus and no timestamp. Those
+belong to the compositor and window manager increment (F6.28). The keyboard
+interrupt handler never calls into a user process, and the service never
+reads the PS/2 controller directly.
 
 ### 2.5 Surfaces and composition
 
@@ -191,6 +208,8 @@ bottleneck.
 - Version 10 adds the call 19 and the error 22; it is additive.
 - Version 11 adds the call 20, `present`, the display capability kind and
   the errors 23 and 24; it is additive.
+- Version 12 adds the call 21, `input_poll`, the input capability kind and
+  the error 25; it is additive.
 - The existing calls keep their numbers and meanings.
 
 ### 4.2 Security
@@ -203,6 +222,9 @@ bottleneck.
 - The display capability is checked before the buffer is touched, so a
   process without the authority cannot use the call as a probe of the
   framebuffer.
+- The input capability is checked before the output is touched and before
+  an event is popped, so a process without the authority cannot drain the
+  queue, and a bad address cannot lose an event.
 - The copy is bounded by the visible rectangle, by the 64 MiB presentation
   bound and by the framebuffer mapping that the kernel verified.
 
@@ -214,9 +236,9 @@ bottleneck.
 - The first version has no double buffering and no vsync. Tearing is
   possible, and it is documented as a limitation.
 - The release build measured 3.79 ms per arrow for the kernel compositor.
-  The F6.26 presentation is a 16x16 probe and was not measured as a frame
-  path; F6.27 will instrument the user-space compositor with the same TSC
-  and QEMU harness.
+  The F6.26 presentation and the F6.27 input-driven probe are 16x16
+  rectangles, not frame paths; F6.28 will instrument the user-space
+  compositor with the same TSC and QEMU harness.
 
 ### 4.4 Tests
 
@@ -227,10 +249,17 @@ bottleneck.
   verifies the serial marker (F6.25).
 - A QEMU test that presents a known 16x16 pattern from the native SDK
   application and reads the first pixel back from the framebuffer (F6.26).
-  The full screenshot comparison of a user-space frame is F6.27.
+- A QEMU test that calls `input_poll` from the native SDK application. The
+  boot test already sends `A` and `right`; the user queue receives the
+  right arrow, the application presents at (16,0) and the serial markers
+  prove the path end to end (F6.27). The empty result is exercised by the
+  polls before the key arrives.
+- A host test for the `InputEvent` layout, the flags, the version and the
+  input capability kind and rights.
 - A host test that a process without the display capability is refused by
   the capability check. A separate user process that exercises the refusal
-  through the `present` call in QEMU is F6.27.
+  through the `present` call in QEMU is F6.28.
+- The full screenshot comparison of a user-space frame is F6.28.
 
 ## 5. Increments
 
@@ -238,8 +267,8 @@ bottleneck.
 |-----------|---------|-------|
 | F6.25 | `display_info`, ABI 10, native SDK query, user stack alignment fix | TESTED LOCALLY |
 | F6.26 | display capability, `present`, ABI 11, validated rectangle, 16x16 probe | TESTED LOCALLY |
-| F6.27 | user-space compositor demo, input event call, screenshot verification | PROPOSED |
-| F6.28 | window manager, focus, cursor and the first desktop shell | PROPOSED |
+| F6.27 | input capability, `input_poll`, ABI 12, user-space input probe and input-driven presentation | TESTED LOCALLY |
+| F6.28 | user-space compositor demo, window manager, focus, cursor, screenshot verification and the first desktop shell | PROPOSED |
 
 The F6.25 increment also fixed a latent ABI bug: user tasks started with a
 16-byte-aligned `RSP`, while a function entry expects `RSP + 8` to be
@@ -253,20 +282,36 @@ background. After the toolchain task terminates, the kernel draws the scene
 again, so the interactive screenshot test starts from the scene that the
 kernel owns. The presentation is proven by the serial read-back of the
 first pixel, not by a persistent rectangle; the full user-space frame is
-F6.27.
+F6.28.
+
+The F6.27 increment adds the input capability and the non-blocking
+`input_poll`. The native SDK application is still the graphics stand-in: it
+receives the display and the input capabilities, presents a 16x16 probe at
+(0,0), polls the user input queue and, when the right arrow arrives,
+presents the same probe at (16,0). The boot test sends `A` and `right` for
+the kernel; the user queue receives the right arrow while the diagnostic
+queue keeps the kernel's copy. The test therefore covers the capability
+grant, the syscall, the event decoding, the user-side validation and the
+input-driven presentation. The full compositor, the window manager and the
+screenshot comparison remain F6.28.
 
 ## 6. References
 
-- [`docs/specs/syscall-abi.md`](../specs/syscall-abi.md) — version 11.
+- [`docs/specs/syscall-abi.md`](../specs/syscall-abi.md) — version 12.
 - [`shared/display.zig`](../../shared/display.zig) — the metadata and
   presentation contract.
+- [`shared/input.zig`](../../shared/input.zig) — the input event contract.
 - [`kernel/graphics/display.zig`](../../kernel/graphics/display.zig) — the
   kernel registry and the private framebuffer surface.
+- [`kernel/input/ps2.zig`](../../kernel/input/ps2.zig) — the PS/2 interrupt
+  and the two independent queues.
 - [`kernel/security/capability.zig`](../../kernel/security/capability.zig) —
-  the capability model, including the display kind.
+  the capability model, including the display and input kinds.
 - [`docs/reports/f6/display-metadata-and-user-stack-alignment.md`](../reports/f6/display-metadata-and-user-stack-alignment.md)
   — the F6.25 report.
 - [`docs/reports/f6/display-presentation-and-display-capability.md`](../reports/f6/display-presentation-and-display-capability.md)
   — the F6.26 report.
+- [`docs/reports/f6/input-event-capability-and-user-input-probe.md`](../reports/f6/input-event-capability-and-user-input-probe.md)
+  — the F6.27 report.
 - [`docs/reports/f6/input-latency-and-exposed-strip-damage.md`](../reports/f6/input-latency-and-exposed-strip-damage.md)
   — the F6.24 measurements.

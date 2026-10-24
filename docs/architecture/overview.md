@@ -44,6 +44,7 @@ The model of the components and their costs are in
 | `elf64.zig` | ELF64 reader: header, segments, relative relocations, load plan |
 | `usermode.zig` | Layout of the user mode window, shared with the user program |
 | `display.zig` | Versioned display metadata and presentation contract (`DisplayInfo`, `PresentRequest`; no framebuffer address) |
+| `input.zig` | Versioned input event contract (`InputEvent`, key flags; no device address) |
 | `arch/x86_64/port.zig` | Port I/O primitives (in, out, cli, hlt, rdtsc) |
 | `arch/x86_64/serial.zig` | Driver of the 16550 UART (COM1) and formatted writer, with atomic write |
 
@@ -105,7 +106,7 @@ system.
 | Memory map | array of `MemoryDescriptor` (40 bytes) | `shared/handoff.zig` |
 | Kernel image | relocatable ELF64 (`ET_DYN`) | `shared/elf64.zig` |
 | User mode window | offset constants, shared with the assembly | `shared/usermode.zig` |
-| System call contract | version `syscall_abi = 11`, nineteen calls (12 reserved) | `docs/specs/syscall-abi.md` |
+| System call contract | version `syscall_abi = 12`, twenty calls (12 reserved) | `docs/specs/syscall-abi.md` |
 | Task context | `extern struct` with the fifteen registers | `kernel/task/context.zig` |
 | Console | `std.Io.Writer` writer over the UART | `shared/arch/x86_64/serial.zig` |
 
@@ -153,6 +154,11 @@ an explicit and documented layout.
     is touched, and the process that does not hold it is refused. The
     handle of a capability is an index of a table of the kernel, and it
     means nothing outside it.
+14. A process does not read the input queue without the input capability:
+    the check happens before the output is touched and before an event is
+    popped. The PS/2 interrupt fills the kernel diagnostic queue and the
+    user input queue separately, so the user reader cannot steal the key
+    that selects the interactive mode.
 
 ## 5. Known limitations
 
@@ -180,9 +186,10 @@ an explicit and documented layout.
     and one side.
 11. The kernel is loaded from a FAT volume through the simple file system
     protocol of the firmware; there is no block driver of its own.
-12. The capability of the model of the VNC covers the channels of the VNX
-    only: the process has access to the whole space of the user mode, and
-    there is no capability of a range of memory nor of a device.
+12. The capability model of the VNC covers channels, address spaces, the
+    display and the input queue; there is no capability of a range of
+    memory nor of a generic device. The input call is non-blocking and has
+    one global user queue, without a per-process queue, pointer or focus.
 
 ## 6. What comes next
 

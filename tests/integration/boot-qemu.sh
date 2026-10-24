@@ -274,6 +274,12 @@ require_pattern '\[VNK\] capabilities: the display belongs to the process [0-9]+
 require_pattern '\[VNK\] display: present 16x16 at 0,0 first=0xff' 'the framebuffer read back after the presentation'
 require_pattern '\[VNK\] syscall 20 from user present result 0x0' 'the presentation call from the user mode'
 require_marker "display present"
+require_pattern '\[VNK\] capabilities: the input belongs to the process [0-9]+' 'the input capability'
+require_marker "input probe ready"
+require_pattern '\[VNK\] syscall 21 from user input_poll result 0x1' 'the input call from the user mode'
+require_marker "input event scancode=0x4d pressed=1 extended=1"
+require_pattern '\[VNK\] display: present 16x16 at 16,0 first=0xff' 'the input-driven presentation'
+require_marker "input present x=16 y=0"
 require_pattern '\[VNK\] tasks: [0-9]+ ready' 'the report of the ready tasks'
 require_pattern '\[VNK\] tasks: [0-9]+ blocks' 'the report of the blocked tasks'
 require_marker "switch cost"

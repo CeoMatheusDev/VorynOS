@@ -1290,6 +1290,20 @@ fn installCapabilities() void {
         port.haltForever();
     }
 
+    // The input capability. The same process that presents is the first
+    // reader of the input queue; the kernel's diagnostic queue remains
+    // separate, so the user probe cannot steal the key that selects the
+    // interactive mode.
+    const input_rights = capability.Rights.read | capability.Rights.delegate;
+    const input_handle = capability.create(.input, 0, input_rights) orelse {
+        serial.printLine("[VNK] FATAL: the table of capabilities is full", .{});
+        port.haltForever();
+    };
+    if (!capability.give(presenter.id, input_handle, input_rights)) {
+        serial.printLine("[VNK] FATAL: the capability of the input could not be given", .{});
+        port.haltForever();
+    }
+
     serial.printLine("[VNK] capabilities: the channel 0 belongs to the process {d}", .{owner.id});
     serial.printLine("[VNK] capabilities: the channel 1 belongs to the process {d}", .{answerer.id});
     serial.printLine("[VNK] capabilities: the address space of the process {d} belongs to the process {d}", .{
@@ -1297,6 +1311,7 @@ fn installCapabilities() void {
         owner.id,
     });
     serial.printLine("[VNK] capabilities: the display belongs to the process {d}", .{presenter.id});
+    serial.printLine("[VNK] capabilities: the input belongs to the process {d}", .{presenter.id});
 }
 
 /// Creates the task that runs in the third level of privilege.

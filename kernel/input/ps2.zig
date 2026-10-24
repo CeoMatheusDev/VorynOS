@@ -9,6 +9,11 @@
 
 //! F6.7: IRQ1 PS/2 keyboard (legacy 8042). Acesso ao buffer em contexto
 //! normal exige interrupções locais desabilitadas; IRQ1 é o único produtor.
+//!
+//! F6.27: cada evento decodificado entra em duas filas. A fila `queue`
+//! pertence ao diagnóstico do kernel, e a fila `user_queue` pertence ao
+//! serviço gráfico de usuário. A separação impede que o consumidor de
+//! usuário roube a tecla que seleciona o modo interativo do kernel.
 
 const voryn = @import("voryn_shared");
 const keyboard = @import("voryn_keyboard");
@@ -21,6 +26,8 @@ const auxiliary_data: u8 = 0x20;
 
 var decoder: keyboard.Set1Decoder = .{};
 var queue: keyboard.EventQueue = .{};
+var user_queue: keyboard.EventQueue = .{};
+const available: bool = true;
 var received: usize = 0;
 
 /// Accumulated cost of the IRQ1 handler since the previous take.
@@ -47,7 +54,10 @@ pub fn onInterrupt() void {
         if (status & auxiliary_data != 0) continue;
         received +|= 1;
         bytes +|= 1;
-        keyboard.ingest(&decoder, &queue, byte);
+        if (decoder.feed(byte)) |event| {
+            _ = queue.push(event);
+            _ = user_queue.push(event);
+        }
     }
 
     irq_stats.interrupts +|= 1;
@@ -67,6 +77,22 @@ pub fn takeIrqStatsIrqsDisabled() IrqStats {
 /// Somente com IRQs locais desabilitadas (por exemplo, CLI/STI no consumidor).
 pub fn popIrqsDisabled() ?keyboard.KeyEvent {
     return queue.pop();
+}
+
+/// Only with the local interrupts disabled; the queue of the graphics
+/// service, separate from the diagnostic queue of the kernel.
+pub fn popUserIrqsDisabled() ?keyboard.KeyEvent {
+    return user_queue.pop();
+}
+
+/// True when the kernel has an input queue for the user mode.
+pub fn userQueueReady() bool {
+    return available;
+}
+
+/// Only with the local interrupts disabled.
+pub fn userDroppedIrqsDisabled() usize {
+    return user_queue.dropped;
 }
 
 /// Somente com IRQs locais desabilitadas.

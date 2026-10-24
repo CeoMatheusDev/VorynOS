@@ -5,7 +5,7 @@
 | **State** | ALIVE |
 | **Date** | 2026-10-24 |
 | **Published version** | `v0.1.0-dev.3` (tag) |
-| **Working tree** | F6.26 display presentation increment, verified locally in QEMU, not yet tagged |
+| **Working tree** | F6.27 input event capability and user input probe increment, verified locally in QEMU, not yet tagged |
 
 The state below reflects the **existing and verified code**, and not the
 intention. An item is only marked as completed when it meets every criterion
@@ -141,7 +141,8 @@ capabilities.
 | Capability of the address space of a process | COMPLETED | the copy into the space of a process without the capability is refused |
 | Delegation of the address space through the calls | COMPLETED | the owner delegates the capability of the process to the third process and takes it back, with the kind of the capability |
 | Capability of the display | COMPLETED | kind 2, subject 0, rights `write` and `delegate`; `present` checks it before reading the request |
-| Capability of a generic device | PROPOSED | the capability of drivers and other devices is not implemented; only the display kind exists |
+| Capability of the input | COMPLETED | kind 3, subject 0, rights `read` and `delegate`; `input_poll` checks it before the output or the queue |
+| Capability of a generic device | PROPOSED | the capability of drivers and other devices is not implemented; only the display and input kinds exist |
 
 The user mode is **implemented and verified**. The user task runs in the
 third privilege level, writes in its own page of data, calls the kernel with
@@ -329,7 +330,8 @@ service and a desktop shell remain future work.
 | F6.24 exposed-strip damage | TESTED LOCALLY | opaque moves invalidate only the exposed strips; 16-event throughput rose from 0.4 to 6.7 events/s in Debug/TCG |
 | F6.25 display metadata call | TESTED LOCALLY | syscall 19 (`display_info`, ABI 10) returns the versioned `DisplayInfo` to the native SDK application; no framebuffer address is exposed |
 | F6.26 display presentation | TESTED LOCALLY | syscall 20 (`present`, ABI 11) copies a validated 16x16 rectangle from the native SDK application; the display capability (kind 2) is checked first and the first pixel is read back as `0xff` |
-| User-space graphics service | IN DEVELOPMENT | `display_info` and `present` are verified locally; the compositor, surface sharing and input events remain proposed in ADR-0015 |
+| F6.27 input event capability | TESTED LOCALLY | syscall 21 (`input_poll`, ABI 12) takes one event from the user queue with the input capability (kind 3, `read`); the boot test sends `right`, the application presents at (16,0) and the kernel diagnostic queue keeps its copy |
+| User-space graphics service | IN DEVELOPMENT | `display_info`, `present` and `input_poll` are verified locally; the compositor, surface sharing, window manager, focus and blocking/per-process input remain proposed in ADR-0015 |
 
 Measured environment for F6.22.2/F6.23/F6.24: Fedora 44, Zig 0.17.0,
 QEMU 10.2.2, OVMF, `-smp 1`, 256 MiB, no KVM (TCG), GOP mode 2048x2048.
@@ -341,14 +343,15 @@ by QEMU's key-hold pacing.
 
 Known limitations of the verified F6 core:
 
-- `display_info` and `present` are the user-space graphics calls; there is
-  no surface sharing, window manager, focus model, cursor or input event
-  API;
+- `display_info`, `present` and `input_poll` are the user-space graphics
+  calls; there is no surface sharing, window manager, focus model, cursor,
+  blocking input or per-process input queue;
 - the `present` path is synchronous, without double buffering or vsync, and
-  the QEMU refusal from a second process without the display capability is
-  still pending;
+  the QEMU refusal from a second process without the display or input
+  capability is still pending;
 - text and general shapes are not part of the rasterizer yet;
-- input is PS/2 Set 1 only; there is no mouse or USB HID;
+- input is PS/2 Set 1 only; there is no mouse or USB HID, and the input
+  probe is a 16x16 presentation, not a compositor frame;
 - the bootloader prefers the largest 32 bpp GOP mode, which in QEMU is
   2048x2048 and amplifies framebuffer emulation cost;
 - the performance numbers were measured under TCG in Debug and
@@ -360,7 +363,7 @@ Known limitations of the verified F6 core:
 |-------|----------|--------|
 | F4 | Block drivers, VNV, initial VFSX, persistence, recovery | IN PROGRESS — RamFS core verified |
 | F5 | VEX, VLIB, VPK, runtime, SDK, native applications | IN PROGRESS — native ELF and toolchain app verified; SDK pending |
-| F6 | Input, rasterizer, compositor, windows, VSH | IN DEVELOPMENT — framebuffer, input, interactive tests and exposed-strip damage verified; display metadata and presentation verified; user-space compositor and input service pending |
+| F6 | Input, rasterizer, compositor, windows, VSH | IN DEVELOPMENT — framebuffer, input, interactive tests and exposed-strip damage verified; display metadata, presentation and input event call verified; user-space compositor, window manager and full input service pending |
 | F7 | Virtio, network, audio, physical hardware, GPU | PROPOSED |
 | F8 | ELF, Linux ABI, PE, Win32, external formats | PROPOSED |
 | F9 | VAI, backends, permissions, API, local execution | PROPOSED |

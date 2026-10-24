@@ -230,6 +230,12 @@ O F6.27 deve iniciar o serviço gráfico de usuário:
    de `present` no QEMU;
 5. medir a cópia e a composição com o mesmo instrumental de TSC do F6.24.
 
+**Nota posterior:** o F6.27 foi dividido. Ele entregou a capability de
+entrada, a chamada 21 (`input_poll`) e a sonda de entrada do modo usuário;
+o compositor, o screenshot comparado e o processo de recusa foram
+replanejados para o F6.28. Ver
+[`input-event-capability-and-user-input-probe.md`](input-event-capability-and-user-input-probe.md).
+
 ## 8. Arquivos alterados
 
 - `shared/display.zig`
