@@ -100,7 +100,7 @@ const RenderLatency = struct {
     pixels_sum: u64 = 0,
     baseline_sum: u64 = 0,
     // Fixed-size recent history: no heap use on the graphics event path.
-    recent_cycles: [32]u64 = [_]u64{0} ** 32,
+    recent_cycles: [32]u64 = @splat(0),
     recent_count: usize = 0,
     recent_next: usize = 0,
 
