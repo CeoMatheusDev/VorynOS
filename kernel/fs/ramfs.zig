@@ -598,7 +598,7 @@ fn blocksFor(length: usize) Error!usize {
 }
 
 /// Garante que o inode tenha pelo menos `required` blocos alocados.
-fn ensureBlocks(inode_num: u32, required: usize) Error!void {
+fn ensureBlocksFor(state: *State, inode_num: u32, required: usize) Error!void {
     if (required > direct_blocks) return error.FileTooLarge;
 
     // Preserve existing blocks if allocation fails partway through extension.
@@ -606,30 +606,38 @@ fn ensureBlocks(inode_num: u32, required: usize) Error!void {
     var new_count: usize = 0;
     errdefer {
         for (new_indices[0..new_count]) |index| {
-            const block = default_state.inodes[inode_num].i_block[index];
-            _ = freeBlock(@as(u32, @intCast(block)));
-            default_state.inodes[inode_num].i_block[index] = 0;
+            const block = state.inodes[inode_num].i_block[index];
+            _ = freeBlockFor(state, @as(u32, @intCast(block)));
+            state.inodes[inode_num].i_block[index] = 0;
         }
     }
 
     var count: usize = 0;
     while (count < required) : (count += 1) {
-        if (default_state.inodes[inode_num].i_block[count] != 0) continue;
-        const block = allocateBlock() orelse return error.NoSpace;
-        default_state.inodes[inode_num].i_block[count] = block;
+        if (state.inodes[inode_num].i_block[count] != 0) continue;
+        const block = allocateBlockFor(state) orelse return error.NoSpace;
+        state.inodes[inode_num].i_block[count] = block;
         new_indices[new_count] = count;
         new_count += 1;
     }
 }
 
 /// Libera todos os blocos de um inode e zera os ponteiros.
-fn releaseBlocks(inode_num: u32) void {
-    for (&default_state.inodes[inode_num].i_block) |*block| {
+fn releaseBlocksFor(state: *State, inode_num: u32) void {
+    for (&state.inodes[inode_num].i_block) |*block| {
         if (block.* != 0) {
-            _ = freeBlock(@as(u32, @intCast(block.*)));
+            _ = freeBlockFor(state, @as(u32, @intCast(block.*)));
             block.* = 0;
         }
     }
+}
+
+fn ensureBlocks(inode_num: u32, required: usize) Error!void {
+    return ensureBlocksFor(&default_state, inode_num, required);
+}
+
+fn releaseBlocks(inode_num: u32) void {
+    releaseBlocksFor(&default_state, inode_num);
 }
 
 /// Substitui o conteúdo de um arquivo.
@@ -679,14 +687,14 @@ pub fn writeFile(inode_num: u32, data: []const u8) Error!void {
 /// A escrita pode estender o arquivo; o espaço entre o fim antigo e o
 /// início da escrita é preenchido com zero, porque os blocos novos já são
 /// alocados zerados.
-pub fn writeFileAt(inode_num: u32, offset: usize, data: []const u8) Error!usize {
-    if (inodeKind(inode_num) == null) return error.InvalidInode;
-    if (default_state.inodes[inode_num].i_type != .file) return error.NotAFile;
+pub fn writeFileAtFor(state: *State, inode_num: u32, offset: usize, data: []const u8) Error!usize {
+    if (inodeKindFor(state, inode_num) == null) return error.InvalidInode;
+    if (state.inodes[inode_num].i_type != .file) return error.NotAFile;
     if (data.len == 0) return 0;
 
     const end = std.math.add(usize, offset, data.len) catch return error.FileTooLarge;
     const required = try blocksFor(end);
-    try ensureBlocks(inode_num, required);
+    try ensureBlocksFor(state, inode_num, required);
 
     var source: usize = 0;
     var position: usize = offset;
@@ -694,45 +702,53 @@ pub fn writeFileAt(inode_num: u32, offset: usize, data: []const u8) Error!usize 
         const block_index = position / block_size;
         const inside = position % block_size;
         const count = @min(block_size - inside, data.len - source);
-        const block = @as(usize, @intCast(default_state.inodes[inode_num].i_block[block_index]));
+        const block = @as(usize, @intCast(state.inodes[inode_num].i_block[block_index]));
         @memcpy(
-            default_state.memory[block * block_size + inside ..][0..count],
+            state.memory[block * block_size + inside ..][0..count],
             data[source..][0..count],
         );
         source += count;
         position += count;
     }
 
-    if (default_state.inodes[inode_num].i_size < end) default_state.inodes[inode_num].i_size = end;
+    if (state.inodes[inode_num].i_size < end) state.inodes[inode_num].i_size = end;
     return data.len;
 }
 
 /// Encolhe um arquivo para `new_size` bytes.
-pub fn truncate(inode_num: u32, new_size: usize) Error!void {
-    if (inodeKind(inode_num) == null) return error.InvalidInode;
-    if (default_state.inodes[inode_num].i_type != .file) return error.NotAFile;
-    if (new_size > default_state.inodes[inode_num].i_size) return error.InvalidOffset;
+pub fn truncateFor(state: *State, inode_num: u32, new_size: usize) Error!void {
+    if (inodeKindFor(state, inode_num) == null) return error.InvalidInode;
+    if (state.inodes[inode_num].i_type != .file) return error.NotAFile;
+    if (new_size > state.inodes[inode_num].i_size) return error.InvalidOffset;
     if (new_size > max_file_size) return error.FileTooLarge;
 
     const required = try blocksFor(new_size);
     var index = required;
     while (index < direct_blocks) : (index += 1) {
-        const block = default_state.inodes[inode_num].i_block[index];
+        const block = state.inodes[inode_num].i_block[index];
         if (block != 0) {
-            _ = freeBlock(@as(u32, @intCast(block)));
-            default_state.inodes[inode_num].i_block[index] = 0;
+            _ = freeBlockFor(state, @as(u32, @intCast(block)));
+            state.inodes[inode_num].i_block[index] = 0;
         }
     }
 
     // O restante do último bloco fica inacessível pelo tamanho, mas é
     // zerado para que uma futura extensão não exponha dados antigos.
     if (new_size % block_size != 0 and required > 0) {
-        const block = @as(usize, @intCast(default_state.inodes[inode_num].i_block[required - 1]));
+        const block = @as(usize, @intCast(state.inodes[inode_num].i_block[required - 1]));
         const start = block * block_size + (new_size % block_size);
-        @memset(default_state.memory[start..][0 .. block_size - (new_size % block_size)], 0);
+        @memset(state.memory[start..][0 .. block_size - (new_size % block_size)], 0);
     }
 
-    default_state.inodes[inode_num].i_size = new_size;
+    state.inodes[inode_num].i_size = new_size;
+}
+
+pub fn writeFileAt(inode_num: u32, offset: usize, data: []const u8) Error!usize {
+    return writeFileAtFor(&default_state, inode_num, offset, data);
+}
+
+pub fn truncate(inode_num: u32, new_size: usize) Error!void {
+    return truncateFor(&default_state, inode_num, new_size);
 }
 
 /// Lê o arquivo a partir de `offset` para o buffer do chamador e devolve o
@@ -1655,5 +1671,42 @@ test "per-volume write preserves old data on allocation failure" {
     var buffer: [16]u8 = undefined;
     const count = try readFileFor(&other, file, &buffer);
     try testing.expectEqualStrings("original", buffer[0..count]);
+    for (remaining) |block| try testing.expect(freeBlockFor(&other, block));
+}
+
+test "per-volume offset writes and truncation preserve isolation" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const left = try createFile(root_inode, "file");
+    const right = try createFileFor(&other, root_inode, "file");
+    try writeFile(left, "legacy");
+    try writeFileFor(&other, right, "abc");
+    try testing.expectEqual(@as(usize, 2), try writeFileAtFor(&other, right, 1, "XY"));
+    var buf: [16]u8 = undefined;
+    var count = try readFileFor(&other, right, &buf);
+    try testing.expectEqualStrings("aXY", buf[0..count]);
+    try testing.expectEqual(@as(usize, 1), try writeFileAtFor(&other, right, block_size, "Z"));
+    try truncateFor(&other, right, 2);
+    count = try readFileFor(&other, right, &buf);
+    try testing.expectEqualStrings("aX", buf[0..count]);
+    count = try readFile(left, &buf);
+    try testing.expectEqualStrings("legacy", buf[0..count]);
+    try audit();
+}
+
+test "per-volume offset extension failure leaves original content" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const file = try createFileFor(&other, root_inode, "file");
+    try writeFileFor(&other, file, "old");
+    var remaining: [block_count - 2]u32 = undefined;
+    for (&remaining) |*slot| slot.* = allocateBlockFor(&other) orelse unreachable;
+    try testing.expectError(error.NoSpace, writeFileAtFor(&other, file, block_size, "new"));
+    var buf: [8]u8 = undefined;
+    const count = try readFileFor(&other, file, &buf);
+    try testing.expectEqualStrings("old", buf[0..count]);
+    try testing.expectError(error.InvalidOffset, truncateFor(&other, file, 4));
     for (remaining) |block| try testing.expect(freeBlockFor(&other, block));
 }
