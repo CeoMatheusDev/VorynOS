@@ -25,6 +25,33 @@
 
 ---
 
+## Engineering principle — Native implementation and measurable performance
+
+VorynOS prioritizes **original, independently maintained implementations of the subsystems it needs**: boot chain, kernel, memory management, scheduler, IPC, filesystem, drivers, native SDK, graphics stack and desktop. Its performance goals are low latency, predictable execution, small memory footprint, efficient CPU use and minimal unnecessary overhead.
+
+- Build essential OS subsystems natively rather than presenting Linux, BSD or third-party desktop software as VorynOS internals.
+- Use external development tools and established hardware/file-format/ABI standards when necessary for compatibility and correctness; independently implementing a standard is compatible with architectural originality.
+- Prefer straightforward data layouts, bounded allocation, explicit ownership, minimal copying, incremental rendering and isolation by default.
+- Require repeatable baselines and benchmarks before claiming performance improvements; compare latency, throughput, CPU cycles, memory usage and binary size where applicable.
+- Never trade away memory safety, access control, fault isolation or correctness for speculative optimization. Do not invent proprietary cryptographic primitives.
+- Document dependency exceptions, performance hypotheses, measurements, regressions and acceptance criteria. If an optimization has no measurable benefit, revert or simplify it.
+
+**Originality is a design constraint; performance is an evidence-based engineering outcome.**
+
+## Strategic priority — Native graphical desktop (F6)
+
+**The primary product-development focus is a fully native VorynOS graphical interface.** The goal is an independent, interactive desktop running on the VorynOS kernel, not a Linux/BSD-hosted shell or a graphical mockup. Work on F4/F5 and kernel isolation remains necessary where it unblocks safe graphics and native applications.
+
+Development on `feat/native-sdk` should incrementally deliver:
+
+1. **Reliable display and input:** validated framebuffer presentation, keyboard and pointer input, and a persistent event loop in QEMU.
+2. **Interactive window management:** focus, movement, stacking, clipping, incremental redraw, and reproducible input-to-pixel tests.
+3. **Protected graphics service:** explicit ownership of graphical resources, per-process surfaces, validated shared buffers, capability checks, and a stable user-mode ABI.
+4. **Voryn Desktop:** native shell, window decorations, launcher, task switching, and an initial terminal/file browser built with the native SDK.
+5. **Quality gates:** Zig 0.17.0 compilation, unit tests, QEMU interaction tests, framebuffer comparisons, fault isolation, and measured frame latency and memory use.
+
+**Current status:** F6 is experimental on this branch. Existing raster, compositor, dirty-region and input modules are foundations, **not** proof of a finished desktop. Do not mark the graphical desktop complete until an interactive Ring 3 application can create and update a window through a permission-checked interface and automated QEMU tests verify the resulting input and pixels. Preserve the existing syscall ABI and document any compatible extension before implementation.
+
 ## Overview
 
 **VorynOS** is an independent operating system project developed primarily in **Zig**, using **x86_64 Assembly** for operations requiring direct control over the processor architecture.
@@ -56,7 +83,7 @@ The project is currently in its early development stages and **does not yet cons
 > - **License:** GPL-3.0-only
 > - **Last documentation revision:** October 23, 2026
 
-The current development line is **F5 — Runtime, SDK and native applications**. The RamFS has a verified core: block allocator, files with direct blocks, directories, path lookup and a descriptor facade. The ELF64 **planner and materializer** now load `/apps/hello.elf` from the RamFS into a fourth process: the kernel maps code R+X and data/stack R+W+NX with hardware NX, applies a relative relocation, and executes the image in QEMU. The embedded processes also use W^X. The host suite has 89 tests, and the boot test still covers process fault recovery, IPC, capabilities and the timeout. The native SDK/toolchain and persistent storage remain pending. This increment is verified in the working tree and has not been tagged yet. This is not a production-ready operating system.
+The active development branch is **`feat/native-sdk`**. In addition to the native ELF64 and toolchain execution paths, the branch contains the experimental **F6 graphics stack**: GOP framebuffer rendering, opaque window composition, damage tracking, PS/2 Set 1 keyboard decoding through IRQ1, arrow-key window movement, and an event pump during a bounded boot-test window. **F6.9 was verified on Fedora** using `zig build test && zig build && zig build qemu-test` at commit `4a6beb2`; the QEMU test reported four key events, zero drops, and one arrow-key graphics update. **F6.10 was verified on Fedora** at commit `9c144b3`: the full `zig build test && zig build && zig build qemu-test` sequence passed, including the pixel-equivalence regression for successive overlapping window movements. **F6.11 is now under development**: pressing the I key during the PS/2 boot input window selects an experimental persistent event loop after the readiness marker and syscall self-test; normal automated boots still run the fatal invalid-opcode self-test. This new mode has not yet been validated on Fedora. Persistent graphical interaction, a production SDK, and persistent storage are still pending. These branch-specific features are not a production-ready desktop or a tagged release.
 
 The reorganization of public milestones is documented in [VERSIONING-RESET-2026](docs/releases/VERSIONING-RESET-2026.md).
 
@@ -72,13 +99,13 @@ Development is organized into incremental milestones, each with technical accept
 | F3 | Threads, scheduler, processes, syscalls, and IPC | ✅ Completed |
 | F4 | Storage and file systems | 🚧 RamFS core verified — persistence and VFSX pending |
 | F5 | Runtime, SDK, and native applications | 🚧 In progress — native ELF and toolchain app verified; SDK pending |
-| F6 | Graphics subsystem and desktop environment | 📋 Proposed |
+| F6 | Graphics subsystem and desktop environment | 🚧 Experimental on `feat/native-sdk` — F6.10 QEMU-verified; F6.11 interactive mode pending |
 | F7 | Drivers, networking, audio, and physical hardware | 📋 Proposed |
 | F8 | Compatibility with external formats and APIs | 📋 Proposed |
 | F9 | Artificial intelligence infrastructure | 📋 Proposed |
 | F10 | Installation, security, recovery, and production readiness | 📋 Proposed |
 
-**Important:** These statuses reflect the documented content published on the `main` branch. Features developed only in local environments are not considered implemented in the public repository.
+**Important:** These milestone statuses describe the active `feat/native-sdk` development branch where indicated; they do not imply that the same functionality has been merged into `main` or released.
 
 See the [technical roadmap](docs/roadmap/phase-status.md) for each milestone's objectives, acceptance criteria, limitations, and risks.
 
@@ -208,6 +235,25 @@ The project includes a custom FAT16 image builder implemented in Zig.
 This tool prepares the bootable volume used in system tests.
 
 **Implementation:** `tools/fatimg.zig`
+
+---
+
+### Experimental graphics and PS/2 input (`feat/native-sdk`)
+
+The development branch includes a custom framebuffer rasterizer, opaque window compositor, dirty-rectangle tracker, PS/2 keyboard Set 1 decoder and IRQ1 event queue. QEMU's HMP monitor injects the A key and right arrow during the integration test. F6.9 processes queued input during a bounded timer window instead of waiting until its end.
+
+**Verified on Fedora at `4a6beb2`:** `zig build test`, `zig build`, and `zig build qemu-test` passed. The serial output reported `4 events, 2 pressed, 2 released, 6 bytes, 0 dropped` and `event pump 1 arrow presses over 237 ticks`. This is evidence of input handling and redraw execution, **not a framebuffer screenshot or end-to-end input latency benchmark**.
+
+**F6.10 (verified on Fedora at `9c144b3`):** `kernel/graphics/damage.zig` now contains a pixel-by-pixel regression comparing dirty redraw with full composition after four window movements, including overlaps. **F6.11 (interactive integration test implemented, not yet validated on Fedora):** the experimental persistent loop can be selected by pressing the **I key** during the initial keyboard input window; it processes subsequent PS/2 events after `VORYN-KERNEL-READY` instead of running the fatal `ud2` test. Normal automated boots do not select this mode and retain their existing exception test. The independent `qemu-interactive-test` build step verifies the persistent-loop marker and injects a right-arrow key only after it appears. **F6.12 (pending Fedora validation):** the same integration test now captures QEMU HMP `screendump` P6 images before and after the arrow event and checks that the displayed RGB pixels actually change. A compositor fix applies the new window coordinates before dirty-region redraw. **F6.12 passed on Fedora** at commit `5353041`: the QEMU screenshots differed by 87,296 pixels. **F6.13 (validated on Fedora at `a8be274`)** extends the screenshot comparator to check every pixel against the expected background, back-window, and front-window layers before and after the logged movement, including old-area restoration and overlap. It is intentionally separate from the existing fatal-exception boot test. The GUI still has no focus manager or user-space graphics service.
+
+Run on the development branch:
+
+```bash
+git switch feat/native-sdk
+git pull --ff-only origin feat/native-sdk
+zig build test && zig build && zig build qemu-test
+zig build qemu-interactive-test  # separate QEMU run; injects I then RIGHT
+```
 
 ---
 
@@ -710,3 +756,13 @@ Contributions are subject to the conditions established in [CONTRIBUTING.md](CON
 [License](LICENSE)
 
 </div>
+
+F6.14 (pending Fedora validation): `zig build qemu-interactive-test` now injects six successive arrow keys (right, down, left, up, left, right), checks each logged position against the expected movement, and compares QEMU framebuffer captures pixel by pixel after every step. The PPM comparator also verifies restoration and window overlap. This is an integration regression test, not a compositor performance benchmark.
+
+F6.14 validated on Fedora/QEMU: six successive arrow movements passed exact framebuffer comparisons, including background restoration and overlap. F6.15 (pending Fedora validation) adds Zig unit regressions for keyboard movement clamping at all framebuffer edges, oversized windows, and incremental compositor clipping (partial/offscreen/re-entry), checked against full composition. Run `zig build test` and `zig build qemu-interactive-test` before marking F6.15 complete.
+
+F6.15 validated on Fedora with Zig 0.17.0 (`zig build test`, `zig build`, `zig build qemu-test`, `zig build qemu-interactive-test`). F6.16 (pending Fedora validation): run `bash tests/integration/interactive-qemu.sh --image=./zig-out/bin/vorynos.img --timeout=180 --edges` after `zig build`. The optional edge route acknowledges every arrow movement and compares framebuffer screenshots at the right, bottom, left, and top fully visible window limits. Normal `zig build qemu-interactive-test` keeps the F6.14 six-movement regression.
+
+F6.16 validated on Fedora/QEMU: 58 acknowledged movements reached all four visible framebuffer limits, with exact pixel comparisons at each edge. F6.17 (pending Fedora validation) adds `--stress` to `tests/integration/interactive-qemu.sh`: 48 sequential acknowledged arrow movements in three repeated right/down/left/up cycles, with full framebuffer geometry checks after each four-key segment. Run `bash tests/integration/interactive-qemu.sh --image=./zig-out/bin/vorynos.img --timeout=180 --stress` after `zig build`. `--stress` and `--edges` are mutually exclusive; the default six-step test remains unchanged.
+
+F6.17 was validated on Fedora/QEMU: `--stress` completed 48/48 acknowledged movements and exited with code 0. F6.18 (awaiting Fedora validation) adds `--bounds` to `tests/integration/interactive-qemu.sh`. It visits all four framebuffer boundaries, sends three additional arrow presses at each boundary, validates every acknowledged coordinate, and compares P6 framebuffer screenshots to require pixel-identical images for clamped/no-op movements. Run `bash tests/integration/interactive-qemu.sh --image=./zig-out/bin/vorynos.img --timeout=300 --bounds` after `zig build`. `--bounds`, `--edges` and `--stress` are mutually exclusive.

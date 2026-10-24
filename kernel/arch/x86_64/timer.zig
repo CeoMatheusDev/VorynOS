@@ -77,8 +77,9 @@ pub fn init(ticks_per_second: u32) void {
     writePort(pic.slave_data, 0x02); // the cascade identity
     writePort(pic.slave_data, 0x01);
 
-    // Only the timer of the first controller is enabled.
-    writePort(pic.master_data, 0xFE);
+    // Enable IRQ0 (timer) and IRQ1 (legacy PS/2 keyboard).
+    // Other IRQ lines remain masked until a driver claims them.
+    writePort(pic.master_data, 0xFC);
     writePort(pic.slave_data, 0xFF);
 
     // Program the timer: channel zero, low and high byte of the divisor,

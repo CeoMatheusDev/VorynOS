@@ -81,6 +81,11 @@ pub fn build(b: *std.Build) void {
         .os_tag = .freestanding,
         .abi = .none,
     });
+    const sdk_module = b.createModule(.{
+        .root_source_file = b.path("sdk/src/root.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
     const user_module = b.createModule(.{
         .root_source_file = b.path("user/hello.zig"),
         .target = user_target,
@@ -88,6 +93,7 @@ pub fn build(b: *std.Build) void {
         .single_threaded = true,
         .pic = true,
     });
+    user_module.addImport("voryn_sdk", sdk_module);
     const user_executable = b.addExecutable(.{
         .name = "voryn-native-hello",
         .root_module = user_module,
@@ -129,6 +135,12 @@ pub fn build(b: *std.Build) void {
         // raise a fault in the middle of a message of the console.
         .error_tracing = false,
     });
+    const kernel_keyboard_module = b.createModule(.{
+        .root_source_file = b.path("kernel/input/keyboard.zig"),
+        .target = kernel_target,
+        .optimize = optimize,
+    });
+    kernel_module.addImport("voryn_keyboard", kernel_keyboard_module);
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/entry.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/cpu.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/segment.s"));
@@ -194,6 +206,83 @@ pub fn build(b: *std.Build) void {
         .root_module = shared_test_module,
     });
     unit_test_step.dependOn(&b.addRunArtifact(shared_tests).step);
+
+    // SDK: testes de contratos e decodificação de erros no host.
+    const sdk_test_module = b.createModule(.{
+        .root_source_file = b.path("sdk/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const sdk_tests = b.addTest(.{
+        .name = "sdk-tests",
+        .root_module = sdk_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(sdk_tests).step);
+
+    // F6: rasterizador puro, testado sem hardware de vídeo.
+    const raster_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/graphics/raster.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const raster_tests = b.addTest(.{
+        .name = "raster-tests",
+        .root_module = raster_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(raster_tests).step);
+
+    // F6: compositor opaco sobre rasterizador puro.
+    const compositor_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/graphics/compositor.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const compositor_tests = b.addTest(.{
+        .name = "compositor-tests",
+        .root_module = compositor_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(compositor_tests).step);
+
+    // F6.4: rastreamento de regiões modificadas e mutações de janelas.
+    const damage_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/graphics/damage.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const damage_tests = b.addTest(.{
+        .name = "damage-tests",
+        .root_module = damage_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(damage_tests).step);
+
+    const motion_module = b.createModule(.{
+        .root_source_file = b.path("kernel/graphics/keyboard_motion.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const motion_keyboard_module = b.createModule(.{
+        .root_source_file = b.path("kernel/input/keyboard.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    motion_module.addImport("voryn_keyboard", motion_keyboard_module);
+    const motion_tests = b.addTest(.{
+        .name = "keyboard-motion-tests",
+        .root_module = motion_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(motion_tests).step);
+
+    // F6.6: fila de eventos e decodificação de teclado PS/2 no host.
+    const keyboard_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/input/keyboard.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const keyboard_tests = b.addTest(.{
+        .name = "keyboard-tests",
+        .root_module = keyboard_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(keyboard_tests).step);
 
     // The memory managers of the kernel are free of architecture specific
     // code and are tested on the host as well.
@@ -281,6 +370,13 @@ pub fn build(b: *std.Build) void {
     qemu_test.step.dependOn(&image_step.step);
     qemu_test_step.dependOn(&image_step.step);
     qemu_test_step.dependOn(&qemu_test.step);
+
+    const interactive_test_step = b.step("qemu-interactive-test", "Verify persistent PS/2 graphics input in QEMU");
+    const interactive_test = b.addSystemCommand(&.{ "bash", "tests/integration/interactive-qemu.sh" });
+    interactive_test.addPrefixedFileArg("--image=", image_path);
+    interactive_test.has_side_effects = true;
+    interactive_test.step.dependOn(&image_step.step);
+    interactive_test_step.dependOn(&interactive_test.step);
 
     const qemu_run_step = b.step("qemu", "Boot the image in QEMU");
     const qemu_run = b.addSystemCommand(&.{ "bash", "scripts/qemu-run.sh" });

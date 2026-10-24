@@ -11,6 +11,18 @@ Desenvolver um sistema operacional **independente**, com kernel, bootloader e in
 - Identificadores e nomes de arquivo: inglês técnico; documentação, relatórios, ADRs e mensagens de commit: português brasileiro.
 - Licença: **GPL-3.0-only**. Código próprio novo deve ter cabeçalho visual e `SPDX-License-Identifier: GPL-3.0-only`; preservar avisos de terceiros. Em Zig, usar comentários de linha `//` antes de `//!`, nunca bloco `/* */` nessa posição.
 
+## Diretriz permanente — implementação própria e desempenho verificável
+
+O VorynOS deve desenvolver **implementações originais dos subsistemas essenciais** de que necessita: boot, kernel, memória, escalonamento, IPC, filesystem, drivers, SDK, gráficos e desktop. O objetivo é minimizar latência, consumo de memória, ciclos de CPU e overhead, sem perder correção, segurança ou interoperabilidade.
+
+- Não incorporar Linux, BSD ou desktops de terceiros como base oculta do sistema. Ferramentas externas de desenvolvimento e padrões consolidados (UEFI, ELF, ABI, arquitetura x86_64) são permitidos quando tecnicamente necessários.
+- Priorizar controle explícito de memória e recursos, layouts compactos, cópias evitáveis reduzidas, desenho incremental e isolamento de processos.
+- Para cada otimização relevante, registrar hipótese, baseline reproduzível, benchmark, impacto em latência/throughput/memória e regressões; não afirmar ganho sem medição.
+- Não sacrificar segurança, isolamento, confiabilidade ou clareza por micro-otimizações especulativas. Não criar criptografia proprietária.
+- Justificar exceções de dependência e abandonar otimizações sem ganho verificável.
+
+**Construir do zero é um requisito arquitetural; alto desempenho exige comprovação experimental.**
+
 ## Fluxo obrigatório de trabalho
 
 1. **Inspecionar:** ler `git status`, arquivos relevantes, testes e documentação; preservar alterações preexistentes e arquivos não rastreados.

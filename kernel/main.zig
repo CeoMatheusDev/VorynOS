@@ -52,6 +52,18 @@ const elf_loader = @import("elf_loader.zig");
 const elf_materializer = @import("elf_materializer.zig");
 const native_image = @import("native_image.zig");
 const toolchain_app = @import("native_app");
+const raster = @import("graphics/raster.zig");
+const compositor = @import("graphics/compositor.zig");
+const damage = @import("graphics/damage.zig");
+const ps2 = @import("input/ps2.zig");
+const keyboard_motion = @import("graphics/keyboard_motion.zig");
+const keyboard = @import("voryn_keyboard");
+
+var graphics_front_x: usize = 0;
+var graphics_front_y: usize = 0;
+var graphics_ready: bool = false;
+// F6.11: tecla I (Set 1, 0x17) seleciona o modo interativo durante o boot.
+var interactive_requested: bool = false;
 
 /// Version of the kernel, reported on the console.
 const kernel_version = "0.1.0-dev.1";
@@ -531,6 +543,10 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // it separates a broken gate from a broken transition of privilege.
     syscallSelfTest();
 
+    // F6.11: a tecla I durante a janela PS/2 seleciona o modo interativo.
+    // O boot automatizado nao envia I, preservando o autoteste fatal UD2.
+    if (interactive_requested) runInteractiveEventLoop();
+
     // The self test of the exception handling runs at the very end, because
     // an exception stops the kernel.
     selfTest();
@@ -708,6 +724,9 @@ fn activatePageTables() void {
     // The framebuffer is written after the new tables are active, which
     // proves that the mapping of the device memory works.
     probeFramebuffer();
+    // F6.2: cena inicial diretamente no framebuffer GOP mapeado.
+    // A integração ocorre antes da ativação do timer e das tarefas.
+    presentGraphicsDemo();
 }
 
 /// Writes a value into the first pixel of the framebuffer and reads it back.
@@ -730,6 +749,118 @@ fn probeFramebuffer() void {
     } else {
         serial.printLine("[VNK] framebuffer: write probe failed (readback=0x{x})", .{readback});
     }
+}
+
+/// F6.2: desenha uma cena de diagnóstico no framebuffer fornecido pelo UEFI.
+/// Não altera o contrato do boot nem expõe MMIO a processos de usuário.
+fn presentGraphicsDemo() void {
+    const framebuffer = boot_info.framebuffer;
+    if (boot_info.flags & handoff.flag_framebuffer == 0) return;
+    if (framebuffer.base == 0 or framebuffer.bits_per_pixel != 32) return;
+    if (framebuffer.width == 0 or framebuffer.height == 0) return;
+    if (framebuffer.size > std.math.maxInt(usize)) return;
+    if (framebuffer.base >= handoff.identity_mapped_limit) return;
+    if (framebuffer.size > handoff.identity_mapped_limit - framebuffer.base) return;
+
+    const size: usize = @intCast(framebuffer.size);
+    const width: usize = @intCast(framebuffer.width);
+    const height: usize = @intCast(framebuffer.height);
+    const pitch: usize = @intCast(framebuffer.pitch);
+    const ptr: [*]u8 = @ptrFromInt(framebuffer.base);
+    var surface = raster.Surface.init(ptr[0..size], width, height, pitch) catch {
+        serial.printLine("[VNK] graphics: invalid framebuffer geometry", .{});
+        return;
+    };
+
+    // GOP descreve layouts RGB/BGR também pelo enum. Alguns firmwares
+    // deixam as máscaras zeradas nos modos predefinidos.
+    const masks_absent = framebuffer.red_mask == 0 and
+        framebuffer.green_mask == 0 and framebuffer.blue_mask == 0;
+    const is_bgr = if (masks_absent)
+        framebuffer.pixel_format == .bgr32
+    else
+        framebuffer.red_mask == 0x00ff0000 and
+            framebuffer.green_mask == 0x0000ff00 and
+            framebuffer.blue_mask == 0x000000ff;
+    const is_rgb = if (masks_absent)
+        framebuffer.pixel_format == .rgb32
+    else
+        framebuffer.red_mask == 0x000000ff and
+            framebuffer.green_mask == 0x0000ff00 and
+            framebuffer.blue_mask == 0x00ff0000;
+    if (!is_bgr and !is_rgb) {
+        serial.printLine("[VNK] graphics: unsupported pixel layout format={d} masks=0x{x}/0x{x}/0x{x}", .{
+            @intFromEnum(framebuffer.pixel_format),
+            framebuffer.red_mask,
+            framebuffer.green_mask,
+            framebuffer.blue_mask,
+        });
+        return;
+    }
+    const background: [4]u8 = if (is_bgr) .{ 0x20, 0x17, 0x10, 0 } else .{ 0x10, 0x17, 0x20, 0 };
+    const front: [4]u8 = if (is_bgr) .{ 0xb0, 0x86, 0x30, 0 } else .{ 0x30, 0x86, 0xb0, 0 };
+    const back: [4]u8 = if (is_bgr) .{ 0x70, 0x36, 0x1e, 0 } else .{ 0x1e, 0x36, 0x70, 0 };
+    var windows = [_]compositor.Window{
+        .{ .x = width / 8, .y = height / 8, .width = width / 2, .height = height / 2, .color = back },
+        .{ .x = width / 4, .y = height / 4, .width = width / 2, .height = height / 3, .color = front },
+    };
+    compositor.compose(&surface, background, &windows);
+    serial.printLine("[VNK] graphics: framebuffer scene presented ({d}x{d})", .{ width, height });
+
+    // F6.5: exercita a atualização incremental sobre o framebuffer real.
+    // O deslocamento é limitado ao tamanho da tela e não depende de entrada.
+    var tracker: damage.Tracker = .{};
+    var moved = windows[1];
+    moved.x = @min(width - 1, moved.x +| @max(@as(usize, 1), width / 16));
+    damage.updateWindow(&tracker, .{ .x = 0, .y = 0, .width = width, .height = height }, &windows[1], moved);
+    const repainted = tracker.redraw(&surface, background, &windows);
+    serial.printLine("[VNK] graphics: incremental redraw {d} pixels", .{repainted});
+    graphics_front_x = windows[1].x;
+    graphics_front_y = windows[1].y;
+    graphics_ready = true;
+}
+
+
+fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
+    if (!graphics_ready) return;
+    const framebuffer = boot_info.framebuffer;
+    const width: usize = @intCast(framebuffer.width);
+    const height: usize = @intCast(framebuffer.height);
+    const pitch: usize = @intCast(framebuffer.pitch);
+    const size: usize = @intCast(framebuffer.size);
+    const ptr: [*]u8 = @ptrFromInt(framebuffer.base);
+    var surface = raster.Surface.init(ptr[0..size], width, height, pitch) catch return;
+    const masks_absent = framebuffer.red_mask == 0 and framebuffer.green_mask == 0 and framebuffer.blue_mask == 0;
+    const is_bgr = if (masks_absent) framebuffer.pixel_format == .bgr32 else framebuffer.red_mask == 0x00ff0000;
+    const background: [4]u8 = if (is_bgr) .{ 0x20, 0x17, 0x10, 0 } else .{ 0x10, 0x17, 0x20, 0 };
+    const front: [4]u8 = if (is_bgr) .{ 0xb0, 0x86, 0x30, 0 } else .{ 0x30, 0x86, 0xb0, 0 };
+    const back: [4]u8 = if (is_bgr) .{ 0x70, 0x36, 0x1e, 0 } else .{ 0x1e, 0x36, 0x70, 0 };
+    var windows = [_]compositor.Window{
+        .{ .x = width / 8, .y = height / 8, .width = width / 2, .height = height / 2, .color = back },
+        .{ .x = graphics_front_x, .y = graphics_front_y, .width = width / 2, .height = height / 3, .color = front },
+    };
+    var next = windows[1];
+    const bounds: compositor.Rect = .{ .x = 0, .y = 0, .width = width, .height = height };
+    // Acknowledge every pressed arrow, including clamped no-op events.
+    // This is distinct from the movement log, which reports actual redraws.
+    if (!event.pressed or !event.extended) return;
+    switch (event.scancode) {
+        0x4b, 0x4d, 0x48, 0x50 => {},
+        else => return,
+    }
+    const moved = keyboard_motion.move(&next, bounds, event, @max(@as(usize, 1), width / 32));
+    serial.printLine("[VNK] graphics: arrow ack scancode=0x{x} moved={d} x={d} y={d}", .{
+        event.scancode, @intFromBool(moved), next.x, next.y,
+    });
+    if (!moved) return;
+    var tracker: damage.Tracker = .{};
+    damage.updateWindow(&tracker, bounds, &windows[1], next);
+    // Render the updated geometry, not the stale window coordinates.
+    windows[1] = next;
+    const pixels = tracker.redraw(&surface, background, &windows);
+    graphics_front_x = next.x;
+    graphics_front_y = next.y;
+    serial.printLine("[VNK] graphics: keyboard move x={d} y={d} redraw={d} pixels", .{ next.x, next.y, pixels });
 }
 
 /// Prepares the heap of the kernel and verifies that it works.
@@ -774,6 +905,89 @@ fn installTimer() void {
     }
 
     serial.printLine("[VNK] timer: {d} Hz, {d} ticks", .{ timer.ticksPerSecond(), timer.ticks() });
+
+    // F6.9: event pump por 50 ticks, em vez de consumir toda a fila
+    // apenas no final. O trabalho de composição ocorre com IRQs habilitadas.
+    // CLI protege somente a retirada de um evento da fila SPSC de IRQ1.
+    serial.printLine("[VNK] keyboard: ready for PS/2 input", .{});
+    const input_start = timer.ticks();
+    var key_count: usize = 0;
+    var pressed: usize = 0;
+    var released: usize = 0;
+    var graphics_updates: usize = 0;
+    while (timer.ticks() - input_start < 50) {
+        cpu.disableInterrupts();
+        const maybe_event = ps2.popIrqsDisabled();
+        cpu.enableInterrupts();
+        if (maybe_event) |event| {
+            key_count += 1;
+            if (event.pressed) {
+                pressed += 1;
+                if (event.extended and (event.scancode == 0x4b or event.scancode == 0x4d or event.scancode == 0x48 or event.scancode == 0x50))
+                    graphics_updates += 1;
+            } else {
+                released += 1;
+            }
+            if (event.pressed and !event.extended and event.scancode == 0x17)
+                interactive_requested = true;
+            applyKeyboardGraphics(event);
+            serial.printLine("[VNK] keyboard: key scancode=0x{x} extended={d} pressed={d}", .{
+                event.scancode, @intFromBool(event.extended), @intFromBool(event.pressed),
+            });
+        } else {
+            // HLT acorda na próxima IRQ; não realiza busy polling.
+            cpu.halt();
+        }
+    }
+    // Drena os eventos que chegaram no último tick da janela.
+    while (true) {
+        cpu.disableInterrupts();
+        const maybe_event = ps2.popIrqsDisabled();
+        cpu.enableInterrupts();
+        const event = maybe_event orelse break;
+        key_count += 1;
+        if (event.pressed) {
+            pressed += 1;
+            if (event.extended and (event.scancode == 0x4b or event.scancode == 0x4d or event.scancode == 0x48 or event.scancode == 0x50))
+                graphics_updates += 1;
+        } else {
+            released += 1;
+        }
+        if (event.pressed and !event.extended and event.scancode == 0x17)
+            interactive_requested = true;
+        applyKeyboardGraphics(event);
+        serial.printLine("[VNK] keyboard: key scancode=0x{x} extended={d} pressed={d}", .{
+            event.scancode, @intFromBool(event.extended), @intFromBool(event.pressed),
+        });
+    }
+    cpu.disableInterrupts();
+    const bytes = ps2.receivedIrqsDisabled();
+    const dropped = ps2.droppedIrqsDisabled();
+    cpu.enableInterrupts();
+    serial.printLine("[VNK] keyboard: {d} events, {d} pressed, {d} released, {d} bytes, {d} dropped", .{
+        key_count, pressed, released, bytes, dropped,
+    });
+    serial.printLine("[VNK] graphics: event pump {d} arrow presses over {d} ticks", .{
+        graphics_updates, timer.ticks() - input_start,
+    });
+}
+
+/// F6.11: loop de eventos permanente, selecionado pela tecla I no boot.
+/// Retira um evento com IRQs desabilitadas; compoe com IRQs habilitadas.
+fn runInteractiveEventLoop() noreturn {
+    serial.printLine("[VNK] graphics: interactive event loop ready", .{});
+    while (true) {
+        cpu.disableInterrupts();
+        const maybe_event = ps2.popIrqsDisabled();
+        cpu.enableInterrupts();
+        if (maybe_event) |event| {
+            applyKeyboardGraphics(event);
+        } else {
+            // O timer de 100 Hz garante novo despertar mesmo se IRQ1
+            // chegar entre a leitura da fila e HLT.
+            cpu.halt();
+        }
+    }
 }
 
 /// Initializes the file system.
