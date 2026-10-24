@@ -355,9 +355,30 @@ pub fn write(process_id: u64, fd: Fd, data: []const u8) Error!usize {
     const entry = descriptor(process_id, fd) orelse return error.BadDescriptor;
     if (!writable(entry.flags)) return error.NotWritable;
 
-    const count = try ramfs.writeFileAt(entry.inode, entry.offset, data);
-    entry.offset += count;
+    // O_APPEND é uma propriedade da operação de escrita, não apenas
+    // do deslocamento inicial da abertura. Outros descritores podem
+    // alterar o tamanho do arquivo entre duas escritas.
+    const position: usize = if (entry.flags & O_APPEND != 0)
+        @intCast(ramfs.sizeOf(entry.inode) orelse return error.InvalidInode)
+    else
+        entry.offset;
+    const count = try ramfs.writeFileAt(entry.inode, position, data);
+    entry.offset = position + count;
     return count;
+}
+
+/// Encolhe o arquivo aberto; não altera o deslocamento do descritor.
+/// A validação de acesso acontece antes de modificar o inode.
+pub fn truncateFd(process_id: u64, fd: Fd, new_size: usize) Error!void {
+    const entry = descriptor(process_id, fd) orelse return error.BadDescriptor;
+    if (!writable(entry.flags)) return error.NotWritable;
+    try ramfs.truncate(entry.inode, new_size);
+}
+
+/// Encolhe um arquivo pelo caminho, sem consumir um descritor.
+pub fn truncateFile(path: []const u8, new_size: usize) Error!void {
+    const target = try ramfs.resolvePath(try backendPath(path));
+    try ramfs.truncate(target, new_size);
 }
 
 /// Move o deslocamento do descritor.
@@ -869,4 +890,52 @@ test "generation exhaustion rejects create without allocating inode" {
     try testing.expectError(error.EntryNotFound, ramfs.resolvePath("/retired-no-create"));
     try testing.expectEqual(before_inodes, freeInodeCount());
     try testing.expectEqual(before_blocks, freeBlockCount());
+}
+
+test "O_APPEND writes use current EOF across independent descriptors" {
+    init();
+    const first = try open(0, "/append.txt", O_CREAT | O_RDWR | O_APPEND);
+    const second = try open(1, "/append.txt", O_RDWR);
+    try testing.expectEqual(@as(usize, 3), try write(0, first, "one"));
+    try seek(0, first, 0);
+    try testing.expectEqual(@as(usize, 3), try write(1, second, "two"));
+    try testing.expectEqual(@as(usize, 1), try write(0, first, "!"));
+    try testing.expectEqual(@as(usize, 4), try tell(0, first));
+    var result: [8]u8 = undefined;
+    const count = try readFile("/append.txt", &result);
+    try testing.expectEqualStrings("two!", result[0..count]);
+    try close(1, second);
+    try close(0, first);
+}
+
+test "truncateFd enforces access and retains independent descriptor offsets" {
+    init();
+    const writer = try open(0, "/trunc.txt", O_CREAT | O_RDWR);
+    try testing.expectEqual(@as(usize, 8), try write(0, writer, "abcdefgh"));
+    const reader = try open(1, "/trunc.txt", O_RDONLY);
+    try testing.expectError(error.NotWritable, truncateFd(1, reader, 2));
+    try testing.expectEqual(@as(u64, 8), try sizeOf("/trunc.txt"));
+    try truncateFd(0, writer, 3);
+    try testing.expectEqual(@as(u64, 3), try sizeOf("/trunc.txt"));
+    try testing.expectEqual(@as(usize, 8), try tell(0, writer));
+    var result: [8]u8 = undefined;
+    const count = try read(1, reader, &result);
+    try testing.expectEqualStrings("abc", result[0..count]);
+    try testing.expectError(error.InvalidOffset, truncateFd(0, writer, 4));
+    try testing.expectError(error.BadDescriptor, truncateFd(0, @as(Fd, @intCast(max_open_files)), 0));
+    try close(1, reader);
+    try close(0, writer);
+}
+
+test "truncateFile handles paths and frees RamFS blocks" {
+    init();
+    const fd = try open(0, "/path-trunc", O_CREAT | O_RDWR);
+    const payload: [ramfs.block_size * 2]u8 = @splat(0x61);
+    _ = try write(0, fd, &payload);
+    const before = freeBlockCount();
+    try truncateFile("/path-trunc", 0);
+    try testing.expectEqual(before + 2, freeBlockCount());
+    try testing.expectEqual(@as(u64, 0), try sizeOf("/path-trunc"));
+    try testing.expectError(error.EntryNotFound, truncateFile("/missing", 0));
+    try close(0, fd);
 }
