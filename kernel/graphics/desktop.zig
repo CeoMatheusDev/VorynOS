@@ -42,7 +42,26 @@ pub const Desktop = struct {
     /// Repaint only the old and new front-window footprints. Overlap may be
     /// painted twice; the returned count is framebuffer pixel writes.
     /// A pending full invalidation takes precedence over partial updates.
+    pub const StageTiming = struct {
+        movement_cycles: u64 = 0,
+        composition_cycles: u64 = 0,
+    };
+
     pub fn moveFrontAndPresent(self: *Desktop, mapping: bridge.Mapping, x: usize, y: usize) (bridge.Error || wm.Error)!usize {
+        return self.moveFrontAndPresentTimed(mapping, x, y, null, null);
+    }
+
+    /// Optional timestamp hook keeps the compositor platform-independent.
+    /// Timings cover window state mutation and dirty-region presentation.
+    pub fn moveFrontAndPresentTimed(
+        self: *Desktop,
+        mapping: bridge.Mapping,
+        x: usize,
+        y: usize,
+        clock: ?*const fn () u64,
+        timing: ?*StageTiming,
+    ) (bridge.Error || wm.Error)!usize {
+        if (timing) |result| result.* = .{};
         var surface = try mapping.surface();
         const slot = self.frame.session_state.windows.slots[self.front.slot];
         if (!slot.occupied or slot.generation != self.front.generation) return error.InvalidHandle;
@@ -51,9 +70,14 @@ pub const Desktop = struct {
             return if (self.frame.present(&surface)) surface.width *| surface.height else 0;
         }
         const full_redraw = self.frame.dirty;
+        const movement_start: u64 = if (clock) |read| read() else 0;
         try self.moveFront(x, y);
+        const movement_end: u64 = if (clock) |read| read() else 0;
+        if (timing) |result| result.movement_cycles = movement_end - movement_start;
+        const composition_start: u64 = if (clock) |read| read() else 0;
         if (full_redraw) {
             _ = self.frame.present(&surface);
+            if (timing) |result| result.composition_cycles = if (clock) |read| read() - composition_start else 0;
             return surface.width *| surface.height;
         }
         const old_rect: compositor.Rect = .{ .x = previous.x, .y = previous.y, .width = previous.width, .height = previous.height };
@@ -84,6 +108,7 @@ pub const Desktop = struct {
         }
         pixels +|= self.frame.presentDirty(&surface, new_rect);
         self.frame.dirty = false;
+        if (timing) |result| result.composition_cycles = clock.?.*() - composition_start;
         return pixels;
     }
 
