@@ -658,3 +658,57 @@ test "closeAll keeps linked files and allows descriptor reuse" {
     try testing.expectEqual(@as(usize, 2), try read(2, reopened, &buf));
     try closeAll(2);
 }
+
+test "process descriptor tables isolate equal fd numbers and offsets" {
+    init();
+    const owner_fd = try create(0, "/isolated", 0o600);
+    _ = try write(0, owner_fd, "abcdef");
+    const peer_fd = try open(1, "/isolated", O_RDONLY);
+    try testing.expectEqual(owner_fd, peer_fd);
+    var first: [2]u8 = undefined;
+    try testing.expectEqual(@as(usize, 2), try read(1, peer_fd, &first));
+    try testing.expectEqualStrings("ab", &first);
+    try testing.expectEqual(@as(usize, 6), try tell(0, owner_fd));
+    try testing.expectEqual(@as(usize, 2), try tell(1, peer_fd));
+    try testing.expectError(error.NotReadable, read(0, owner_fd, &first));
+    try closeAll(0);
+    try testing.expectError(error.BadDescriptor, close(0, owner_fd));
+    var second: [4]u8 = undefined;
+    try testing.expectEqual(@as(usize, 4), try read(1, peer_fd, &second));
+    try testing.expectEqualStrings("cdef", &second);
+    try closeAll(1);
+}
+
+test "reused process slot does not retain old descriptors or offsets" {
+    init();
+    const old_fd = try create(3, "/previous", 0o600);
+    _ = try write(3, old_fd, "old");
+    try closeAll(3);
+    try testing.expectError(error.BadDescriptor, read(3, old_fd, &[_]u8{}));
+    const new_fd = try open(3, "/previous", O_RDONLY);
+    try testing.expectEqual(old_fd, new_fd);
+    try testing.expectEqual(@as(usize, 0), try tell(3, new_fd));
+    var bytes: [3]u8 = undefined;
+    try testing.expectEqual(@as(usize, 3), try read(3, new_fd, &bytes));
+    try testing.expectEqualStrings("old", &bytes);
+    try closeAll(3);
+    try testing.expectError(error.BadDescriptor, close(3, new_fd));
+}
+
+test "unlink and process slot reuse cannot resurrect reclaimed inode" {
+    init();
+    const fd = try create(4, "/obsolete", 0o600);
+    _ = try write(4, fd, "gone");
+    const inode_num = (try stat("/obsolete")).inode;
+    const blocks_before = freeBlockCount();
+    try unlink("/obsolete");
+    try closeAll(4);
+    try testing.expectEqual(blocks_before + 1, freeBlockCount());
+    try testing.expect(ramfs.inodeKind(inode_num) == null);
+    try testing.expectError(error.EntryNotFound, open(4, "/obsolete", O_RDONLY));
+    try testing.expectError(error.BadDescriptor, close(4, fd));
+    const fresh = try create(4, "/fresh", 0o600);
+    try testing.expectEqual(fd, fresh);
+    try testing.expectEqual(@as(usize, 0), try tell(4, fresh));
+    try closeAll(4);
+}
