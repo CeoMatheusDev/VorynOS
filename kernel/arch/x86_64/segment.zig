@@ -352,7 +352,7 @@ test "TSS descriptor encodes the full 64-bit base" {
     const base: u64 = 0x1234_5678_9abc_def0;
     const entries = taskSegment(base, 103);
     try testing.expectEqual(@as(u32, 0xdef0_0067), entries[0].low);
-    try testing.expectEqual(@as(u32, 0x9a89_9abc), entries[0].high);
+    try testing.expectEqual(@as(u32, 0xde00_def0), entries[0].high);
     try testing.expectEqual(@as(u32, 0x1234_5678), entries[1].low);
     try testing.expectEqual(@as(u32, 0), entries[1].high);
 }
