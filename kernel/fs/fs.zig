@@ -30,6 +30,75 @@ const vfsx = @import("./vfsx.zig");
 /// Namespace único de montagem para a fachada atual.
 var namespace: vfsx.Namespace = .{};
 
+/// Storage owned by non-root RamFS volumes. Slot zero remains the legacy root.
+const max_ramfs_volumes: usize = vfsx.max_mounts;
+var extra_ramfs_states: [max_ramfs_volumes - 1]ramfs.State = undefined;
+var extra_ramfs_ids: [max_ramfs_volumes - 1]?u32 = @splat(null);
+
+fn extraVolume(volume_id: u32) ?*ramfs.State {
+    if (volume_id == 0) return null;
+    for (extra_ramfs_ids, 0..) |registered, index| {
+        if (registered != null and registered.? == volume_id) return &extra_ramfs_states[index];
+    }
+    return null;
+}
+
+/// Registers a separately allocated RamFS volume, without mounting it yet.
+pub fn registerRamfsVolume(volume_id: u32) Error!void {
+    if (volume_id == 0) return error.VolumeAlreadyRegistered;
+    if (extraVolume(volume_id) != null) return error.VolumeAlreadyRegistered;
+    for (&extra_ramfs_ids, 0..) |*slot, index| {
+        if (slot.* != null) continue;
+        try namespace.registerVolume(volume_id);
+        ramfs.initState(&extra_ramfs_states[index]);
+        slot.* = volume_id;
+        return;
+    }
+    return error.VolumeRegistryFull;
+}
+
+/// Binds a previously registered RamFS volume to a VFSX mount point.
+pub fn mountRamfsVolume(path: []const u8, volume_id: u32) Error!void {
+    if (volume_id != 0 and extraVolume(volume_id) == null) return error.UnsupportedVolume;
+    try namespace.mountVolume(path, .ramfs, volume_id);
+}
+
+/// Unmounts a volume without destroying its stored data.
+pub fn unmountRamfsVolume(path: []const u8) Error!void {
+    try namespace.umount(path);
+}
+
+/// Explicit per-volume namespace access, without creating file descriptors.
+pub fn createOnVolume(volume_id: u32, path: []const u8) Error!u32 {
+    const state = extraVolume(volume_id) orelse return error.UnsupportedVolume;
+    if (path.len == 0 or path.len > max_path_len) return error.InvalidPath;
+    const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return ramfs.createFileFor(state, ramfs.root_inode, path);
+    const parent_path = if (slash == 0) "/" else path[0..slash];
+    if (slash + 1 == path.len) return error.InvalidPath;
+    const parent = try ramfs.resolvePathFor(state, parent_path);
+    return ramfs.createFileFor(state, parent, path[slash + 1 ..]);
+}
+
+pub fn writeOnVolume(volume_id: u32, path: []const u8, data: []const u8) Error!void {
+    const state = extraVolume(volume_id) orelse return error.UnsupportedVolume;
+    const target = try ramfs.resolvePathFor(state, path);
+    try ramfs.writeFileFor(state, target, data);
+}
+
+pub fn readOnVolume(volume_id: u32, path: []const u8, buffer: []u8) Error!usize {
+    const state = extraVolume(volume_id) orelse return error.UnsupportedVolume;
+    const target = try ramfs.resolvePathFor(state, path);
+    return ramfs.readFileFor(state, target, buffer);
+}
+
+/// Reads a mounted non-root volume using VFSX longest-prefix routing.
+pub fn readMountedVolume(path: []const u8, buffer: []u8) Error!usize {
+    const route = try namespace.route(path);
+    if (route.volume_id == 0) return readFile(path, buffer);
+    return readOnVolume(route.volume_id, route.relative_path, buffer);
+}
+
+
 /// Encaminha caminhos absolutos ao VFSX; preserva caminhos relativos legados.
 fn backendPath(path: []const u8) Error![]const u8 {
     if (path.len == 0) return error.InvalidPath;
@@ -131,6 +200,7 @@ fn reclaimIfUnused(inode_num: u32) void {
 pub fn init() void {
     ramfs.init();
     namespace.init();
+    @memset(extra_ramfs_ids[0..], null);
     @memset(unlinked[0..], false);
     for (&open_files) |*table| {
         for (table) |*entry| entry.* = .{};
@@ -1361,4 +1431,21 @@ test "FS storage statistics account for open and reclaimed unlinked file" {
     try testing.expectEqual(baseline.used_inodes, reclaimed.used_inodes);
     try testing.expectEqual(baseline.used_blocks, reclaimed.used_blocks);
     try auditStorage();
+}
+
+test "registered RamFS volume mounts route independent file contents" {
+    init();
+    try registerRamfsVolume(7);
+    try mountRamfsVolume("/data", 7);
+    _ = try createOnVolume(7, "/entry");
+    try writeOnVolume(7, "/entry", "separate");
+    var buffer: [16]u8 = undefined;
+    const count = try readMountedVolume("/data/entry", &buffer);
+    try std.testing.expectEqualStrings("separate", buffer[0..count]);
+    try std.testing.expectError(error.EntryNotFound, readFile("/entry", &buffer));
+    try std.testing.expectError(error.VolumeAlreadyRegistered, registerRamfsVolume(7));
+    try unmountRamfsVolume("/data");
+    try std.testing.expectError(error.EntryNotFound, readMountedVolume("/data/entry", &buffer));
+    const still_there = try readOnVolume(7, "/entry", &buffer);
+    try std.testing.expectEqualStrings("separate", buffer[0..still_there]);
 }
