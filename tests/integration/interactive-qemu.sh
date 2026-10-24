@@ -306,9 +306,14 @@ while time.monotonic() < deadline:
                 following = expected_move(position, key, width, height)
                 burst_expected.append((key, following, int(following != position)))
                 position = following
-            print(f"ok: burst route sends {len(steps)} ordered arrows", flush=True)
-            for key in steps:
+            # Keep the monitor/PS2 injection queue bounded. A single unpaced
+            # 64-key send previously stalled after 35 acknowledgements.
+            burst_window = 8
+            burst_sent = 0
+            print(f"ok: burst route sends {len(steps)} ordered arrows (window={burst_window})", flush=True)
+            for key in steps[:burst_window]:
                 monitor_command("sendkey " + key + " 50")
+                burst_sent += 1
             state = "burst"
             continue
         monitor_command("sendkey " + steps[step] + " 50")
@@ -318,14 +323,21 @@ while time.monotonic() < deadline:
     elif state == "burst":
         acknowledgements = ack_pattern.findall(log)[ack_baseline:]
         positions = movement_pattern.findall(log)[baseline:]
-        if len(acknowledgements) > len(steps):
-            sys.exit("FAIL: duplicate burst acknowledgements")
+        if len(acknowledgements) > burst_sent:
+            sys.exit(f"FAIL: unexpected burst acknowledgements: {len(acknowledgements)} > sent {burst_sent}")
         scan_codes = {"left": 0x4b, "right": 0x4d, "up": 0x48, "down": 0x50}
         for index, (actual, expected) in enumerate(zip(acknowledgements, burst_expected)):
             key, position, moved = expected
             code, actual_moved, x, y = actual
             if (int(code, 16), int(actual_moved), int(x), int(y)) != (scan_codes[key], moved, *position):
                 sys.exit(f"FAIL: burst acknowledgement {index + 1}: expected {expected}, got {actual}")
+        # Refill only after all events from the preceding window were ACKed.
+        # This tests sustained traffic without overflowing the host injector.
+        if len(acknowledgements) == burst_sent and burst_sent < len(steps):
+            next_sent = min(burst_sent + burst_window, len(steps))
+            for key in steps[burst_sent:next_sent]:
+                monitor_command("sendkey " + key + " 50")
+            burst_sent = next_sent
         if len(acknowledgements) == len(steps):
             expected_positions = [position for _, position, moved in burst_expected if moved]
             # The kernel emits the acknowledgement before the movement log.
@@ -452,7 +464,7 @@ while time.monotonic() < deadline:
         sys.exit("FAIL: QEMU exited before interactive validation")
     time.sleep(0.02)
 sys.exit(f"FAIL: timeout waiting for interactive state {state}, step {step + 1}"
-         + (f", burst acks={len(acknowledgements)}/{len(steps)}, movements={len(positions)}" if state == "burst" else ""))
+         + (f", burst sent={burst_sent}/{len(steps)}, acks={len(acknowledgements)}/{len(steps)}, movements={len(positions)}" if state == "burst" else ""))
 
 PY
 then
