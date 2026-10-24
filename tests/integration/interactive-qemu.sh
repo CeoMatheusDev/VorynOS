@@ -242,7 +242,7 @@ def monitor_command(command):
                     sys.exit("FAIL: QEMU monitor connection unavailable")
                 time.sleep(0.02)
     try:
-        monitor_socket.sendall((command + "\\n").encode("ascii"))
+        monitor_socket.sendall((command + "\n").encode("ascii"))
         response = monitor_read_prompt()
     except (OSError, TimeoutError) as exc:
         sys.exit(f"FAIL: QEMU monitor command {command!r}: {exc}")
