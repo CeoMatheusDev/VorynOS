@@ -850,3 +850,15 @@ zig build
 ```
 
 The live PS/2 input loop, framebuffer mapping, and QEMU desktop integration remain pending.
+
+### F6 — Captura e arrasto do ponteiro (2026-10-24)
+
+O módulo `kernel/graphics/frame.zig` agora possui captura do ponteiro após clique aceito, movimentação relativa por `pointerMove` e liberação por `pointerUp`. A aritmética de coordenadas é saturada; a destruição de uma janela cancela a captura, evitando movimentar janelas que reutilizem o mesmo slot. Dois novos testes verificam o arrasto, o limite inferior das coordenadas e a liberação da captura.
+
+**Validação pendente:** esta alteração ainda não foi compilada no Fedora. O último resultado confirmado foi de 24 testes aprovados para `frame.zig`, antes deste incremento. A integração com eventos físicos do mouse e a execução gráfica no QEMU ainda não foram realizadas.
+
+```sh
+zig test kernel/graphics/frame.zig
+zig build test
+zig build
+```
