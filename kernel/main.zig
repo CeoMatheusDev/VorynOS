@@ -1029,10 +1029,11 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
     }
     const render_start = cpu.readTimestamp();
     const render_tick_start = timer.ticks();
-    const pixels = desktop.moveFrontAndPresent(.{
+    var stage_timing: desktop_mod.Desktop.StageTiming = .{};
+    const pixels = desktop.moveFrontAndPresentTimed(.{
         .bytes = ptr[0..size], .width = width, .height = height,
         .pitch = pitch, .bits_per_pixel = framebuffer.bits_per_pixel,
-    }, next.x, next.y) catch |err| {
+    }, next.x, next.y, &cpu.readTimestamp, &stage_timing) catch |err| {
         serial.printLine("[VNK] graphics: incremental redraw failed: {s}", .{@errorName(err)});
         return;
     };
@@ -1075,6 +1076,9 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
     // preemption or of a particular framebuffer cache policy.
     serial.printLine("[VNK] graphics: redraw timing cycles={d} elapsed_ticks={d}", .{
         render_cycles, render_tick_end - render_tick_start,
+    });
+    serial.printLine("[VNK] graphics: redraw stages movement_cycles={d} composition_cycles={d} total_cycles={d}", .{
+        stage_timing.movement_cycles, stage_timing.composition_cycles, render_cycles,
     });
     graphics_front_x = next.x;
     graphics_front_y = next.y;
