@@ -71,10 +71,14 @@ pub const Fd = u32;
 /// Handle interno com geração; a ABI atual de syscalls continua usando Fd.
 pub const CheckedFd = u64;
 
+const max_fd_sequence: u32 = 0x00ff_ffff;
+
 /// Erros da fachada.
 pub const Error = ramfs.Error || vfsx.Error || error{
     /// A tabela de arquivos abertos está cheia.
     TooManyOpenFiles,
+    /// Nenhuma posição livre possui geração disponível.
+    DescriptorGenerationExhausted,
     /// O descritor não existe ou já foi fechado.
     BadDescriptor,
     /// A operação exige um descritor de escrita.
@@ -171,12 +175,19 @@ fn installDescriptor(process_id: u64, inode_num: u32, flags: u16) Error!Fd {
 
     var free_slot: ?usize = null;
     for (table, 0..) |*entry, index| {
-        if (!entry.used) {
+        if (!entry.used and (fd_generations[@as(usize, @intCast(process_id))][index] & max_fd_sequence) != max_fd_sequence) {
             free_slot = index;
             break;
         }
     }
-    const index = free_slot orelse return error.TooManyOpenFiles;
+    const index = free_slot orelse {
+        for (table, 0..) |entry, slot| {
+            if (!entry.used and (fd_generations[@as(usize, @intCast(process_id))][slot] & max_fd_sequence) == max_fd_sequence) {
+                return error.DescriptorGenerationExhausted;
+            }
+        }
+        return error.TooManyOpenFiles;
+    };
 
     if (flags & O_TRUNC != 0) {
         if (!writable(flags)) return error.NotWritable;
@@ -190,10 +201,8 @@ fn installDescriptor(process_id: u64, inode_num: u32, flags: u16) Error!Fd {
 
     const process_index: usize = @intCast(process_id);
     // 24 bits para a geração e 8 bits para a identidade da tabela.
-    // A reutilização após 2^24 aberturas da mesma posição requer política
-    // adicional de aposentadoria de slots antes de expor handles à ABI.
-    var sequence = (fd_generations[process_index][index] & 0x00ff_ffff) + 1;
-    if (sequence > 0x00ff_ffff) sequence = 1;
+    // Nunca reutiliza a geração: posições esgotadas são aposentadas.
+    const sequence = (fd_generations[process_index][index] & max_fd_sequence) + 1;
     fd_generations[process_index][index] = (@as(u32, @intCast(process_index)) << 24) | sequence;
     table[index] = .{
         .generation = fd_generations[process_index][index],
@@ -779,4 +788,29 @@ test "checked handles reject cross-process use and termination reuse" {
     try testing.expectEqual(first, reused);
     try testing.expectError(error.BadDescriptor, validateCheckedFd(1, handle));
     try closeAll(1);
+}
+
+test "exhausted generation retires slot without wrapping" {
+    init();
+    const process: usize = 6;
+    const retired_slot: usize = 0;
+    const previous = fd_generations[process][retired_slot];
+    defer fd_generations[process][retired_slot] = previous;
+    fd_generations[process][retired_slot] = (@as(u32, @intCast(process)) << 24) | max_fd_sequence;
+    const fd = try create(process, "/retirement", 0o600);
+    try testing.expectEqual(@as(Fd, 1), fd);
+    try testing.expectEqual((@as(u32, @intCast(process)) << 24) | max_fd_sequence, fd_generations[process][retired_slot]);
+    try closeAll(process);
+}
+
+test "all retired slots report generation exhaustion" {
+    init();
+    const process: usize = 7;
+    const previous = fd_generations[process];
+    defer fd_generations[process] = previous;
+    for (&fd_generations[process]) |*generation| {
+        generation.* = (@as(u32, @intCast(process)) << 24) | max_fd_sequence;
+    }
+    try testing.expectError(error.DescriptorGenerationExhausted, create(process, "/no-generation", 0o600));
+    try testing.expectError(error.DescriptorGenerationExhausted, open(process, "/no-generation", O_RDONLY));
 }
