@@ -808,3 +808,16 @@ zig build
 ```
 
 **Next integration:** connect the renderer to the actual kernel graphics loop, surface ownership and input event delivery; run an end-to-end QEMU graphics test.
+
+### F6 click-to-focus checkpoint (2026-10-24)
+
+`kernel/graphics/session.zig` now activates and raises a clicked window **only after** its `pointer_down` event has been accepted by the owner's mailbox. Subsequent keyboard input targets the newly focused window. A full event queue leaves focus and stacking order unchanged. Two unit tests were added for click-to-focus/keyboard routing and rejection under mailbox pressure. **These new tests have not yet been run.**
+
+Previous Fedora evidence: 10 tests passed in `zig test kernel/graphics/session.zig`, with `zig build test` and `zig build` succeeding. The `window_renderer.zig` tests and these new session tests remain pending; the live QEMU graphics path is not integrated.
+
+```sh
+zig test kernel/graphics/session.zig
+zig test kernel/graphics/window_renderer.zig
+zig build test
+zig build
+```
