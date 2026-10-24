@@ -433,6 +433,53 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 
+# F14.2: verify latency counters and pixel savings from the actual QEMU log.
+# The current boot injects one arrow press; do not claim multi-sample coverage.
+if python3 - "$SERIAL_LOG" <<'PY'
+import re
+import sys
+
+log = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+summary = re.findall(
+    r"\[VNK\] graphics: latency samples=(\d+) min_cycles=(\d+) "
+    r"mean_cycles=(\d+) max_cycles=(\d+) total_pixels=(\d+) total_baseline=(\d+)",
+    log,
+)
+window = re.findall(
+    r"\[VNK\] graphics: latency window=(\d+) p50_cycles=(\d+) "
+    r"p95_cycles=(\d+) p99_cycles=(\d+)",
+    log,
+)
+benchmark = re.findall(
+    r"\[VNK\] graphics: redraw benchmark cycles=(\d+) pixels=(\d+) "
+    r"baseline=(\d+) saved=(\d+)",
+    log,
+)
+if not summary or not window or not benchmark:
+    sys.exit("missing F14 latency or redraw benchmark markers")
+samples, minimum, mean, maximum, total_pixels, total_baseline = map(int, summary[-1])
+count, p50, p95, p99 = map(int, window[-1])
+cycles, pixels, baseline, saved = map(int, benchmark[-1])
+if not (1 <= count <= 32 and samples >= count):
+    sys.exit("invalid sample/window counts")
+if not (0 < minimum <= mean <= maximum and minimum <= p50 <= p95 <= p99 <= maximum):
+    sys.exit("invalid latency ordering")
+if not (cycles > 0 and pixels > 0 and baseline >= pixels and saved == baseline - pixels):
+    sys.exit("invalid redraw pixel accounting")
+if not (total_pixels >= pixels and total_baseline >= baseline):
+    sys.exit("invalid cumulative pixel accounting")
+if samples == 1 and not (count == 1 and minimum == mean == maximum == cycles == p50 == p95 == p99):
+    sys.exit("single-sample statistics disagree")
+print(f"ok: F14.2 latency counters samples={samples} window={count} p50={p50} p95={p95} p99={p99}")
+print(f"ok: F14.2 redraw pixel savings {saved}/{baseline}")
+PY
+then
+    :
+else
+    echo "FAIL: F14.2 graphics latency consistency checks failed" >&2
+    FAILURES=$((FAILURES + 1))
+fi
+
 if grep -qF "FATAL" "$SERIAL_LOG"; then
     echo "FAIL: the boot chain reported a fatal error" >&2
     FAILURES=$((FAILURES + 1))
