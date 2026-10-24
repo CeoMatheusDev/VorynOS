@@ -287,6 +287,28 @@ pub fn sizeOf(path: []const u8) Error!u64 {
     return ramfs.sizeOf(target) orelse error.NotAFile;
 }
 
+/// Metadados básicos de um caminho, sem alterar a ABI das syscalls.
+pub const FileStat = struct {
+    inode: u32,
+    kind: inode.InodeType,
+    size: u64,
+    permissions: u16,
+    links: u32,
+};
+
+/// Consulta metadados pelo VFSX, sem alocação dinâmica.
+pub fn stat(path: []const u8) Error!FileStat {
+    const target = try ramfs.resolvePath(try backendPath(path));
+    const info = try ramfs.getInodeInfo(target);
+    return .{
+        .inode = target,
+        .kind = info.i_type,
+        .size = info.i_size,
+        .permissions = info.i_permissions,
+        .links = info.i_links_count,
+    };
+}
+
 /// Número de blocos livres do RamFS.
 pub fn freeBlockCount() usize {
     return ramfs.freeBlockCount();
@@ -466,4 +488,24 @@ test "VFSX routes absolute facade paths and rejects traversal" {
     try testing.expectEqualStrings("vfsx", data[0..count]);
     try testing.expectError(error.InvalidPath, open(0, "/../route.txt", O_RDONLY));
     try testing.expectError(error.InvalidPath, mkdir("/a/../b"));
+}
+
+test "VFSX stat reports file and directory metadata" {
+    init();
+    const directory = try mkdir("/meta");
+    const fd = try create(0, "/meta/data", 0o644);
+    _ = try write(0, fd, "abc");
+    try close(0, fd);
+
+    const dir_stat = try stat("/meta");
+    try testing.expectEqual(directory, dir_stat.inode);
+    try testing.expectEqual(inode.InodeType.directory, dir_stat.kind);
+    try testing.expectEqual(@as(u64, 0), dir_stat.size);
+
+    const file_stat = try stat("/meta/data");
+    try testing.expectEqual(inode.InodeType.file, file_stat.kind);
+    try testing.expectEqual(@as(u64, 3), file_stat.size);
+    try testing.expectEqual(@as(u32, 1), file_stat.links);
+    try testing.expectError(error.EntryNotFound, stat("/meta/missing"));
+    try testing.expectError(error.InvalidPath, stat("/meta/../data"));
 }
