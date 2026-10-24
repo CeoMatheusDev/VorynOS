@@ -84,6 +84,8 @@ pub const Error = ramfs.Error || vfsx.Error || error{
     InvalidFlags,
     /// O identificador de processo não pertence a nenhuma tabela conhecida.
     UnknownProcess,
+    /// A operação não pode atravessar montagens distintas.
+    CrossMount,
 };
 
 /// Entrada da tabela de arquivos abertos.
@@ -285,6 +287,20 @@ pub fn sizeOf(path: []const u8) Error!u64 {
     const target = try ramfs.resolvePath(try backendPath(path));
     if (ramfs.inodeKind(target) != .file) return error.NotAFile;
     return ramfs.sizeOf(target) orelse error.NotAFile;
+}
+
+/// Move ou renomeia um arquivo regular dentro da mesma montagem.
+pub fn rename(source: []const u8, target: []const u8) Error!void {
+    if (source.len == 0 or target.len == 0) return error.InvalidPath;
+    if (source[0] != '/' or target[0] != '/') return error.InvalidPath;
+    const from_route = try namespace.route(source);
+    const to_route = try namespace.route(target);
+    if (from_route.slot != to_route.slot) return error.CrossMount;
+    const from = try splitPath(from_route.relative_path);
+    const to = try splitPath(to_route.relative_path);
+    switch (from_route.backend) {
+        .ramfs => try ramfs.renameFile(from.parent, from.name, to.parent, to.name),
+    }
 }
 
 /// Metadados básicos de um caminho, sem alterar a ABI das syscalls.
@@ -508,4 +524,22 @@ test "VFSX stat reports file and directory metadata" {
     try testing.expectEqual(@as(u32, 1), file_stat.links);
     try testing.expectError(error.EntryNotFound, stat("/meta/missing"));
     try testing.expectError(error.InvalidPath, stat("/meta/../data"));
+}
+
+test "VFSX rename preserves open descriptors and rejects directory moves" {
+    init();
+    _ = try mkdir("/source");
+    _ = try mkdir("/destination");
+    const fd = try create(0, "/source/item", 0o644);
+    _ = try write(0, fd, "persistent");
+    try rename("/source/item", "/destination/new");
+    try testing.expectError(error.EntryNotFound, stat("/source/item"));
+    try testing.expectEqual(@as(u64, 10), (try stat("/destination/new")).size);
+    try seek(0, fd, 0);
+    var buffer: [16]u8 = undefined;
+    const count = try read(0, fd, &buffer);
+    try testing.expectEqualStrings("persistent", buffer[0..count]);
+    try close(0, fd);
+    try testing.expectError(error.NotAFile, rename("/source", "/destination/moved"));
+    try testing.expectError(error.InvalidPath, rename("/destination/new", "/destination/../bad"));
 }
