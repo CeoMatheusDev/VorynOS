@@ -23,6 +23,7 @@ pub const Error = error{
     NotMounted,
     RootMountRequired,
     MountBusy,
+    MountGenerationExhausted,
 };
 
 pub const Mount = struct {
@@ -30,6 +31,7 @@ pub const Mount = struct {
     length: usize = 0,
     backend: Backend = .ramfs,
     active: bool = false,
+    generation: u64 = 0,
 
     pub fn name(self: *const Mount) []const u8 {
         return self.path[0..self.length];
@@ -40,14 +42,18 @@ pub const Route = struct {
     slot: usize,
     backend: Backend,
     relative_path: []const u8,
+    generation: u64,
 };
 
 pub const Namespace = struct {
     mounts: [max_mounts]Mount = @splat(.{}),
+    next_generation: u64 = 1,
 
     pub fn init(self: *Namespace) void {
         self.* = .{};
         self.mounts[0] = makeMount("/", .ramfs);
+        self.mounts[0].generation = self.next_generation;
+        self.next_generation += 1;
     }
 
     fn makeMount(path: []const u8, backend: Backend) Mount {
@@ -87,7 +93,10 @@ pub const Namespace = struct {
         }
         for (&self.mounts) |*entry| {
             if (!entry.active) {
+                if (self.next_generation == 0) return error.MountGenerationExhausted;
                 entry.* = makeMount(path, backend);
+                entry.generation = self.next_generation;
+                self.next_generation = self.next_generation +% 1;
                 return;
             }
         }
@@ -127,6 +136,14 @@ pub const Namespace = struct {
         return count;
     }
 
+    /// Checks that a cached route still refers to the same mount instance.
+    /// A slot can be reused after umount, but its generation cannot.
+    pub fn isCurrentRoute(self: *const Namespace, route_info: Route) bool {
+        if (route_info.slot >= max_mounts) return false;
+        const mount_entry = self.mounts[route_info.slot];
+        return mount_entry.active and mount_entry.generation == route_info.generation;
+    }
+
     pub fn route(self: *const Namespace, path: []const u8) Error!Route {
         if (!validPath(path)) return error.InvalidPath;
         var best: ?usize = null;
@@ -140,7 +157,7 @@ pub const Namespace = struct {
         }
         const index = best orelse return error.NotMounted;
         const relative = if (longest == 1) path else if (path.len == longest) "/" else path[longest..];
-        return .{ .slot = index, .backend = self.mounts[index].backend, .relative_path = relative };
+        return .{ .slot = index, .backend = self.mounts[index].backend, .relative_path = relative, .generation = self.mounts[index].generation };
     }
 };
 
@@ -241,4 +258,35 @@ test "mount routing preserves component boundaries and slot reuse" {
     try ns.mount("/other", .ramfs);
     try testing.expectEqual(slot, (try ns.route("/other/file")).slot);
     try testing.expectEqualStrings("/file", (try ns.route("/other/file")).relative_path);
+}
+
+test "route generation rejects stale references after mount slot reuse" {
+    var ns: Namespace = .{};
+    ns.init();
+    try ns.mount("/volume", .ramfs);
+    const old = try ns.route("/volume/file");
+    try testing.expect(ns.isCurrentRoute(old));
+    try ns.umount("/volume");
+    try testing.expect(!ns.isCurrentRoute(old));
+    try ns.mount("/replacement", .ramfs);
+    const fresh = try ns.route("/replacement/file");
+    try testing.expectEqual(old.slot, fresh.slot);
+    try testing.expect(old.generation != fresh.generation);
+    try testing.expect(!ns.isCurrentRoute(old));
+    try testing.expect(ns.isCurrentRoute(fresh));
+}
+
+test "route generation remains stable while a mount is active" {
+    var ns: Namespace = .{};
+    ns.init();
+    const root = try ns.route("/one");
+    try ns.mount("/volume", .ramfs);
+    const first = try ns.route("/volume/one");
+    const second = try ns.route("/volume/two");
+    try testing.expectEqual(first.generation, second.generation);
+    try testing.expect(ns.isCurrentRoute(first));
+    try testing.expect(ns.isCurrentRoute(root));
+    try ns.umount("/volume");
+    try testing.expect(ns.isCurrentRoute(root));
+    try testing.expect(!ns.isCurrentRoute(first));
 }
