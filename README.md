@@ -790,3 +790,21 @@ zig build
 ```
 
 **F4:** VFSX changes were merged into `main` via PR #5; post-merge runtime/persistence testing remains open. **F5:** SDK ABI and external native-application workflow remain under review. **F6:** user-space graphics service and compositor integration remain open. **F7:** hardware driver expansion follows verified F4/F5/F6 dependencies.
+
+### F6 compositor bridge checkpoint (2026-10-24)
+
+- Added `kernel/graphics/window_renderer.zig`, a bounded adapter that snapshots the window manager's bottom-to-top z-order and renders via `compositor.compose` / `composeDirty`.
+- Focused and unfocused windows use a trusted compositor-provided palette; hidden windows are skipped by the compositor. No heap allocation or user-pointer dereference is performed.
+- Two new unit tests cover full rendering, z-order/focus highlighting, and dirty-rectangle clipping. **These tests have not yet been executed**.
+- Latest user-provided Fedora validation: `zig test kernel/graphics/session.zig` passed **10 tests**; `zig build test` and `zig build` completed, producing a 64 MiB image. This does **not** validate the new renderer or end-to-end QEMU desktop.
+
+Validation commands:
+
+```sh
+zig test kernel/graphics/window_renderer.zig
+zig test kernel/graphics/session.zig
+zig build test
+zig build
+```
+
+**Next integration:** connect the renderer to the actual kernel graphics loop, surface ownership and input event delivery; run an end-to-end QEMU graphics test.
