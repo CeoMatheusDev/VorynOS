@@ -862,3 +862,17 @@ zig test kernel/graphics/frame.zig
 zig build test
 zig build
 ```
+
+### F6 — Validação confirmada no Fedora (2026-10-24)
+
+Após atualização da branch `main` até `36f58ff`, os comandos executados pelo mantenedor apresentaram:
+
+| Comando | Resultado |
+| --- | --- |
+| `zig test kernel/graphics/frame.zig` | 26 testes aprovados |
+| `zig test kernel/graphics/session.zig` | 12 testes aprovados |
+| `zig test kernel/graphics/window_renderer.zig` | 12 testes aprovados |
+| `zig build test` | Concluído sem erros |
+| `zig build` | Concluído sem erros; `zig-out/bin/vorynos.img` com 64 MiB |
+
+Os conjuntos de testes compartilham testes importados e, portanto, as contagens não representam 50 casos distintos. A compilação da imagem **não** constitui validação de execução gráfica no QEMU. Permanecem pendentes a integração do fluxo de eventos físicos do mouse e a renderização na execução real do kernel.
