@@ -25,6 +25,9 @@ pub const Error = error{
     MountBusy,
     MountGenerationExhausted,
     UnsupportedVolume,
+    VolumeAlreadyRegistered,
+    VolumeRegistryFull,
+    VolumeBusy,
     StaleMount,
 };
 
@@ -52,9 +55,11 @@ pub const Route = struct {
 pub const Namespace = struct {
     mounts: [max_mounts]Mount = @splat(.{}),
     next_generation: u64 = 1,
+    registered_volumes: [max_mounts]?u32 = @splat(null),
 
     pub fn init(self: *Namespace) void {
         self.* = .{};
+        self.registered_volumes[0] = 0;
         self.mounts[0] = makeMount("/", .ramfs);
         self.mounts[0].generation = self.next_generation;
         self.next_generation += 1;
@@ -90,15 +95,49 @@ pub const Namespace = struct {
                 path[mount_path.len] == '/');
     }
 
+    /// Registers a volume identity for later storage binding by the FS facade.
+    /// This registry does not imply that an underlying storage instance exists.
+    pub fn registerVolume(self: *Namespace, volume_id: u32) Error!void {
+        if (volume_id == 0 or self.hasVolume(volume_id)) return error.VolumeAlreadyRegistered;
+        for (&self.registered_volumes) |*slot| {
+            if (slot.* == null) {
+                slot.* = volume_id;
+                return;
+            }
+        }
+        return error.VolumeRegistryFull;
+    }
+
+    pub fn hasVolume(self: *const Namespace, volume_id: u32) bool {
+        for (self.registered_volumes) |slot| {
+            if (slot != null and slot.? == volume_id) return true;
+        }
+        return false;
+    }
+
+    pub fn unregisterVolume(self: *Namespace, volume_id: u32) Error!void {
+        if (volume_id == 0) return error.RootMountRequired;
+        for (self.mounts) |entry| {
+            if (entry.active and entry.volume_id == volume_id) return error.VolumeBusy;
+        }
+        for (&self.registered_volumes) |*slot| {
+            if (slot.* != null and slot.*.? == volume_id) {
+                slot.* = null;
+                return;
+            }
+        }
+        return error.UnsupportedVolume;
+    }
+
     /// Legacy mounts alias the root RamFS volume (volume zero).
     pub fn mount(self: *Namespace, path: []const u8, backend: Backend) Error!void {
         return self.mountVolume(path, backend, 0);
     }
 
-    /// Registers a volume identity. This is metadata only: storage dispatch
-    /// must not treat nonzero identities as separate RamFS instances yet.
+    /// Registers a mount for an explicitly registered volume identity.
+    /// The FS facade must bind storage before performing I/O on nonzero volumes.
     pub fn mountVolume(self: *Namespace, path: []const u8, backend: Backend, volume_id: u32) Error!void {
-        if (volume_id != 0) return error.UnsupportedVolume;
+        if (!self.hasVolume(volume_id)) return error.UnsupportedVolume;
         if (!validPath(path)) return error.InvalidMountPoint;
         for (self.mounts) |entry| {
             if (entry.active and std.mem.eql(u8, entry.name(), path)) return error.AlreadyMounted;
@@ -434,4 +473,23 @@ test "path route rejects mismatched paths and malformed inputs" {
     try testing.expect(!ns.isCurrentPathRoute("/two", original));
     try testing.expect(!ns.isCurrentPathRoute("/../one", original));
     try testing.expect(!ns.isCurrentPathRoute("", original));
+}
+
+test "volume registry permits explicit mounts and prevents unsafe reuse" {
+    var ns: Namespace = .{};
+    ns.init();
+    try testing.expectError(error.UnsupportedVolume, ns.mountVolume("/data", .ramfs, 7));
+    try ns.registerVolume(7);
+    try testing.expectError(error.VolumeAlreadyRegistered, ns.registerVolume(7));
+    try ns.mountVolume("/data", .ramfs, 7);
+    const route_info = try ns.route("/data/file");
+    try testing.expectEqual(@as(u32, 7), route_info.volume_id);
+    try testing.expect(ns.isCurrentRoute(route_info));
+    try testing.expectError(error.VolumeBusy, ns.unregisterVolume(7));
+    try ns.umount("/data");
+    try testing.expect(!ns.isCurrentRoute(route_info));
+    try ns.unregisterVolume(7);
+    try testing.expect(!ns.hasVolume(7));
+    try testing.expectError(error.UnsupportedVolume, ns.mountVolume("/data", .ramfs, 7));
+    try testing.expectError(error.RootMountRequired, ns.unregisterVolume(0));
 }
