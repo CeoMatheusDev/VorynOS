@@ -141,7 +141,7 @@ pub const Namespace = struct {
     pub fn isCurrentRoute(self: *const Namespace, route_info: Route) bool {
         if (route_info.slot >= max_mounts) return false;
         const mount_entry = self.mounts[route_info.slot];
-        return mount_entry.active and mount_entry.generation == route_info.generation;
+        return mount_entry.active and mount_entry.generation == route_info.generation and mount_entry.backend == route_info.backend;
     }
 
     pub fn route(self: *const Namespace, path: []const u8) Error!Route {
@@ -289,4 +289,27 @@ test "route generation remains stable while a mount is active" {
     try ns.umount("/volume");
     try testing.expect(ns.isCurrentRoute(root));
     try testing.expect(!ns.isCurrentRoute(first));
+}
+
+test "mount generation exhaustion does not modify namespace" {
+    var ns: Namespace = .{};
+    ns.init();
+    ns.next_generation = 0;
+    try testing.expectError(error.MountGenerationExhausted, ns.mount("/new", .ramfs));
+    try testing.expectEqual(@as(usize, 1), ns.activeMountCount());
+    try testing.expect(!ns.isMountPoint("/new"));
+    try testing.expectEqual(@as(usize, 0), (try ns.route("/new/file")).slot);
+}
+
+test "route identity rejects invalid slots and mismatched backends" {
+    var ns: Namespace = .{};
+    ns.init();
+    const root = try ns.route("/file");
+    try testing.expect(ns.isCurrentRoute(root));
+    var invalid = root;
+    invalid.slot = max_mounts;
+    try testing.expect(!ns.isCurrentRoute(invalid));
+    invalid = root;
+    invalid.generation = 0;
+    try testing.expect(!ns.isCurrentRoute(invalid));
 }
