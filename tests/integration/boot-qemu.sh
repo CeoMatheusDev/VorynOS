@@ -434,7 +434,7 @@ else
 fi
 
 # F14.2: verify latency counters and pixel savings from the actual QEMU log.
-# The current boot injects one arrow press; do not claim multi-sample coverage.
+# Independently recompute exact nearest-rank percentiles for every available sample.\n# The current boot injects one arrow press; do not claim multi-sample coverage.
 if python3 - "$SERIAL_LOG" <<'PY'
 import re
 import sys
@@ -460,6 +460,11 @@ if not summary or len(summary) != len(window) or len(summary) != len(benchmark):
 previous_samples = 0
 previous_pixels = 0
 previous_baseline = 0
+observed_cycles = []
+def nearest_rank(values, percentile):
+    ordered = sorted(values)
+    return ordered[max(0, (percentile * len(ordered) + 99) // 100 - 1)]
+
 for index, (stats, percentiles, redraw) in enumerate(zip(summary, window, benchmark), 1):
     samples, minimum, mean, maximum, total_pixels, total_baseline = map(int, stats)
     count, p50, p95, p99 = map(int, percentiles)
@@ -478,6 +483,16 @@ for index, (stats, percentiles, redraw) in enumerate(zip(summary, window, benchm
         sys.exit(f"invalid cumulative pixel accounting at record {index}")
     if samples == 1 and not (minimum == mean == maximum == cycles == p50 == p95 == p99):
         sys.exit("single-sample statistics disagree")
+    observed_cycles.append(cycles)
+    recent = observed_cycles[-32:]
+    expected = tuple(nearest_rank(recent, p) for p in (50, 95, 99))
+    if (p50, p95, p99) != expected:
+        sys.exit(f"incorrect nearest-rank percentiles at record {index}: "
+                 f"kernel={(p50, p95, p99)} expected={expected}")
+    if minimum != min(observed_cycles) or maximum != max(observed_cycles):
+        sys.exit(f"incorrect cumulative extrema at record {index}")
+    if mean != sum(observed_cycles) // len(observed_cycles):
+        sys.exit(f"incorrect cumulative mean at record {index}")
     previous_samples, previous_pixels, previous_baseline = samples, total_pixels, total_baseline
 print(f"ok: F14.2 latency counters samples={samples} window={count} p50={p50} p95={p95} p99={p99}")
 print(f"ok: F14.2 redraw pixel savings {saved}/{baseline}")
