@@ -775,9 +775,9 @@ The `main` branch now includes three independent, allocation-free graphics primi
 
 - `kernel/graphics/window_manager.zig`: bounded window registry (32 slots), owner checks, generation-safe handles, z-order, focus, and hit testing.
 - `kernel/graphics/event_queue.zig`: bounded per-process event mailboxes (32 clients, 64 events per mailbox), FIFO delivery, and explicit overflow errors.
-- `kernel/graphics/session.zig`: host-testable pointer-click dispatch to the topmost visible window and its owning process.
+- `kernel/graphics/session.zig`: host-testable pointer-click dispatch to the topmost visible window, plus keyboard event dispatch to the focused window and its owning process.
 
-**Validation status:** on Fedora, the first two modules each passed three standalone Zig tests, and `zig build test` plus `zig build` completed successfully (user-provided terminal log). The new `session.zig` module has **not yet been compiled or tested**. These primitives are **not yet wired into the kernel syscall path or the live QEMU desktop**. The graphics router is single-threaded; callers must provide synchronization when used concurrently.
+**Validation status:** on Fedora, the first two modules each passed three standalone Zig tests, and `zig build test` plus `zig build` completed successfully (user-provided terminal log). The initial `session.zig` module passed eight standalone tests on Fedora (user-provided terminal log). Two additional keyboard-focus tests have been added since then and **have not yet been compiled or tested**. These primitives are **not yet wired into the kernel syscall path or the live QEMU desktop**. The graphics router is single-threaded; callers must provide synchronization when used concurrently.
 
 To validate this checkpoint after updating the local checkout:
 
