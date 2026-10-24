@@ -1168,3 +1168,94 @@ test "failed O_CREAT does not invalidate an existing checked descriptor" {
     try testing.expectEqual(@as(usize, 2), try write(0, existing, "ok"));
     try closeAll(0);
 }
+
+
+// M0.3.21: namespace rename semantics with live handles.
+test "rename across directories preserves inode content and checked handles" {
+    init();
+    _ = try mkdir("/left");
+    _ = try mkdir("/right");
+    const fd = try open(0, "/left/source", O_CREAT | O_RDWR);
+    _ = try write(0, fd, "persistent");
+    const checked = try checkedFd(0, fd);
+    const original = try stat("/left/source");
+    const before_inodes = freeInodeCount();
+    const before_blocks = freeBlockCount();
+
+    try rename("/left/source", "/right/destination");
+    try testing.expect(kindOf("/left/source") == null);
+    const moved = try stat("/right/destination");
+    try testing.expectEqual(original.inode, moved.inode);
+    try testing.expectEqual(original.size, moved.size);
+    try testing.expectEqual(before_inodes, freeInodeCount());
+    try testing.expectEqual(before_blocks, freeBlockCount());
+    try testing.expectEqual(fd, try validateCheckedFd(0, checked));
+    try seek(0, fd, 0);
+    var buffer: [16]u8 = undefined;
+    const count = try read(0, fd, &buffer);
+    try testing.expectEqualStrings("persistent", buffer[0..count]);
+    try closeAll(0);
+}
+
+test "rename collision and missing source leave namespace unchanged" {
+    init();
+    _ = try mkdir("/src");
+    _ = try mkdir("/dst");
+    const source = try open(0, "/src/one", O_CREAT | O_RDWR);
+    _ = try write(0, source, "source");
+    const target = try open(0, "/dst/two", O_CREAT | O_RDWR);
+    _ = try write(0, target, "target");
+    const source_stat = try stat("/src/one");
+    const target_stat = try stat("/dst/two");
+    const before_inodes = freeInodeCount();
+    const before_blocks = freeBlockCount();
+
+    try testing.expectError(error.NameExists, rename("/src/one", "/dst/two"));
+    try testing.expectError(error.EntryNotFound, rename("/src/missing", "/dst/new"));
+    try rename("/src/one", "/src/one");
+    try testing.expectEqual(source_stat.inode, (try stat("/src/one")).inode);
+    try testing.expectEqual(target_stat.inode, (try stat("/dst/two")).inode);
+    try testing.expectEqual(before_inodes, freeInodeCount());
+    try testing.expectEqual(before_blocks, freeBlockCount());
+    var buffer: [8]u8 = undefined;
+    var count = try readFile("/src/one", &buffer);
+    try testing.expectEqualStrings("source", buffer[0..count]);
+    count = try readFile("/dst/two", &buffer);
+    try testing.expectEqualStrings("target", buffer[0..count]);
+    try closeAll(0);
+}
+
+test "rename then unlink retains inode across process handles until last close" {
+    init();
+    const initial_inodes = freeInodeCount();
+    const initial_blocks = freeBlockCount();
+    const writer = try open(0, "/old-name", O_CREAT | O_RDWR);
+    _ = try write(0, writer, "data");
+    const reader = try open(1, "/old-name", O_RDONLY);
+    try rename("/old-name", "/new-name");
+    try unlink("/new-name");
+    try testing.expect(kindOf("/old-name") == null);
+    try testing.expect(kindOf("/new-name") == null);
+    try closeAll(0);
+    try testing.expectEqual(initial_inodes - 1, freeInodeCount());
+    try testing.expectEqual(initial_blocks - 1, freeBlockCount());
+    var buffer: [8]u8 = undefined;
+    const count = try read(1, reader, &buffer);
+    try testing.expectEqualStrings("data", buffer[0..count]);
+    try closeAll(1);
+    try testing.expectEqual(initial_inodes, freeInodeCount());
+    try testing.expectEqual(initial_blocks, freeBlockCount());
+}
+
+test "rename rejects noncanonical paths and directories without mutation" {
+    init();
+    _ = try mkdir("/directory");
+    const fd = try open(0, "/file", O_CREAT | O_RDWR);
+    const before_inodes = freeInodeCount();
+    try testing.expectError(error.InvalidPath, rename("/file", "/../escape"));
+    try testing.expectError(error.NotAFile, rename("/directory", "/moved-directory"));
+    try testing.expectEqual(before_inodes, freeInodeCount());
+    try testing.expect(kindOf("/file") != null);
+    try testing.expect(kindOf("/directory") != null);
+    try close(0, fd);
+}
