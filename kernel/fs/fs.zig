@@ -467,6 +467,13 @@ pub fn freeBlockCount() usize {
     return ramfs.freeBlockCount();
 }
 
+/// Runs a read-only integrity audit of the current RamFS backend.
+/// This diagnostic does not modify descriptors, offsets, or namespace state.
+/// Call only while filesystem mutations are quiescent.
+pub fn auditStorage() ramfs.AuditError!void {
+    return ramfs.audit();
+}
+
 /// Inodes livres do RamFS, para diagnóstico e testes de recuperação.
 pub fn freeInodeCount() usize {
     return ramfs.freeInodeCount();
@@ -1296,4 +1303,36 @@ test "rename within mounted alias preserves checked descriptor" {
     const n = try read(0, fd, &buf);
     try testing.expectEqualStrings("value", buf[0..n]);
     try closeAll(0);
+}
+
+test "storage audit preserves live descriptors and offsets" {
+    init();
+    const fd = try open(0, "/audit-live", O_CREAT | O_RDWR);
+    _ = try write(0, fd, "abcdef");
+    const position = try tell(0, fd);
+    const checked = try checkedFd(0, fd);
+    const before_blocks = freeBlockCount();
+    const before_inodes = freeInodeCount();
+    try auditStorage();
+    try testing.expectEqual(position, try tell(0, fd));
+    try testing.expectEqual(fd, try validateCheckedFd(0, checked));
+    try testing.expectEqual(before_blocks, freeBlockCount());
+    try testing.expectEqual(before_inodes, freeInodeCount());
+    try closeAll(0);
+    try auditStorage();
+}
+
+test "storage audit accepts unlinked file retained by open descriptor" {
+    init();
+    const fd = try open(0, "/audit-unlinked", O_CREAT | O_RDWR);
+    _ = try write(0, fd, "retained");
+    try unlink("/audit-unlinked");
+    try testing.expect(kindOf("/audit-unlinked") == null);
+    try auditStorage();
+    try seek(0, fd, 0);
+    var buffer: [16]u8 = undefined;
+    const n = try read(0, fd, &buffer);
+    try testing.expectEqualStrings("retained", buffer[0..n]);
+    try closeAll(0);
+    try auditStorage();
 }
