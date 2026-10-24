@@ -338,7 +338,7 @@ require_pattern '\[VNK\] graphics: event pump [1-9][0-9]* arrow presses over ([5
 require_marker "[VNK] fs: ramfs ready"
 require_marker "[VNK] fs: /apps/hello.txt round trip ok"
 require_marker "[VNK] fs: /apps/hello.elf installed"
-require_marker "[VNK] tasks: 8 created"
+require_marker "[VNK] tasks: 9 created"
 require_marker "[VNK] native: /apps/hello.elf entry="
 require_marker "[VNK] native: process"
 require_marker "[VNK] native: task"

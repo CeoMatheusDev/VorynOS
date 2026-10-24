@@ -35,6 +35,7 @@ const memmap = voryn.memmap;
 const port = voryn.port;
 const serial = voryn.serial;
 const usermode = voryn.usermode;
+const compositor_abi = voryn.compositor;
 
 const cpu = @import("arch/x86_64/cpu.zig");
 const interrupt = @import("arch/x86_64/interrupt.zig");
@@ -52,6 +53,7 @@ const elf_loader = @import("elf_loader.zig");
 const elf_materializer = @import("elf_materializer.zig");
 const native_image = @import("native_image.zig");
 const toolchain_app = @import("native_app");
+const client_app = @import("client_app");
 const raster = @import("graphics/raster.zig");
 const compositor = @import("graphics/compositor.zig");
 const damage = @import("graphics/damage.zig");
@@ -245,6 +247,18 @@ var toolchain_task: ?*scheduler.Task = null;
 /// The stack of the kernel of the toolchain task.
 var toolchain_task_stack: [task_stack_size]u8 align(16) = undefined;
 
+/// The address space of the client of the compositor.
+var client_space: ?*paging.AddressSpace = null;
+
+/// The entry point of the client, already in the window.
+var client_entry: u64 = 0;
+
+/// The task of the client.
+var client_task: ?*scheduler.Task = null;
+
+/// The stack of the kernel of the client task.
+var client_task_stack: [task_stack_size]u8 align(16) = undefined;
+
 /// The stack of the kernel of the native task.
 var native_task_stack: [task_stack_size]u8 align(16) = undefined;
 
@@ -253,6 +267,9 @@ var native_image_buffer: [native_image.max_image_size]u8 = undefined;
 
 /// The buffer that receives the toolchain image read from the RamFS.
 var toolchain_image_buffer: [toolchain_app.bytes.len]u8 = undefined;
+
+/// The buffer that receives the client image read from the RamFS.
+var client_image_buffer: [client_app.bytes.len]u8 = undefined;
 
 /// The number of bytes of the native image.
 var native_image_length: usize = 0;
@@ -587,6 +604,7 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     installUserTask();
     installNativeProcess();
     installToolchainProcess();
+    installClientProcess();
     // The system call of the user mode does not go through the interrupt
     // table: the instruction `syscall` reads the entry point and the
     // segments from the registers of model.
@@ -619,6 +637,7 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     reportUserTask();
     reportNativeTask();
     reportToolchainTask();
+    reportClientTask();
 
     // F6.26: the toolchain application presents a probe rectangle during
     // its test. The diagnostic scene is drawn again after the task has
@@ -1205,6 +1224,24 @@ fn installFs() void {
         port.haltForever();
     };
     serial.printLine("[VNK] fs: /apps/toolchain.elf installed ({d} bytes)", .{toolchain_app.bytes.len});
+
+    const client_descriptor = fs.create(0, "/apps/client.elf", 0o755) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/client.elf could not be created: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    const client_written = fs.write(0, client_descriptor, client_app.bytes[0..]) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/client.elf could not be written: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (client_written != client_app.bytes.len) {
+        serial.printLine("[VNK] FATAL: the file /apps/client.elf accepted {d} bytes", .{client_written});
+        port.haltForever();
+    }
+    fs.close(0, client_descriptor) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/client.elf could not be closed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    serial.printLine("[VNK] fs: /apps/client.elf installed ({d} bytes)", .{client_app.bytes.len});
 }
 
 /// Creates the capability of the channel of the VNX and gives it to the
@@ -1316,6 +1353,41 @@ fn installCapabilities() void {
         port.haltForever();
     }
 
+    // O canal 2 liga o cliente ao compositor. O cliente só envia, e o
+    // compositor só recebe: o direito de delegação não é dado a nenhum dos
+    // dois. O cliente não recebe o canal para uma resposta, porque o
+    // contrato do F6.29 é de uma via.
+    const client = client_space orelse {
+        serial.printLine("[VNK] FATAL: the client process does not exist", .{});
+        port.haltForever();
+    };
+    const frame_channel_rights = capability.Rights.send | capability.Rights.receive;
+    const frame_channel = capability.create(.channel, compositor_abi.channel_id, frame_channel_rights) orelse {
+        serial.printLine("[VNK] FATAL: the table of capabilities is full", .{});
+        port.haltForever();
+    };
+    if (!capability.give(client.id, frame_channel, capability.Rights.send)) {
+        serial.printLine("[VNK] FATAL: the capability of the frame channel could not be given to the client", .{});
+        port.haltForever();
+    }
+    if (!capability.give(presenter.id, frame_channel, capability.Rights.receive)) {
+        serial.printLine("[VNK] FATAL: the capability of the frame channel could not be given to the compositor", .{});
+        port.haltForever();
+    }
+
+    // O cliente escreve na superfície do compositor por copy_to. A
+    // capability é sobre o processo do compositor, com o direito de
+    // escrita, e não sobre uma página de memória compartilhada.
+    const surface_process_rights = capability.Rights.write;
+    const surface_process = capability.create(.process, presenter.id, surface_process_rights) orelse {
+        serial.printLine("[VNK] FATAL: the table of capabilities is full", .{});
+        port.haltForever();
+    };
+    if (!capability.give(client.id, surface_process, capability.Rights.write)) {
+        serial.printLine("[VNK] FATAL: the capability of the compositor surface could not be given", .{});
+        port.haltForever();
+    }
+
     serial.printLine("[VNK] capabilities: the channel 0 belongs to the process {d}", .{owner.id});
     serial.printLine("[VNK] capabilities: the channel 1 belongs to the process {d}", .{answerer.id});
     serial.printLine("[VNK] capabilities: the address space of the process {d} belongs to the process {d}", .{
@@ -1324,6 +1396,15 @@ fn installCapabilities() void {
     });
     serial.printLine("[VNK] capabilities: the display belongs to the process {d}", .{presenter.id});
     serial.printLine("[VNK] capabilities: the input belongs to the process {d}", .{presenter.id});
+    serial.printLine("[VNK] capabilities: the channel {d} carries frames from the client {d} to the compositor {d}", .{
+        compositor_abi.channel_id,
+        client.id,
+        presenter.id,
+    });
+    serial.printLine("[VNK] capabilities: the client {d} may write the surface of the compositor {d}", .{
+        client.id,
+        presenter.id,
+    });
 }
 
 /// Creates the task that runs in the third level of privilege.
@@ -1459,25 +1540,189 @@ fn installToolchainProcess() void {
         plan.segment_count,
         plan.relocation_count,
     });
+
+    const surface = mapCompositorSurface(space);
+    serial.printLine("[VNK] compositor: surface page at 0x{x} R+W+NX, {d}x{d}, process {d}", .{
+        surface,
+        compositor_abi.surface_width,
+        compositor_abi.surface_height,
+        space.id,
+    });
 }
 
-/// Verifies W^X for every page that the toolchain image uses.
-fn verifyToolchainPermissions(
+/// Creates the process that runs the client of the compositor.
+fn installClientProcess() void {
+    if (!enable_user_task) return;
+
+    const window = user_window_base;
+    const plan = elf_loader.planFromRamFs(
+        "/apps/client.elf",
+        &client_image_buffer,
+        window,
+        window,
+        usermode.window_size,
+    ) catch |err| {
+        serial.printLine("[VNK] FATAL: the client image could not be planned: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    const space = paging.createAddressSpace(window) orelse {
+        serial.printLine("[VNK] FATAL: the client address space could not be created", .{});
+        port.haltForever();
+    };
+
+    const stack_base = window + usermode.stack_offset;
+    elf_materializer.materialize(
+        space,
+        &plan,
+        client_image_buffer[0..client_app.bytes.len],
+        window,
+        usermode.window_size,
+        stack_base,
+        usermode.stack_pages,
+    ) catch |err| {
+        serial.printLine("[VNK] FATAL: the client image could not be materialized: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    verifyClientPermissions(space, &plan, stack_base);
+
+    client_space = space;
+    client_entry = plan.entry;
+
+    const contract = mapClientContract(space);
+    serial.printLine("[VNK] client: /apps/client.elf entry=0x{x} base=0x{x} end=0x{x}, {d} segments, {d} relocation(s)", .{
+        plan.entry,
+        plan.base,
+        plan.end,
+        plan.segment_count,
+        plan.relocation_count,
+    });
+    serial.printLine("[VNK] client: process {d}, contract page at 0x{x} R+NX, compositor={d}, channel={d}", .{
+        space.id,
+        contract,
+        toolchain_space.?.id,
+        compositor_abi.channel_id,
+    });
+}
+
+/// Maps the surface of the compositor below its window and verifies W^X.
+fn mapCompositorSurface(space: *paging.AddressSpace) u64 {
+    if (user_window_base <= usermode.surface_below) {
+        serial.printLine("[VNK] FATAL: there is no room for the compositor surface", .{});
+        port.haltForever();
+    }
+
+    const address = user_window_base - usermode.surface_below;
+    const page = physical.manager.allocate() orelse reportOutOfMemory();
+    paging.mapUserPageInFlags(space, address, page, .{
+        .writable = true,
+        .executable = false,
+    }) catch |err| {
+        serial.printLine("[VNK] FATAL: the compositor surface could not be mapped: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    const saved_cr3 = cpu.readCr3();
+    const saved_space = paging.activeSpace();
+    paging.activateSpace(space);
+    const destination: [*]u8 = @ptrFromInt(@as(usize, @intCast(address)));
+    @memset(destination[0..@intCast(paging.page_size)], 0);
+    cpu.writeCr3(saved_cr3);
+    paging.setActiveSpace(saved_space);
+
+    const permissions = paging.permissionsIn(space, address) orelse {
+        serial.printLine("[VNK] FATAL: the compositor surface is not mapped", .{});
+        port.haltForever();
+    };
+    if (!permissions.writable or permissions.executable) {
+        serial.printLine("[VNK] FATAL: the compositor surface is not R+W+NX", .{});
+        port.haltForever();
+    }
+
+    return address;
+}
+
+/// Maps the read-only contract of the client below its window.
+fn mapClientContract(space: *paging.AddressSpace) u64 {
+    if (user_window_base <= usermode.contract_below) {
+        serial.printLine("[VNK] FATAL: there is no room for the client contract", .{});
+        port.haltForever();
+    }
+
+    const presenter = toolchain_space orelse {
+        serial.printLine("[VNK] FATAL: the compositor process does not exist", .{});
+        port.haltForever();
+    };
+
+    const address = user_window_base - usermode.contract_below;
+    const page = physical.manager.allocate() orelse reportOutOfMemory();
+    paging.mapUserPageInFlags(space, address, page, .{
+        .writable = true,
+        .executable = false,
+    }) catch |err| {
+        serial.printLine("[VNK] FATAL: the client contract could not be mapped: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    const contract = compositor_abi.Contract{
+        .version = compositor_abi.contract_version,
+        .compositor_process = presenter.id,
+        .channel_id = compositor_abi.channel_id,
+        .surface_address = user_window_base - usermode.surface_below,
+        .surface_width = compositor_abi.surface_width,
+        .surface_height = compositor_abi.surface_height,
+        .surface_stride = compositor_abi.surface_stride,
+        .surface_bytes = compositor_abi.surface_size,
+        .frame_ready_kind = compositor_abi.frame_ready_kind,
+    };
+
+    const saved_cr3 = cpu.readCr3();
+    const saved_space = paging.activeSpace();
+    paging.activateSpace(space);
+    const destination: *volatile compositor_abi.Contract =
+        @ptrFromInt(@as(usize, @intCast(address)));
+    destination.* = contract;
+    paging.protectUserPageIn(space, address, .{
+        .writable = false,
+        .executable = false,
+    }) catch |err| {
+        serial.printLine("[VNK] FATAL: the client contract could not be protected: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    cpu.writeCr3(saved_cr3);
+    paging.setActiveSpace(saved_space);
+
+    const permissions = paging.permissionsIn(space, address) orelse {
+        serial.printLine("[VNK] FATAL: the client contract is not mapped", .{});
+        port.haltForever();
+    };
+    if (permissions.writable or permissions.executable) {
+        serial.printLine("[VNK] FATAL: the client contract is not R+NX", .{});
+        port.haltForever();
+    }
+
+    return address;
+}
+
+/// Verifies W^X for every page that an ELF image uses.
+fn verifyImagePermissions(
     space: *paging.AddressSpace,
     plan: *const elf_loader.LoadPlan,
     stack_base: u64,
+    label: []const u8,
 ) void {
     for (plan.segmentList()) |planned_segment| {
         var page = planned_segment.page_start;
         while (page < planned_segment.page_end) : (page += handoff.page_size) {
             const permissions = paging.permissionsIn(space, page) orelse {
-                serial.printLine("[VNK] FATAL: a page of the toolchain image is not mapped", .{});
+                serial.printLine("[VNK] FATAL: a page of the {s} image is not mapped", .{label});
                 port.haltForever();
             };
             if (permissions.writable != planned_segment.isWritable() or
                 permissions.executable != planned_segment.isExecutable())
             {
-                serial.printLine("[VNK] FATAL: a page of the toolchain image has the wrong permissions", .{});
+                serial.printLine("[VNK] FATAL: a page of the {s} image has the wrong permissions", .{label});
                 port.haltForever();
             }
         }
@@ -1487,16 +1732,34 @@ fn verifyToolchainPermissions(
     const stack_end = stack_base + usermode.stack_pages * handoff.page_size;
     while (page < stack_end) : (page += handoff.page_size) {
         const permissions = paging.permissionsIn(space, page) orelse {
-            serial.printLine("[VNK] FATAL: a page of the toolchain stack is not mapped", .{});
+            serial.printLine("[VNK] FATAL: a page of the {s} stack is not mapped", .{label});
             port.haltForever();
         };
         if (!permissions.writable or permissions.executable) {
-            serial.printLine("[VNK] FATAL: the toolchain stack is not R+W+NX", .{});
+            serial.printLine("[VNK] FATAL: the {s} stack is not R+W+NX", .{label});
             port.haltForever();
         }
     }
 
-    serial.printLine("[VNK] toolchain: page permissions verified", .{});
+    serial.printLine("[VNK] {s}: page permissions verified", .{label});
+}
+
+/// Verifies W^X for every page that the toolchain image uses.
+fn verifyToolchainPermissions(
+    space: *paging.AddressSpace,
+    plan: *const elf_loader.LoadPlan,
+    stack_base: u64,
+) void {
+    verifyImagePermissions(space, plan, stack_base, "toolchain");
+}
+
+/// Verifies W^X for every page that the client image uses.
+fn verifyClientPermissions(
+    space: *paging.AddressSpace,
+    plan: *const elf_loader.LoadPlan,
+    stack_base: u64,
+) void {
+    verifyImagePermissions(space, plan, stack_base, "client");
 }
 
 /// Reads the page tables of the native process and verifies W^X.
@@ -1777,6 +2040,24 @@ fn installScheduler() void {
             toolchain.context.ss,
             toolchain.context.rip,
             toolchain.context.rsp,
+        });
+
+        const client = scheduler.scheduler.spawnUser(
+            client_entry,
+            userStackAddress(),
+            usermode.stack_pages * handoff.page_size,
+            &client_task_stack,
+            user_window_base,
+            client_space,
+            5,
+        ) orelse return reportOutOfMemory();
+        client_task = client;
+        serial.printLine("[VNK] client: task {d} cs=0x{x} ss=0x{x} rip=0x{x} rsp=0x{x}", .{
+            client.id,
+            client.context.cs,
+            client.context.ss,
+            client.context.rip,
+            client.context.rsp,
         });
     }
 
@@ -2307,6 +2588,28 @@ fn reportToolchainTask() void {
         serial.printLine("[VNK] toolchain: the task terminated with code 0x{x}", .{task.exit_code});
     } else {
         serial.printLine("[VNK] toolchain: /apps/toolchain.elf ran from the toolchain", .{});
+    }
+}
+
+/// Reports that the client of the compositor ran.
+fn reportClientTask() void {
+    const task = client_task orelse {
+        serial.printLine("[VNK] client: the task does not exist", .{});
+        return;
+    };
+
+    var attempts: u64 = 0;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        if (task.state == .terminated) break;
+        cpu.halt();
+    }
+
+    if (task.state != .terminated) {
+        serial.printLine("[VNK] client: the task did not terminate", .{});
+    } else if (task.exit_code != 0) {
+        serial.printLine("[VNK] client: the task terminated with code 0x{x}", .{task.exit_code});
+    } else {
+        serial.printLine("[VNK] client: /apps/client.elf ran from the toolchain", .{});
     }
 }
 

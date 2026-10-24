@@ -36,6 +36,23 @@ pub const stack_pages: u64 = 2;
 /// The size of the window, in bytes.
 pub const window_size: u64 = (stack_offset + stack_pages * 0x1000);
 
+/// The page below the base of the window that holds the contract of the
+/// client of the compositor.
+///
+/// The page belongs to the same block of two megabytes as the window, but it
+/// is not part of the window: the materializer does not map it and the
+/// program does not see it unless the kernel maps it in the space of the
+/// client. The page of the surface of the compositor is the next one below.
+pub const contract_below: u64 = 0x1000;
+
+/// The page below the base of the window that holds the surface of the
+/// compositor.
+///
+/// The page is mapped only in the space of the compositor. The client writes
+/// in it through `copy_to`, which switches to the space of the compositor
+/// after checking the capability of the target process.
+pub const surface_below: u64 = 0x2000;
+
 /// The offset of the marker inside the page of the data.
 pub const data_marker: u64 = 0x00;
 
@@ -122,6 +139,16 @@ test "the window does not hold two pages in the same place" {
     try testing.expect(stack_offset >= data_offset + 0x1000);
     try testing.expectEqual(@as(u64, 0), window_size % 0x1000);
     try testing.expect(stack_offset + stack_pages * 0x1000 == window_size);
+}
+
+test "the pages below the window are aligned and distinct" {
+    try testing.expect(contract_below >= 0x1000);
+    try testing.expect(surface_below >= 0x1000);
+    try testing.expectEqual(@as(u64, 0), contract_below % 0x1000);
+    try testing.expectEqual(@as(u64, 0), surface_below % 0x1000);
+    try testing.expect(contract_below != surface_below);
+    try testing.expect(contract_below + 0x1000 <= surface_below or
+        surface_below + 0x1000 <= contract_below);
 }
 
 test "the words of the page of the data do not overlap" {

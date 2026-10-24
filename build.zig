@@ -94,6 +94,11 @@ pub fn build(b: *std.Build) void {
         .target = user_target,
         .optimize = .ReleaseSmall,
     });
+    const compositor_contract = b.createModule(.{
+        .root_source_file = b.path("shared/compositor.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
     const sdk_module = b.createModule(.{
         .root_source_file = b.path("sdk/src/root.zig"),
         .target = user_target,
@@ -101,6 +106,7 @@ pub fn build(b: *std.Build) void {
     });
     sdk_module.addImport("voryn_display", display_contract);
     sdk_module.addImport("voryn_input", input_contract);
+    sdk_module.addImport("voryn_compositor", compositor_contract);
     const user_module = b.createModule(.{
         .root_source_file = b.path("user/hello.zig"),
         .target = user_target,
@@ -109,11 +115,27 @@ pub fn build(b: *std.Build) void {
         .pic = true,
     });
     user_module.addImport("voryn_sdk", sdk_module);
+    user_module.addAssemblyFile(b.path("user/start.s"));
     const user_executable = b.addExecutable(.{
         .name = "voryn-native-hello",
         .root_module = user_module,
     });
     user_executable.pie = true;
+
+    const client_module = b.createModule(.{
+        .root_source_file = b.path("user/client.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+        .single_threaded = true,
+        .pic = true,
+    });
+    client_module.addImport("voryn_sdk", sdk_module);
+    client_module.addAssemblyFile(b.path("user/start.s"));
+    const client_executable = b.addExecutable(.{
+        .name = "voryn-native-client",
+        .root_module = client_module,
+    });
+    client_executable.pie = true;
 
     const converter_module = b.createModule(.{
         .root_source_file = b.path("tools/bin2zig.zig"),
@@ -128,6 +150,10 @@ pub fn build(b: *std.Build) void {
     const conversion = b.addRunArtifact(converter);
     conversion.addFileArg(user_executable.getEmittedBin());
     const native_app_output = conversion.addOutputFileArg("native_app.zig");
+
+    const client_conversion = b.addRunArtifact(converter);
+    client_conversion.addFileArg(client_executable.getEmittedBin());
+    const client_app_output = client_conversion.addOutputFileArg("client_app.zig");
 
     // ------------------------------------------------------------------
     // Voryn Nucleus Kernel.
@@ -166,6 +192,9 @@ pub fn build(b: *std.Build) void {
     kernel_module.addAnonymousImport("native_app", .{
         .root_source_file = native_app_output,
     });
+    kernel_module.addAnonymousImport("client_app", .{
+        .root_source_file = client_app_output,
+    });
     const kernel_executable = b.addExecutable(.{
         .name = "voryn-kernel",
         .root_module = kernel_module,
@@ -173,6 +202,7 @@ pub fn build(b: *std.Build) void {
     kernel_executable.entry = .{ .symbol_name = "voryn_kernel_entry" };
     kernel_executable.pie = true;
     kernel_executable.step.dependOn(&conversion.step);
+    kernel_executable.step.dependOn(&client_conversion.step);
     b.installArtifact(kernel_executable);
 
     // ------------------------------------------------------------------
@@ -238,8 +268,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const compositor_host_module = b.createModule(.{
+        .root_source_file = b.path("shared/compositor.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     sdk_test_module.addImport("voryn_display", display_host_module);
     sdk_test_module.addImport("voryn_input", input_host_module);
+    sdk_test_module.addImport("voryn_compositor", compositor_host_module);
     const sdk_tests = b.addTest(.{
         .name = "sdk-tests",
         .root_module = sdk_test_module,

@@ -20,13 +20,18 @@ const composition = @import("composition.zig");
 /// test, which sends no key.
 const input_poll_attempts: u32 = 200_000;
 
-/// Dimensões do quadro composto pelo processo. O buffer é local e
-/// pertence à pilha da aplicação; o kernel não conhece janelas, apenas o
-/// retângulo validado que recebe em `present`. O quadro é pequeno para
-/// caber nas duas páginas de pilha do modo usuário.
-const composition_width: u32 = 32;
-const composition_height: u32 = 24;
+/// Dimensões do quadro composto pelo processo. A superfície fica na página
+/// que o kernel mapeia abaixo da janela do compositor; o cliente escreve
+/// nela por `copy_to`, sem receber a página no próprio espaço.
+const composition_width: u32 = sdk.compositor.surface_width;
+const composition_height: u32 = sdk.compositor.surface_height;
+const composition_stride: u32 = sdk.compositor.surface_stride;
 const composition_background: u32 = 0x00202020;
+
+/// Espera máxima pela mensagem do cliente, em ticks do timer. O cliente é
+/// criado depois do compositor; a espera bloqueia a tarefa e o escalonador
+/// executa o cliente, que envia o quadro.
+const client_receive_ticks: u64 = 1000;
 const composition_windows = [_]composition.Window{
     .{ .x = 0, .y = 0, .width = 20, .height = 16, .color = 0x00606060 },
     .{ .x = 12, .y = 8, .width = 20, .height = 16, .color = 0x00C0C0C0 },
@@ -38,7 +43,9 @@ const composition_windows = [_]composition.Window{
 /// espera e continua, em vez de bloquear a máquina para sempre.
 const composition_hold_attempts: u32 = 20_000_000;
 
-export fn _start() noreturn {
+export fn voryn_user_main(window_base: u64, role: u64) noreturn {
+    _ = role;
+
     // Smoke test da ABI antes de usar o console.
     if (sdk.ping() != 0x42) sdk.exit(2);
 
@@ -162,7 +169,7 @@ export fn _start() noreturn {
     // screenshot enquanto a aplicação espera a tecla Q; o teste interativo
     // já viu I e não entra na espera.
     if (presentable) {
-        if (!presentComposition(present_format)) sdk.exit(11);
+        if (!presentComposition(window_base, present_format)) sdk.exit(11);
         if (!interactive_requested) holdComposition();
     }
 
@@ -178,43 +185,122 @@ export fn _start() noreturn {
     sdk.exit(if (sdk.syscall.isError(result)) 1 else 0);
 }
 
-/// Compõe o quadro e o apresenta. O checksum é calculado sobre o buffer
-/// visível e publicado no serial; o teste de boot compara o mesmo valor
-/// com o screenshot P6 capturado pelo QEMU.
-fn presentComposition(pixel_format: u32) bool {
-    var frame: [composition_width * composition_height]u32 = undefined;
+/// Compõe o quadro na superfície do compositor e espera a janela do
+/// cliente. O checksum final é calculado sobre a superfície visível e
+/// publicado no serial; o teste de boot compara o mesmo valor com o
+/// screenshot P6 capturado pelo QEMU.
+fn presentComposition(window_base: u64, pixel_format: u32) bool {
+    if (window_base <= sdk.compositor.surface_below) return false;
+    const surface_address = window_base - sdk.compositor.surface_below;
+    const pixels: [*]u32 = @ptrFromInt(@as(usize, @intCast(surface_address)));
     var surface = composition.Surface.init(
-        &frame,
+        pixels[0..@as(usize, composition_width) * composition_height],
         composition_width,
         composition_height,
-        composition_width,
+        composition_stride,
     ) catch return false;
 
     surface.compose(composition_background, &composition_windows);
-    const hash = surface.checksum();
+    if (!presentSurface(&surface, surface_address, pixel_format)) return false;
 
+    if (!receiveClientFrame(&surface, surface_address, pixel_format)) return false;
+
+    const hash = surface.checksum();
+    writeCompositionMarker(hash);
+    return true;
+}
+
+/// Apresenta a superfície inteira como um único retângulo validado.
+fn presentSurface(surface: *const composition.Surface, address: u64, pixel_format: u32) bool {
+    _ = surface;
     var request: sdk.display.PresentRequest = .{
         .version = sdk.display.present_version,
         .x = 0,
         .y = 0,
         .width = composition_width,
         .height = composition_height,
-        .stride = composition_width * 4,
+        .stride = composition_stride * 4,
         .pixel_format = pixel_format,
-        .buffer = @intFromPtr(&frame),
-        .length = @sizeOf(@TypeOf(frame)),
+        .buffer = address,
+        .length = sdk.compositor.surface_size,
     };
     const status = sdk.present(&request);
-    if (sdk.syscall.isError(status) or status != 0) return false;
+    return !sdk.syscall.isError(status) and status == 0;
+}
 
+/// Espera o posicionamento da janela e depois o aviso de quadro pronto do
+/// cliente. O cliente primeiro comunica a geometria da janela (kind
+/// window_place_kind) e depois copia os pixels e envia frame_ready_kind. O
+/// compositor valida a geometria, apresenta a superfície e publica o
+/// checksum do quadro visível.
+fn receiveClientFrame(surface: *const composition.Surface, address: u64, pixel_format: u32) bool {
+    // Primeiro espera o posicionamento da janela enviado pelo cliente.
+    const placement = sdk.receiveTimeout(
+        sdk.compositor.channel_id,
+        sdk.compositor.compositor_side,
+        client_receive_ticks,
+    );
+    if (sdk.syscall.isError(placement.status)) {
+        if (sdk.syscall.errorCode(placement.status) == @intFromEnum(sdk.syscall.Error.timeout)) {
+            _ = sdk.write("window placement timeout\n");
+        } else {
+            _ = sdk.write("window placement error\n");
+        }
+        return false;
+    }
+    if (placement.status != sdk.compositor.window_place_kind) {
+        _ = sdk.write("window placement invalid\n");
+        return false;
+    }
+
+    const geometry = sdk.compositor.unpackWindow(placement.value);
+    // Verifica se a geometria cabe na superfície antes de continuar.
+    if (geometry.width == 0 or geometry.height == 0 or
+        geometry.x >= composition_width or geometry.y >= composition_height)
+    {
+        _ = sdk.write("window geometry invalid\n");
+        return false;
+    }
+
+    // Depois espera o aviso de quadro pronto.
+    const result = sdk.receiveTimeout(
+        sdk.compositor.channel_id,
+        sdk.compositor.compositor_side,
+        client_receive_ticks,
+    );
+    if (sdk.syscall.isError(result.status)) {
+        if (sdk.syscall.errorCode(result.status) == @intFromEnum(sdk.syscall.Error.timeout)) {
+            _ = sdk.write("client frame timeout\n");
+        } else {
+            _ = sdk.write("client frame error\n");
+        }
+        return false;
+    }
+    if (result.status != sdk.compositor.frame_ready_kind) {
+        _ = sdk.write("client frame invalid\n");
+        return false;
+    }
+
+    if (!presentSurface(surface, address, pixel_format)) return false;
+    const hash = surface.checksum();
     writeCompositionMarker(hash);
     return true;
 }
 
 /// Publica o checksum do quadro composto sem depender de formatador.
 fn writeCompositionMarker(hash: u64) void {
-    const prefix = "composition ready frame=32x24 at=0,0 checksum=0x";
-    var buffer: [prefix.len + 17]u8 = undefined;
+    writeHashMarker("composition ready frame=32x24 at=0,0 checksum=0x", hash);
+}
+
+/// Publica o checksum da janela que o cliente copiou.
+fn writeClientMarker(hash: u64) void {
+    writeHashMarker("client frame copied checksum=0x", hash);
+}
+
+/// Escreve um prefixo seguido de dezesseis dígitos hexadecimais.
+fn writeHashMarker(prefix: []const u8, hash: u64) void {
+    var buffer: [96]u8 = undefined;
+    if (prefix.len + 17 > buffer.len) return;
     @memcpy(buffer[0..prefix.len], prefix);
 
     var shift: u6 = 60;

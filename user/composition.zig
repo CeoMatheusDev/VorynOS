@@ -25,6 +25,9 @@
 
 const std = @import("std");
 
+const fnv_offset_basis: u64 = 0xcbf29ce484222325;
+const fnv_prime: u64 = 0x100000001b3;
+
 /// Uma janela opaca, em pixels da superfície de destino.
 pub const Window = struct {
     x: u32,
@@ -106,13 +109,39 @@ pub const Surface = struct {
     /// cinza, o mesmo valor aparece nos três canais do PPM e a comparação
     /// não depende da ordem RGB/BGR do framebuffer.
     pub fn checksum(self: *const Surface) u64 {
-        var hash: u64 = 0xcbf29ce484222325;
+        var hash: u64 = fnv_offset_basis;
         var row: u32 = 0;
         while (row < self.height) : (row += 1) {
             const start: usize = @intCast(@as(u64, row) * self.stride);
             for (self.pixels[start .. start + self.width]) |pixel| {
                 hash ^= @as(u8, @truncate(pixel));
-                hash *%= 0x100000001b3;
+                hash *%= fnv_prime;
+            }
+        }
+        return hash;
+    }
+
+    /// Hash determinístico de um retângulo visível da superfície.
+    ///
+    /// O F6.29 usa a função para comparar a janela que o cliente copiou com
+    /// o checksum que o cliente publicou. A região tem de estar inteiramente
+    /// dentro da superfície; uma geometria inválida não é recortada, porque
+    /// um checksum de uma região diferente da anunciada não prova nada.
+    pub fn checksumRegion(self: *const Surface, x: u32, y: u32, width: u32, height: u32) ?u64 {
+        if (width == 0 or height == 0) return null;
+
+        const right: u64 = @as(u64, x) + width;
+        const bottom: u64 = @as(u64, y) + height;
+        if (right > self.width or bottom > self.height) return null;
+
+        var hash: u64 = fnv_offset_basis;
+        var row: u64 = y;
+        while (row < bottom) : (row += 1) {
+            const start: usize = @intCast(row * self.stride + x);
+            const end: usize = start + @as(usize, width);
+            for (self.pixels[start..end]) |pixel| {
+                hash ^= @as(u8, @truncate(pixel));
+                hash *%= fnv_prime;
             }
         }
         return hash;
@@ -187,4 +216,25 @@ test "composition rejects invalid surfaces before writing" {
     try std.testing.expectError(error.InvalidGeometry, Surface.init(&pixels, 2, 1, 1));
     try std.testing.expectError(error.InvalidGeometry, Surface.init(&pixels, 3, 2, 3));
     try std.testing.expectError(error.InvalidGeometry, Surface.init(&pixels, 1, 1, std.math.maxInt(u32)));
+}
+
+test "region checksum matches an independent hash and rejects clipping" {
+    var pixels: [20]u32 = @splat(0);
+    var surface = try Surface.init(&pixels, 4, 4, 5);
+    surface.compose(0x00202020, &.{});
+    pixels[6] = 0x00112233;
+    pixels[7] = 0x00445566;
+    pixels[11] = 0x00778899;
+    pixels[12] = 0x00AABBCC;
+
+    var expected: u64 = 0xcbf29ce484222325;
+    for ([_]u8{ 0x33, 0x66, 0x99, 0xCC }) |byte| {
+        expected ^= byte;
+        expected *%= 0x100000001b3;
+    }
+    try std.testing.expectEqual(@as(?u64, expected), surface.checksumRegion(1, 1, 2, 2));
+
+    try std.testing.expectEqual(@as(?u64, null), surface.checksumRegion(3, 0, 2, 1));
+    try std.testing.expectEqual(@as(?u64, null), surface.checksumRegion(0, 3, 1, 2));
+    try std.testing.expectEqual(@as(?u64, null), surface.checksumRegion(0, 0, 0, 1));
 }

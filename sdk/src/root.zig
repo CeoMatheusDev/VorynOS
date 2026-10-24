@@ -18,6 +18,9 @@ pub const display = @import("voryn_display");
 /// Contrato público dos eventos de entrada, compartilhado com o kernel.
 pub const input = @import("voryn_input");
 
+/// Contrato público do cliente com o compositor, compartilhado com o kernel.
+pub const compositor = @import("voryn_compositor");
+
 pub const CapabilityKind = enum(u64) {
     channel = 0,
     process = 1,

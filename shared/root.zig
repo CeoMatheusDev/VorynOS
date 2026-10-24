@@ -33,6 +33,7 @@ pub const elf64 = @import("elf64.zig");
 pub const usermode = @import("usermode.zig");
 pub const display = @import("display.zig");
 pub const input = @import("input.zig");
+pub const compositor = @import("compositor.zig");
 pub const port = @import("arch/x86_64/port.zig");
 pub const serial = @import("arch/x86_64/serial.zig");
 
@@ -49,4 +50,5 @@ test {
     _ = @import("usermode.zig");
     _ = @import("display.zig");
     _ = @import("input.zig");
+    _ = @import("compositor.zig");
 }
