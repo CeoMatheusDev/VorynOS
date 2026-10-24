@@ -461,7 +461,13 @@ benchmark = re.findall(
     r"baseline=(\d+) saved=(\d+)",
     log,
 )
-timing = re.findall(\n    r"\\[VNK\\] graphics: redraw timing cycles=(\\d+) elapsed_ticks=(\\d+)",\n    log,\n)\nif len(timing) != len(benchmark):\n    sys.exit("missing or unmatched F15.4 redraw timing records")\nif not summary or len(summary) != len(window) or len(summary) != len(benchmark):
+timing = re.findall(
+    r"\[VNK\] graphics: redraw timing cycles=(\d+) elapsed_ticks=(\d+)",
+    log,
+)
+if len(timing) != len(benchmark):
+    sys.exit("missing or unmatched F15.4 redraw timing records")
+if not summary or len(summary) != len(window) or len(summary) != len(benchmark):
     sys.exit("missing or unmatched F14 latency/redraw records")
 if len(summary) < 16:
     sys.exit(f"F15.3 requires at least 16 measured redraws, got {len(summary)}")
