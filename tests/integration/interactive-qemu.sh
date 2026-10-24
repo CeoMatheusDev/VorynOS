@@ -19,6 +19,7 @@ TIMEOUT=60
 EDGES=false
 STRESS=false
 BOUNDS=false
+BURST=false
 
 for argument in "$@"; do
     case "$argument" in
@@ -27,6 +28,7 @@ for argument in "$@"; do
         --edges) EDGES=true ;;
         --stress) STRESS=true ;;
         --bounds) BOUNDS=true ;;
+        --burst) BURST=true ;;
         *)
             echo "qemu-boot-test: unknown argument: $argument" >&2
             exit 2
@@ -162,18 +164,19 @@ trap 'cleanup_qemu; rm -rf "$WORK_DIRECTORY"' EXIT
 
 # The script injects I during boot, then RIGHT only after the persistent
 # loop marker. This distinguishes the permanent loop from the boot pump.
-if ! python3 - "$SERIAL_LOG" "$MONITOR_SOCKET" "$QEMU_PID" "$TIMEOUT" "$WORK_DIRECTORY" "$EDGES" "$STRESS" "$BOUNDS" <<'PY'
+if ! python3 - "$SERIAL_LOG" "$MONITOR_SOCKET" "$QEMU_PID" "$TIMEOUT" "$WORK_DIRECTORY" "$EDGES" "$STRESS" "$BOUNDS" "$BURST" <<'PY'
 import os
 import re
 import socket
 import sys
 import time
 
-log_path, monitor_path, pid_text, timeout_text, work_dir, edges_text, stress_text, bounds_text = sys.argv[1:]
+log_path, monitor_path, pid_text, timeout_text, work_dir, edges_text, stress_text, bounds_text, burst_text = sys.argv[1:]
 edges = edges_text == "true"
 stress = stress_text == "true"
 bounds = bounds_text == "true"
-if sum((edges, stress, bounds)) > 1:
+burst = burst_text == "true"
+if sum((edges, stress, bounds, burst)) > 1:
     sys.exit("FAIL: --edges, --stress and --bounds are mutually exclusive")
 pid = int(pid_text)
 deadline = time.monotonic() + int(timeout_text)
@@ -275,10 +278,51 @@ while time.monotonic() < deadline:
             print(f"ok: stress route has {len(steps)} acknowledged movements", flush=True)
         baseline = len(movement_pattern.findall(log))
         ack_baseline = len(ack_pattern.findall(log))
+        if burst:
+            steps = ["right", "down", "left", "up"] * 4
+            burst_origin = old_position
+            burst_expected = []
+            position = old_position
+            for key in steps:
+                following = expected_move(position, key, width, height)
+                burst_expected.append((key, following, int(following != position)))
+                position = following
+            print(f"ok: burst route sends {len(steps)} ordered arrows", flush=True)
+            for key in steps:
+                monitor_command("sendkey " + key + " 50")
+            state = "burst"
+            continue
         monitor_command("sendkey " + steps[step] + " 50")
         state = "movement"
         if bounds and expected_move(old_position, steps[step], width, height) == old_position:
             no_op_deadline = time.monotonic() + 0.25
+    elif state == "burst":
+        acknowledgements = ack_pattern.findall(log)[ack_baseline:]
+        positions = movement_pattern.findall(log)[baseline:]
+        if len(acknowledgements) > len(steps):
+            sys.exit("FAIL: duplicate burst acknowledgements")
+        scan_codes = {"left": 0x4b, "right": 0x4d, "up": 0x48, "down": 0x50}
+        for index, (actual, expected) in enumerate(zip(acknowledgements, burst_expected)):
+            key, position, moved = expected
+            code, actual_moved, x, y = actual
+            if (int(code, 16), int(actual_moved), int(x), int(y)) != (scan_codes[key], moved, *position):
+                sys.exit(f"FAIL: burst acknowledgement {index + 1}: expected {expected}, got {actual}")
+        if len(acknowledgements) == len(steps):
+            expected_positions = [position for _, position, moved in burst_expected if moved]
+            if [tuple(map(int, item)) for item in positions] != expected_positions:
+                sys.exit("FAIL: burst movement log differs from acknowledgements")
+            screenshot(after_path)
+            import subprocess
+            result = subprocess.run(
+                [sys.executable, "tests/integration/compare-framebuffer.py",
+                 before_path, after_path, *map(str, (*burst_origin, *burst_expected[-1][1]))],
+                check=False, capture_output=True, text=True,
+            )
+            print(result.stdout, end="", flush=True)
+            if result.returncode:
+                sys.exit("FAIL: burst framebuffer validation: " + (result.stderr.strip() or result.stdout.strip()))
+            print(f"ok: burst {len(steps)} ordered acknowledgements and framebuffer verified", flush=True)
+            sys.exit(0)
     elif state == "movement":
         positions = movement_pattern.findall(log)
         acknowledgements = ack_pattern.findall(log)
