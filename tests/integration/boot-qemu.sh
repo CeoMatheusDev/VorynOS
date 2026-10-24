@@ -270,6 +270,10 @@ require_marker "native ELF"
 require_marker "toolchain ELF"
 require_pattern '\[VNK\] syscall 19 from user display_info result 0x28' 'the display metadata call from the user mode'
 require_marker "display metadata"
+require_pattern '\[VNK\] capabilities: the display belongs to the process [0-9]+' 'the display capability'
+require_pattern '\[VNK\] display: present 16x16 at 0,0 first=0xff' 'the framebuffer read back after the presentation'
+require_pattern '\[VNK\] syscall 20 from user present result 0x0' 'the presentation call from the user mode'
+require_marker "display present"
 require_pattern '\[VNK\] tasks: [0-9]+ ready' 'the report of the ready tasks'
 require_pattern '\[VNK\] tasks: [0-9]+ blocks' 'the report of the blocked tasks'
 require_marker "switch cost"

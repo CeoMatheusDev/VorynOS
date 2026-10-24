@@ -43,7 +43,7 @@ The model of the components and their costs are in
 | `memmap.zig` | Operations over the memory map (search, summary, load region) |
 | `elf64.zig` | ELF64 reader: header, segments, relative relocations, load plan |
 | `usermode.zig` | Layout of the user mode window, shared with the user program |
-| `display.zig` | Versioned display metadata contract (`DisplayInfo`, no framebuffer address) |
+| `display.zig` | Versioned display metadata and presentation contract (`DisplayInfo`, `PresentRequest`; no framebuffer address) |
 | `arch/x86_64/port.zig` | Port I/O primitives (in, out, cli, hlt, rdtsc) |
 | `arch/x86_64/serial.zig` | Driver of the 16550 UART (COM1) and formatted writer, with atomic write |
 
@@ -105,7 +105,7 @@ system.
 | Memory map | array of `MemoryDescriptor` (40 bytes) | `shared/handoff.zig` |
 | Kernel image | relocatable ELF64 (`ET_DYN`) | `shared/elf64.zig` |
 | User mode window | offset constants, shared with the assembly | `shared/usermode.zig` |
-| System call contract | version `syscall_abi = 10`, eighteen calls (12 reserved) | `docs/specs/syscall-abi.md` |
+| System call contract | version `syscall_abi = 11`, nineteen calls (12 reserved) | `docs/specs/syscall-abi.md` |
 | Task context | `extern struct` with the fifteen registers | `kernel/task/context.zig` |
 | Console | `std.Io.Writer` writer over the UART | `shared/arch/x86_64/serial.zig` |
 

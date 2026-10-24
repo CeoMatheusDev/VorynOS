@@ -104,6 +104,18 @@ pub fn displayInfo(info: *display.DisplayInfo) u64 {
     ).status;
 }
 
+/// Apresenta um retângulo de pixels no display visível.
+/// O resultado é zero no sucesso, ou um código de erro negativo.
+pub fn present(request: *const display.PresentRequest) u64 {
+    return syscall.call(
+        syscall.Number.present,
+        @intFromPtr(request),
+        @sizeOf(display.PresentRequest),
+        0,
+        0,
+    ).status;
+}
+
 test {
     _ = @import("syscall.zig");
 }

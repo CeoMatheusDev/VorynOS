@@ -37,8 +37,8 @@
 //! The table is **not** exposed to the user mode. The handle of a
 //! capability is an index of the table, and it means nothing outside the
 //! kernel. The calls of the user mode name the **subject** of the
-//! capability — the channel or the process — and the kernel finds the
-//! capability that the caller holds over it.
+//! capability — the channel, the process or the display — and the kernel
+//! finds the capability that the caller holds over it.
 
 const std = @import("std");
 
@@ -55,6 +55,13 @@ pub const Kind = enum {
     /// space of the process. The capability is what authorizes the copy of
     /// a block into the space of another process.
     process,
+    /// The capability of the display.
+    ///
+    /// The subject of the capability is zero, because the kernel has one
+    /// visible display. The right that it carries is the right to present
+    /// pixels. The framebuffer address is not part of the capability and is
+    /// never exposed to the user mode.
+    display,
 };
 
 /// The values that name the kind of a capability in the system call
@@ -68,6 +75,8 @@ pub const KindWire = struct {
     pub const channel: u64 = 0;
     /// The capability of a process.
     pub const process: u64 = 1;
+    /// The capability of the display.
+    pub const display: u64 = 2;
 };
 
 /// The kind that a value of the system call interface names.
@@ -75,6 +84,7 @@ pub fn kindFromWire(value: u64) ?Kind {
     return switch (value) {
         KindWire.channel => .channel,
         KindWire.process => .process,
+        KindWire.display => .display,
         else => null,
     };
 }
@@ -84,6 +94,7 @@ pub fn kindToWire(kind: Kind) u64 {
     return switch (kind) {
         .channel => KindWire.channel,
         .process => KindWire.process,
+        .display => KindWire.display,
     };
 }
 
@@ -92,6 +103,7 @@ pub fn kindName(kind: Kind) []const u8 {
     return switch (kind) {
         .channel => "channel",
         .process => "process",
+        .display => "display",
     };
 }
 
@@ -118,13 +130,15 @@ pub const Rights = struct {
 
 /// The rights that a capability of the kind can carry.
 ///
-/// The right of delegation is common to the two kinds. The other rights
-/// are the operations that the subject accepts: a channel accepts messages,
-/// and a process accepts a write in its address space.
+/// The right of delegation is common to the kinds. The other rights are the
+/// operations that the subject accepts: a channel accepts messages, a
+/// process accepts a write in its address space, and the display accepts a
+/// presentation of pixels.
 pub fn allowedRights(kind: Kind) u64 {
     return switch (kind) {
         .channel => Rights.send | Rights.receive | Rights.delegate,
         .process => Rights.write | Rights.delegate,
+        .display => Rights.write | Rights.delegate,
     };
 }
 
@@ -535,14 +549,16 @@ test "the handle of a capability is found by its subject" {
     try testing.expect(handleOf(2, .channel, 2) == null);
 }
 
-test "the wire of the kind names exactly the two kinds" {
+test "the wire of the kind names exactly the three kinds" {
     try testing.expect(kindFromWire(KindWire.channel).? == .channel);
     try testing.expect(kindFromWire(KindWire.process).? == .process);
-    try testing.expect(kindFromWire(2) == null);
+    try testing.expect(kindFromWire(KindWire.display).? == .display);
+    try testing.expect(kindFromWire(3) == null);
     try testing.expect(kindFromWire(std.math.maxInt(u64)) == null);
 
     try testing.expectEqual(KindWire.channel, kindToWire(.channel));
     try testing.expectEqual(KindWire.process, kindToWire(.process));
+    try testing.expectEqual(KindWire.display, kindToWire(.display));
 }
 
 test "the rights of the kind are the operations of the subject" {
@@ -556,6 +572,11 @@ test "the rights of the kind are the operations of the subject" {
     try testing.expect(validRights(.process, Rights.write | Rights.delegate));
     try testing.expect(!validRights(.process, Rights.send));
     try testing.expect(!validRights(.process, 0));
+
+    try testing.expect(validRights(.display, Rights.write));
+    try testing.expect(validRights(.display, Rights.write | Rights.delegate));
+    try testing.expect(!validRights(.display, Rights.send));
+    try testing.expect(!validRights(.display, 0));
 }
 
 test "the process capability that is delegated can be taken back" {
@@ -574,4 +595,27 @@ test "the process capability that is delegated can be taken back" {
     // the space any more.
     try testing.expect(revoke(0, 1, handle));
     try testing.expect(!holdsSubject(1, .process, 1, Rights.write));
+}
+
+test "the display capability authorizes only the process that holds it" {
+    init();
+
+    const handle = create(.display, 0, Rights.write | Rights.delegate).?;
+    try testing.expect(give(0, handle, Rights.write | Rights.delegate));
+
+    // The holder presents; another process does not, and the display is not
+    // the process of the same number.
+    try testing.expect(holdsSubject(0, .display, 0, Rights.write));
+    try testing.expect(!holdsSubject(1, .display, 0, Rights.write));
+    try testing.expect(!holdsSubject(0, .display, 1, Rights.write));
+    try testing.expect(!holdsSubject(0, .display, 0, Rights.send));
+
+    // The delegation carries the write without the right of delegation.
+    try testing.expect(transfer(0, 1, handle, Rights.write));
+    try testing.expect(holdsSubject(1, .display, 0, Rights.write));
+    try testing.expect(!holds(1, handle, Rights.delegate));
+
+    // The owner takes the capability back.
+    try testing.expect(revoke(0, 1, handle));
+    try testing.expect(!holdsSubject(1, .display, 0, Rights.write));
 }

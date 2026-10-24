@@ -17,7 +17,7 @@
 | **Status** | ACCEPTED |
 | **Date** | 2026-10-24 |
 | **Scope** | Graphics, system calls and process isolation |
-| **Implementation** | `display_info` TESTED LOCALLY; `present` and the service PROPOSED |
+| **Implementation** | `display_info` and `present` TESTED LOCALLY; the compositor and the input service PROPOSED |
 
 ## 1. Context
 
@@ -69,23 +69,28 @@ apart silently.
 
 ### 2.2 Presentation is a validated copy, not a mapping
 
-A future call, `present`, will copy pixels from a buffer of the caller to
-the framebuffer. It will **not** map the framebuffer into the process and it
-will **not** accept a kernel address.
+The call 20, `present`, copies pixels from a buffer of the caller to the
+framebuffer. It does **not** map the framebuffer into the process and it
+does **not** accept a kernel address.
 
 The request is a versioned structure with the buffer address, the buffer
 length, the destination rectangle, the stride and the pixel format. The
-kernel will validate, in this order:
+kernel validates, in this order:
 
-1. the request structure itself is a readable range of the user;
-2. the version is known;
-3. the geometry does not overflow and fits the visible display;
-4. the stride is at least `width * 4`, and `stride * height` does not
+1. the caller is a process of the user mode;
+2. the caller holds the display capability with the write right, **before**
+   the request is read;
+3. the request structure itself is a readable range of the user;
+4. the version is known;
+5. the geometry does not overflow and fits the visible display;
+6. the pixel format matches the format reported by `display_info` and is
+   RGB32 or BGR32;
+7. the stride is at least `width * 4`, and `stride * height` does not
    overflow;
-5. the pixel buffer is a readable range of the user with at least
+8. the length is at most 64 MiB;
+9. the pixel buffer is a readable range of the user with at least
    `stride * height` bytes;
-6. the pixel format matches the format reported by `display_info`;
-7. the caller holds the display capability with the write right.
+10. the rectangle fits the mapped framebuffer.
 
 Only then does the kernel copy the rows into the framebuffer. The copy is
 synchronous: when the call returns, the pixels are in the device. There is
@@ -105,13 +110,17 @@ when it creates that process. The identifier of the process is not the
 authority: a process that receives the identifier without the capability is
 refused with the error 10, `not_authorized`.
 
-The first implementation has one compositor. The capability model is still
-used from the beginning, because adding it later would change the security
-properties of every existing presentation path.
+The first implementation has one compositor. In F6.26 the native toolchain
+application is the compositor stand-in: it receives the capability at boot
+and presents a 16x16 probe. The user-space compositor of F6.27 will receive
+the same capability; the kernel does not change the authority model for the
+demo. The capability model is used from the beginning, because adding it
+later would change the security properties of every existing presentation
+path.
 
 ### 2.4 Input
 
-Input events stay in the kernel in F6.25. The future graphics service will
+Input events stay in the kernel in F6.26. The future graphics service will
 receive them through a call of its own, with a bounded queue per process.
 The keyboard interrupt handler will not call into a user process, and the
 service will not read the PS/2 controller directly.
@@ -180,8 +189,8 @@ bottleneck.
 ### 4.1 ABI
 
 - Version 10 adds the call 19 and the error 22; it is additive.
-- Version 11 will add `present` and the display capability kind. The number
-  20 is reserved for `present`; it is not used by another call.
+- Version 11 adds the call 20, `present`, the display capability kind and
+  the errors 23 and 24; it is additive.
 - The existing calls keep their numbers and meanings.
 
 ### 4.2 Security
@@ -194,8 +203,8 @@ bottleneck.
 - The display capability is checked before the buffer is touched, so a
   process without the authority cannot use the call as a probe of the
   framebuffer.
-- The copy is bounded by the visible rectangle and by the maximum block
-  length of the contract.
+- The copy is bounded by the visible rectangle, by the 64 MiB presentation
+  bound and by the framebuffer mapping that the kernel verified.
 
 ### 4.3 Performance
 
@@ -205,26 +214,30 @@ bottleneck.
 - The first version has no double buffering and no vsync. Tearing is
   possible, and it is documented as a limitation.
 - The release build measured 3.79 ms per arrow for the kernel compositor.
-  The user-space path will be measured with the same TSC instrumentation
-  and with the QEMU harness.
+  The F6.26 presentation is a 16x16 probe and was not measured as a frame
+  path; F6.27 will instrument the user-space compositor with the same TSC
+  and QEMU harness.
 
 ### 4.4 Tests
 
 - Host tests for the `DisplayInfo` layout and for the registry.
-- Host tests for the geometry and stride validation of `present`, before
-  the call touches a framebuffer.
+- Host tests for the version, geometry, stride, length and format validation
+  of `present`, before the call touches a framebuffer.
 - A QEMU test that calls `display_info` from the native SDK application and
   verifies the serial marker (F6.25).
-- A QEMU test that presents a known pattern and compares the framebuffer
-  with the expected pixels (F6.26).
-- A test that a process without the display capability is refused.
+- A QEMU test that presents a known 16x16 pattern from the native SDK
+  application and reads the first pixel back from the framebuffer (F6.26).
+  The full screenshot comparison of a user-space frame is F6.27.
+- A host test that a process without the display capability is refused by
+  the capability check. A separate user process that exercises the refusal
+  through the `present` call in QEMU is F6.27.
 
 ## 5. Increments
 
 | Increment | Content | State |
 |-----------|---------|-------|
 | F6.25 | `display_info`, ABI 10, native SDK query, user stack alignment fix | TESTED LOCALLY |
-| F6.26 | display capability, `present` with a validated rectangle, geometry tests | PROPOSED |
+| F6.26 | display capability, `present`, ABI 11, validated rectangle, 16x16 probe | TESTED LOCALLY |
 | F6.27 | user-space compositor demo, input event call, screenshot verification | PROPOSED |
 | F6.28 | window manager, focus, cursor and the first desktop shell | PROPOSED |
 
@@ -235,13 +248,25 @@ aligned because a call would have pushed a return address. The added
 exposed the bug as a general protection fault. The scheduler now starts
 both user and kernel tasks at `top - 8`.
 
+The F6.26 increment keeps the diagnostic kernel scene as the boot
+background. After the toolchain task terminates, the kernel draws the scene
+again, so the interactive screenshot test starts from the scene that the
+kernel owns. The presentation is proven by the serial read-back of the
+first pixel, not by a persistent rectangle; the full user-space frame is
+F6.27.
+
 ## 6. References
 
-- [`docs/specs/syscall-abi.md`](../specs/syscall-abi.md) — version 10.
-- [`shared/display.zig`](../../shared/display.zig) — the metadata contract.
+- [`docs/specs/syscall-abi.md`](../specs/syscall-abi.md) — version 11.
+- [`shared/display.zig`](../../shared/display.zig) — the metadata and
+  presentation contract.
 - [`kernel/graphics/display.zig`](../../kernel/graphics/display.zig) — the
-  kernel registry.
+  kernel registry and the private framebuffer surface.
 - [`kernel/security/capability.zig`](../../kernel/security/capability.zig) —
-  the capability model that the display kind will extend.
+  the capability model, including the display kind.
+- [`docs/reports/f6/display-metadata-and-user-stack-alignment.md`](../reports/f6/display-metadata-and-user-stack-alignment.md)
+  — the F6.25 report.
+- [`docs/reports/f6/display-presentation-and-display-capability.md`](../reports/f6/display-presentation-and-display-capability.md)
+  — the F6.26 report.
 - [`docs/reports/f6/input-latency-and-exposed-strip-damage.md`](../reports/f6/input-latency-and-exposed-strip-damage.md)
   — the F6.24 measurements.

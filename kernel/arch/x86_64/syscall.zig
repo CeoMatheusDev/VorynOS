@@ -231,8 +231,14 @@ pub const Number = struct {
     ///
     /// The call is read-only and exposes no framebuffer address: the user
     /// receives the geometry and the pixel layout, and the pixels are
-    /// written only by the future presentation call.
+    /// written only by the presentation call 20.
     pub const display_info: u64 = 19;
+    /// Present a rectangle of pixels from the user mode.
+    ///
+    /// The call copies the pixels into the framebuffer, and the caller has
+    /// to hold the display capability with the right of writing. The
+    /// framebuffer address is never exposed to the user mode.
+    pub const present: u64 = 20;
 };
 
 /// The result that the kernel answers to the call of the probe.
@@ -299,6 +305,10 @@ pub const Error = struct {
     pub const io_error: u64 = 21;
     /// The firmware did not provide a usable display.
     pub const no_display: u64 = 22;
+    /// The rectangle of the presentation is empty or leaves the display.
+    pub const invalid_geometry: u64 = 23;
+    /// The pixel format of the presentation is not supported.
+    pub const invalid_format: u64 = 24;
 };
 
 /// The largest block that a call copies in one go.
@@ -593,6 +603,14 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
                 frame.rax,
             });
         },
+        Number.present => {
+            frame.rax = present(frame.rdi, frame.rsi, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} present result 0x{x}", .{
+                number,
+                caller,
+                frame.rax,
+            });
+        },
         Number.grant => {
             frame.rax = grant(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
             const kind = capability.kindFromWire(frame.rsi);
@@ -781,6 +799,80 @@ fn displayInfo(address: u64, length: u64, privilege: u64) u64 {
     const destination: [*]u8 = @ptrFromInt(address);
     @memcpy(destination[0..size], std.mem.asBytes(&copy)[0..]);
     return wire_size;
+}
+
+/// Copies a rectangle of the user mode into the framebuffer.
+///
+/// The capability is checked before the request is read: a process that
+/// does not hold the display cannot use the call to probe the framebuffer.
+/// The request is then copied into the kernel, validated against the
+/// visible display and the caller's buffer, and only then are the rows
+/// copied. A destination rectangle that does not fit is rejected by
+/// validation; it is never silently truncated.
+fn present(address: u64, length: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+    if (!capability.holdsSubject(process, .display, 0, capability.Rights.write)) {
+        return failure(Error.not_authorized);
+    }
+
+    const request_size: usize = @sizeOf(voryn.display.PresentRequest);
+    const wire_size: u64 = @intCast(request_size);
+    if (length < wire_size) return failure(Error.invalid_length);
+    if (!paging.isUserRange(address, wire_size, false)) return failure(Error.invalid_address);
+
+    var request: voryn.display.PresentRequest = undefined;
+    const request_source: [*]const u8 = @ptrFromInt(address);
+    @memcpy(std.mem.asBytes(&request)[0..], request_source[0..request_size]);
+
+    const info = display.info() orelse return failure(Error.no_display);
+    const surface = display.surface() orelse return failure(Error.no_display);
+
+    voryn.display.validatePresent(&request, &info) catch |err| return failure(switch (err) {
+        error.InvalidVersion, error.InvalidStride, error.InvalidLength => Error.invalid_length,
+        error.InvalidGeometry => Error.invalid_geometry,
+        error.InvalidFormat => Error.invalid_format,
+    });
+
+    if (!paging.isUserRange(request.buffer, request.length, false)) {
+        return failure(Error.invalid_address);
+    }
+
+    // The visible rectangle has to fit the mapped framebuffer. The
+    // validation already guarantees that it fits the visible display; this
+    // check is the last barrier against a mapping that is smaller than the
+    // mode that the firmware reported.
+    const last_row = @as(u64, request.y + request.height - 1);
+    const last_byte = last_row * @as(u64, surface.pitch) +
+        @as(u64, request.x + request.width) * 4;
+    if (last_byte > surface.size) return failure(Error.no_display);
+
+    const row_bytes: usize = @intCast(request.width * 4);
+    var row: u32 = 0;
+    while (row < request.height) : (row += 1) {
+        const source_offset = @as(u64, row) * @as(u64, request.stride);
+        const destination_offset = @as(u64, request.y + row) * @as(u64, surface.pitch) +
+            @as(u64, request.x) * 4;
+        const source: [*]const u8 = @ptrFromInt(request.buffer + source_offset);
+        const destination: [*]u8 = @ptrFromInt(surface.base + destination_offset);
+        @memcpy(destination[0..row_bytes], source[0..row_bytes]);
+    }
+
+    // The read back is part of the boot evidence: it proves that the copy
+    // reached the framebuffer, not only that the validation accepted it.
+    const first: *volatile u32 = @ptrFromInt(surface.base +
+        @as(u64, request.y) * @as(u64, surface.pitch) +
+        @as(u64, request.x) * 4);
+    serial.printLine("[VNK] display: present {d}x{d} at {d},{d} first=0x{x}", .{
+        request.width,
+        request.height,
+        request.x,
+        request.y,
+        first.*,
+    });
+
+    return 0;
 }
 
 /// Writes a buffer of the user mode in the console.
@@ -1065,8 +1157,8 @@ fn copyTo(process: u64, destination: u64, source: u64, length: u64, privilege: u
 /// Gives a capability of the caller to another process.
 ///
 /// The arguments are the identifier of the target process, the kind of the
-/// capability, the identifier of the subject — the channel or the process —
-/// and the rights that the target receives.
+/// capability, the identifier of the subject — the channel, the process or
+/// the display — and the rights that the target receives.
 ///
 /// The caller has to hold the capability of the subject with the right of
 /// delegation. The rights that the target receives have to be a subset of
@@ -1109,8 +1201,8 @@ fn grant(process_id: u64, kind_value: u64, subject: u64, rights: u64, privilege:
 /// Takes a capability back from another process.
 ///
 /// The arguments are the identifier of the target process, the kind of the
-/// capability and the identifier of the subject — the channel or the
-/// process.
+/// capability and the identifier of the subject — the channel, the process
+/// or the display.
 ///
 /// The caller has to hold the capability of the subject with the right of
 /// delegation: the owner of the capability takes it back from the process
@@ -1139,14 +1231,16 @@ fn revoke(process_id: u64, kind_value: u64, subject: u64, privilege: u64) u64 {
 
 /// True when the subject of a capability of the kind exists.
 ///
-/// The subject of a channel is the identifier of the channel, and the
-/// subject of a process is the identifier of the process. Both are resolved
-/// in the module that owns them, and not in the table of capabilities: the
-/// table may hold a capability of a subject that is already gone.
+/// The subject of a channel is the identifier of the channel, the subject
+/// of a process is the identifier of the process, and the subject of the
+/// display is zero. They are resolved in the module that owns them, and not
+/// in the table of capabilities: the table may hold a capability of a
+/// subject that is already gone.
 fn subjectExists(kind: capability.Kind, subject: u64) bool {
     return switch (kind) {
         .channel => channel_module.get(subject) != null,
         .process => paging.spaceById(subject) != null,
+        .display => subject == 0 and display.surface() != null,
     };
 }
 
@@ -1155,6 +1249,7 @@ fn subjectError(kind: capability.Kind) u64 {
     return switch (kind) {
         .channel => Error.unknown_channel,
         .process => Error.unknown_process,
+        .display => Error.no_display,
     };
 }
 

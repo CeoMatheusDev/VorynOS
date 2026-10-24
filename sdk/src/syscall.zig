@@ -7,11 +7,11 @@
 // Copyright (C) 2026 VorynOS contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Interface de baixo nível da ABI VSC-0001, versão 10.
+//! Interface de baixo nível da ABI VSC-0001, versão 11.
 //! x86_64: RAX=número/resultado, RDI/RSI/RDX/R8=argumentos.
 //! RCX e R11 são destruídos pela instrução syscall.
 
-pub const abi_version: u32 = 10;
+pub const abi_version: u32 = 11;
 
 pub const Number = struct {
     pub const ping: u64 = 1;
@@ -33,9 +33,10 @@ pub const Number = struct {
     pub const fs_create: u64 = 17;
     pub const fs_mkdir: u64 = 18;
     pub const display_info: u64 = 19;
+    pub const present: u64 = 20;
 };
 
-/// Códigos de erro estáveis definidos por VSC-0001 v10.
+/// Códigos de erro estáveis definidos por VSC-0001 v11.
 pub const Error = enum(u64) {
     unknown_call = 1,
     invalid_address = 2,
@@ -59,13 +60,15 @@ pub const Error = enum(u64) {
     file_too_large = 20,
     io_error = 21,
     no_display = 22,
+    invalid_geometry = 23,
+    invalid_format = 24,
 };
 
 /// Preserva códigos futuros ou desconhecidos como null.
 pub fn knownError(status: u64) ?Error {
     const code = errorCode(status) orelse return null;
     return switch (code) {
-        1...22 => @enumFromInt(code),
+        1...24 => @enumFromInt(code),
         else => null,
     };
 }
@@ -109,7 +112,8 @@ test "ABI call numbers are stable" {
     try std.testing.expectEqual(@as(u64, 13), Number.fs_open);
     try std.testing.expectEqual(@as(u64, 18), Number.fs_mkdir);
     try std.testing.expectEqual(@as(u64, 19), Number.display_info);
-    try std.testing.expectEqual(@as(u32, 10), abi_version);
+    try std.testing.expectEqual(@as(u64, 20), Number.present);
+    try std.testing.expectEqual(@as(u32, 11), abi_version);
 }
 
 test "negative status decoding" {
@@ -124,6 +128,8 @@ test "error catalog and unknown codes" {
     try std.testing.expectEqual(@as(?Error, .not_authorized), knownError(0 -% @as(u64, 10)));
     try std.testing.expectEqual(@as(?Error, .timeout), knownError(0 -% @as(u64, 13)));
     try std.testing.expectEqual(@as(?Error, .no_display), knownError(0 -% @as(u64, 22)));
+    try std.testing.expectEqual(@as(?Error, .invalid_geometry), knownError(0 -% @as(u64, 23)));
+    try std.testing.expectEqual(@as(?Error, .invalid_format), knownError(0 -% @as(u64, 24)));
     try std.testing.expectEqual(@as(?Error, null), knownError(0));
     try std.testing.expectEqual(@as(?Error, null), knownError(0 -% @as(u64, 99)));
 }

@@ -607,6 +607,14 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     reportUserTask();
     reportNativeTask();
     reportToolchainTask();
+
+    // F6.26: the toolchain application presents a probe rectangle during
+    // its test. The diagnostic scene is drawn again after the task has
+    // terminated, so the interactive screenshot test starts from the scene
+    // that the kernel owns; the presentation itself is proven by the
+    // serial read-back of the first pixel.
+    presentGraphicsDemo();
+
     reportCapabilities();
 
     // Sentinel consumed by the automated boot test.
@@ -1264,12 +1272,31 @@ fn installCapabilities() void {
         port.haltForever();
     }
 
+    // The display capability. The toolchain process is the first
+    // compositor stand-in: it holds the right to present, and no other
+    // process does. The kernel is still the root authority; the process
+    // cannot present until it receives the capability.
+    const display_rights = capability.Rights.write | capability.Rights.delegate;
+    const display_handle = capability.create(.display, 0, display_rights) orelse {
+        serial.printLine("[VNK] FATAL: the table of capabilities is full", .{});
+        port.haltForever();
+    };
+    const presenter = toolchain_space orelse {
+        serial.printLine("[VNK] FATAL: the process that presents does not exist", .{});
+        port.haltForever();
+    };
+    if (!capability.give(presenter.id, display_handle, display_rights)) {
+        serial.printLine("[VNK] FATAL: the capability of the display could not be given", .{});
+        port.haltForever();
+    }
+
     serial.printLine("[VNK] capabilities: the channel 0 belongs to the process {d}", .{owner.id});
     serial.printLine("[VNK] capabilities: the channel 1 belongs to the process {d}", .{answerer.id});
     serial.printLine("[VNK] capabilities: the address space of the process {d} belongs to the process {d}", .{
         answerer.id,
         owner.id,
     });
+    serial.printLine("[VNK] capabilities: the display belongs to the process {d}", .{presenter.id});
 }
 
 /// Creates the task that runs in the third level of privilege.

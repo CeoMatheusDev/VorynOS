@@ -5,7 +5,7 @@
 | **State** | ACCEPTED |
 | **Date** | 2026-10-24 |
 | **Scope** | The interface between the user mode and the kernel |
-| **Contract version** | `syscall_abi = 10` |
+| **Contract version** | `syscall_abi = 11` |
 
 ## 1. Objective
 
@@ -26,7 +26,8 @@ capability to the calls that give and take it, so that a process can
 delegate the capability of an address space as well as the capability of a
 channel. Version 6 adds the call that waits for a message with a timeout.
 Version 9 adds the file system calls 13 to 18. Version 10 adds the
-read-only display metadata call 19.
+read-only display metadata call 19. Version 11 adds the display
+presentation call 20, the display capability and the errors 23 and 24.
 
 The calls of the earlier versions **do not change their number**. Their
 behavior changes in the points that the sections 9 and 10 describe: the
@@ -142,6 +143,7 @@ next interrupt. The exit code is registered in the task.
 | 17 | `fs_create` | `RDI` path address, `RSI` path length | the descriptor |
 | 18 | `fs_mkdir` | `RDI` path address, `RSI` path length | zero |
 | 19 | `display_info` | `RDI` structure address, `RSI` structure length | the number of bytes written |
+| 20 | `present` | `RDI` request address, `RSI` request length | zero |
 
 The number 12 is reserved and is **not** defined by this version: the kernel
 refuses it with the error 1, as it refuses any unknown number.
@@ -233,13 +235,14 @@ be a busy loop, and not a wait.
 
 The calls 9 and 10 entered the contract in the version 4, and the version 5
 added the kind of the capability. A capability is about a **subject**, and
-the subject is a channel or a process: the kind says which one the call
-names.
+the subject is a channel, a process or the display: the kind says which one
+the call names.
 
 | Kind | Value | Subject |
 |---|---|---|
 | channel | 0 | the identifier of the channel |
 | process | 1 | the identifier of the process whose address space the capability describes |
+| display | 2 | always 0, because the kernel has one visible display |
 
 A kind that does not have one of the values above is refused with the error
 11, `unknown_kind`. The kernel does not guess what a value that it does not
@@ -257,23 +260,24 @@ have to apply to the kind, and they have to be a subset of the rights that
 the caller holds. The right of delegation is **not** part of what the target
 receives, unless the caller asks for it explicitly.
 
-The rights of the version 5 are:
+The rights of this version are:
 
 | Right | Value | Meaning | Kind |
 |---|---|---|---|
 | `send` | 1 | The right to put a message in the subject | channel |
 | `receive` | 2 | The right to take a message of the subject | channel |
-| `delegate` | 4 | The right to give the capability to another process | channel, process |
-| `write` | 8 | The right to write in the address space of the subject | process |
+| `delegate` | 4 | The right to give the capability to another process | channel, process, display |
+| `write` | 8 | The right to write in the address space of the subject, or to present pixels to the display | process, display |
 
 A right that belongs to another kind is refused with the error 12,
 `invalid_rights`, and so is an empty set of rights: a capability that
 authorizes nothing is not a capability.
 
 The call answers with the error 6 when the channel does not exist, with the
-error 8 when the process does not exist, and with the error 10 when the
-caller does not hold the capability, when the rights are wider than the
-rights of the caller, or when the target process does not exist.
+error 8 when the process does not exist, with the error 22 when the display
+does not exist, and with the error 10 when the caller does not hold the
+capability, when the rights are wider than the rights of the caller, or when
+the target process does not exist.
 
 #### 5.5.2 `revoke`
 
@@ -286,8 +290,9 @@ delegation: the owner of the capability takes it back from the process it
 gave it to.
 
 The call answers with the error 6 when the channel does not exist, with the
-error 8 when the process does not exist, and with the error 10 when the
-caller does not hold the capability with the right of delegation.
+error 8 when the process does not exist, with the error 22 when the display
+does not exist, and with the error 10 when the caller does not hold the
+capability with the right of delegation.
 
 ### 5.6 `receive_timeout`
 
@@ -365,7 +370,7 @@ reading and writing. `fs_mkdir` creates a directory and returns zero. The
 calls do not create the parent directory: a path whose parent does not
 exist is refused with the error 14, `no_such_file`.
 
-The version 10 does **not** have `seek`, `stat`, `unlink`, `rename`,
+This version does **not** have `seek`, `stat`, `unlink`, `rename`,
 indirect blocks or persistence. The RamFS is still a kernel-side file
 system with a small user-facing window.
 
@@ -374,8 +379,7 @@ system with a small user-facing window.
 Writes the display metadata into a structure of the user mode. The call is
 **read-only**, and it exposes neither the physical base address nor the
 size of the framebuffer mapping. The user mode never receives access to the
-MMIO window; a future presentation call is the only path that writes
-pixels.
+MMIO window; the presentation call 20 is the only path that writes pixels.
 
 The structure is `DisplayInfo`, defined in `shared/display.zig` and in the
 SDK as `sdk.display.DisplayInfo`:
@@ -408,9 +412,69 @@ public information. The address of the framebuffer is not part of the
 structure, and the call cannot be used to write a pixel. A boot without a
 framebuffer answers with the error 22, `no_display`.
 
-The decision about the user-space graphics service, including the future
-capability of the display and the presentation call, is in
+The decision about the user-space graphics service, including the display
+capability and the presentation call, is in
 [`ADR-0015`](../adr/ADR-0015-user-space-graphics-service.md).
+
+### 5.9 `present`
+
+Copies a rectangle of pixels from a buffer of the user mode into the
+visible framebuffer. The call is the only path that writes pixels; the
+user mode never receives a mapping of the framebuffer.
+
+The caller has to hold the capability of the display: kind 2, subject 0,
+with the right of writing (`write`, value 8). The check happens before the
+request is read, so a process without the capability is refused with the
+error 10, `not_authorized`, and cannot use the call to probe the
+framebuffer.
+
+The request is `PresentRequest`, defined in `shared/display.zig` and in
+the SDK as `sdk.display.PresentRequest`:
+
+| Offset | Size | Field | Meaning |
+|-------:|-----:|-------|---------|
+| 0 | 4 | `version` | `present_version`, currently 1 |
+| 4 | 4 | `x` | left edge of the destination, in pixels |
+| 8 | 4 | `y` | top edge of the destination, in pixels |
+| 12 | 4 | `width` | width of the rectangle, in pixels |
+| 16 | 4 | `height` | height of the rectangle, in pixels |
+| 20 | 4 | `stride` | bytes between two rows of `buffer` |
+| 24 | 4 | `pixel_format` | must match the display; 0 RGB32 or 1 BGR32 |
+| 28 | 4 | `reserved` | zero in version 1 |
+| 32 | 8 | `buffer` | address of the first byte of the pixel buffer |
+| 40 | 8 | `length` | number of readable bytes in the pixel buffer |
+
+The structure is 48 bytes and has alignment 8. The buffer belongs to the
+caller and is only read. The source stride and the destination pitch may
+differ: the kernel copies each row of `width * 4` bytes from the source
+stride to the framebuffer pitch.
+
+The kernel validates, in this order:
+
+1. the caller is a process of the user mode;
+2. the caller holds the display capability with the right of writing;
+3. the request range is readable and has at least 48 bytes;
+4. `version` is `present_version` and `reserved` is zero;
+5. the rectangle is not empty and fits the visible display;
+6. the display is 32 bpp, `pixel_format` matches it and is RGB32 or BGR32;
+7. `stride` is at least `width * 4`, and `length` is at least
+   `stride * height`, with explicit overflow checks;
+8. `length` does not exceed 64 MiB;
+9. the pixel buffer is a readable range of the user with `length` bytes;
+10. the rectangle fits the mapped framebuffer.
+
+Only after the ten checks does the kernel copy the rows. The call returns
+zero on success. The copy is synchronous: when the call returns, the pixels
+are in the device. There is no queue, no double buffering and no vsync in
+version 11.
+
+A boot without a display, or a framebuffer that does not cover the
+rectangle, answers with the error 22, `no_display`. A version, stride or
+length that the kernel cannot accept answers with the error 3,
+`invalid_length`; a rectangle outside the display answers with the error
+23, `invalid_geometry`; a format that the display or the call does not
+support answers with the error 24, `invalid_format`; a buffer that is not a
+readable range answers with the error 2, `invalid_address`.
 
 ## 6. The result and the errors
 
@@ -422,7 +486,7 @@ the code of the error:
 |--------|------|-------------|
 | 1 | unknown call | the number of the call does not exist in this version |
 | 2 | invalid address | one of the ranges does not belong to the user mode |
-| 3 | invalid length | the length is zero or greater than the limit |
+| 3 | invalid length | the length, the stride or the version of the request is not acceptable |
 | 4 | not allowed | the call is not allowed at the privilege level of the caller |
 | 5 | empty queue | the side of the channel has no message |
 | 6 | unknown channel | the identifier of the channel does not exist |
@@ -441,17 +505,21 @@ the code of the error:
 | 19 | invalid name | the path or a component of it is not valid |
 | 20 | file too large | the file exceeds the limit of the file system |
 | 21 | I/O error | the file system refused the operation for another reason |
-| 22 | no display | the firmware did not provide a usable display |
+| 22 | no display | there is no usable display, or the framebuffer does not cover the rectangle |
+| 23 | invalid geometry | the rectangle is empty or leaves the visible display |
+| 24 | invalid format | the pixel format is not supported by the display or by the call |
 
-The limit of the length is **64 KiB** per call, and it exists so that the
-kernel does not spend an undetermined time inside a call. The
-`display_info` call is the exception: it writes at most 40 bytes and
-accepts a larger length so that a future, larger structure still works
-with this kernel.
+The limit of the length is **64 KiB** per call for the calls that copy a
+block, and it exists so that the kernel does not spend an undetermined time
+inside a call. `display_info` is an exception: it writes at most 40 bytes
+and accepts a larger length so that a future, larger structure still works
+with this kernel. `present` has its own limit of **64 MiB** for the pixel
+buffer, which bounds the copy.
 
 A result that is not negative is the number of bytes processed, and it is
 never negative, so that the user program tells the two cases apart without
-knowing the error codes.
+knowing the error codes. The calls whose contract says that they return
+zero (`fs_close`, `fs_mkdir` and `present`) return zero on success.
 
 ## 7. The rules of the contract
 
@@ -479,24 +547,28 @@ knowing the error codes.
     delegation unless the process that gives it asks for it explicitly.
 12. A change to the arguments of an existing call is a break of the
     contract, and it increments the version, as a new call does.
+13. A call that writes the display needs the capability of the display with
+    the right of writing, and the check of the capability happens **before**
+    the pixel buffer is touched.
 
-## 8. What version 10 does not have
+## 8. What version 11 does not have
 
 - **The capability that carries a memory range.** A capability is about a
   subject of the kernel, and a range of memory is not one of them.
 - **The rights of read and of execution over a process.** The capability
   of a process carries the right to write in its address space, and not the
   right to read it nor to execute its code.
-- **The capability of a device.** No driver exists to hold one, and there
-  is no display capability yet.
-- **A presentation or surface call.** `display_info` only reads geometry
-  and pixel layout. There is no call that writes pixels, allocates a
-  surface, shares a surface between processes or receives input events.
-  The design is in ADR-0015 and the implementation is the next increment.
+- **The capability of a generic device.** The display capability exists,
+  but there is no capability of a driver or of another device.
+- **Surface sharing and a user-space compositor.** `present` writes a
+  rectangle, but there is no call that allocates or shares a surface, no
+  window manager and no delivery of input events. The design is in
+  ADR-0015, and the compositor and the input events are the next
+  increment.
 - **The console and the files in the same call.** The `write` call knows
   only the console, and the file system has the calls 13 to 18. The
   `write` call does not accept a descriptor.
-- **Seek, stat, unlink and rename.** The version 10 opens, closes, reads,
+- **Seek, stat, unlink and rename.** The version 11 opens, closes, reads,
   writes, creates and creates directories, and nothing else.
 - **Descriptor passing.** A descriptor belongs to one process and cannot be
   passed to another; the channel carries a kind and a value, not a
@@ -593,6 +665,26 @@ without a change.
 The call is the first user-facing part of the graphics service. It returns
 the visible geometry and the pixel layout, but not the framebuffer base or
 mapping size. The user mode therefore learns how large the display is
-without receiving a way to write it. The decision, including the capability
-that a future presentation call will require, is in
+without receiving a way to write it. The decision, including the display
+capability and the presentation call, is in
 [`ADR-0015`](../adr/ADR-0015-user-space-graphics-service.md).
+
+## 14. The version 11
+
+The version 11 is **additive**. It adds the call 20, `present`, the
+capability of the display (kind 2, subject 0) and the errors 23,
+`invalid_geometry`, and 24, `invalid_format`. It does not change the number
+nor the meaning of any existing call. A program compiled against the
+version 10 keeps working without a change.
+
+The call copies a rectangle of pixels from a buffer of the user mode into
+the visible framebuffer. The framebuffer base and the mapping size remain
+private to the kernel; the capability carries the right to present, not the
+right to touch the device. The copy is synchronous, and the request is
+validated before any pixel is written. The contract has no double
+buffering, no vsync, no surface allocation and no input event yet.
+
+The design of the user-space graphics service is in
+[`ADR-0015`](../adr/ADR-0015-user-space-graphics-service.md). The
+compositor and the input events remain proposed; the display metadata and
+the presentation are the implemented part.
