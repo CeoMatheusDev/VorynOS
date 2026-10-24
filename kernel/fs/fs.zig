@@ -1259,3 +1259,41 @@ test "rename rejects noncanonical paths and directories without mutation" {
     try testing.expect(kindOf("/directory") != null);
     try close(0, fd);
 }
+
+test "cross mount rename preserves files and resources" {
+    init();
+    try namespace.mount("/alias", .ramfs);
+    const a = try open(0, "/a", O_CREAT | O_RDWR);
+    _ = try write(0, a, "alpha");
+    const b = try open(0, "/alias/b", O_CREAT | O_RDWR);
+    _ = try write(0, b, "beta");
+    const inode_a = (try stat("/a")).inode;
+    const inode_b = (try stat("/alias/b")).inode;
+    const blocks = freeBlockCount();
+    const inodes = freeInodeCount();
+    try testing.expectError(error.CrossMount, rename("/a", "/alias/b"));
+    try testing.expectError(error.CrossMount, rename("/alias/b", "/a"));
+    try testing.expectEqual(inode_a, (try stat("/a")).inode);
+    try testing.expectEqual(inode_b, (try stat("/alias/b")).inode);
+    try testing.expectEqual(blocks, freeBlockCount());
+    try testing.expectEqual(inodes, freeInodeCount());
+    try closeAll(0);
+}
+
+test "rename within mounted alias preserves checked descriptor" {
+    init();
+    try namespace.mount("/alias", .ramfs);
+    const fd = try open(0, "/alias/before", O_CREAT | O_RDWR);
+    _ = try write(0, fd, "value");
+    const handle = try checkedFd(0, fd);
+    const old_inode = (try stat("/alias/before")).inode;
+    try rename("/alias/before", "/alias/after");
+    try testing.expect(kindOf("/alias/before") == null);
+    try testing.expectEqual(old_inode, (try stat("/alias/after")).inode);
+    try testing.expectEqual(fd, try validateCheckedFd(0, handle));
+    try seek(0, fd, 0);
+    var buf: [8]u8 = undefined;
+    const n = try read(0, fd, &buf);
+    try testing.expectEqualStrings("value", buf[0..n]);
+    try closeAll(0);
+}
