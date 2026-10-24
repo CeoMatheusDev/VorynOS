@@ -633,9 +633,9 @@ fn releaseBlocks(inode_num: u32) void {
 }
 
 /// Substitui o conteúdo de um arquivo.
-pub fn writeFile(inode_num: u32, data: []const u8) Error!void {
-    if (inodeKind(inode_num) == null) return error.InvalidInode;
-    if (default_state.inodes[inode_num].i_type != .file) return error.NotAFile;
+pub fn writeFileFor(state: *State, inode_num: u32, data: []const u8) Error!void {
+    if (inodeKindFor(state, inode_num) == null) return error.InvalidInode;
+    if (state.inodes[inode_num].i_type != .file) return error.NotAFile;
 
     const required = try blocksFor(data.len);
 
@@ -645,27 +645,33 @@ pub fn writeFile(inode_num: u32, data: []const u8) Error!void {
     var allocated: usize = 0;
     errdefer {
         for (new_blocks[0..allocated]) |block| {
-            _ = freeBlock(block);
+            _ = freeBlockFor(state, block);
         }
     }
 
     while (allocated < required) : (allocated += 1) {
-        new_blocks[allocated] = allocateBlock() orelse return error.NoSpace;
+        new_blocks[allocated] = allocateBlockFor(state) orelse return error.NoSpace;
     }
 
     var offset: usize = 0;
     for (new_blocks[0..required]) |block| {
         const count = @min(block_size, data.len - offset);
         const start = @as(usize, block) * block_size;
-        @memcpy(default_state.memory[start..][0..count], data[offset..][0..count]);
+        @memcpy(state.memory[start..][0..count], data[offset..][0..count]);
         offset += count;
     }
 
-    releaseBlocks(inode_num);
-    for (&default_state.inodes[inode_num].i_block, 0..) |*slot, index| {
+    for (state.inodes[inode_num].i_block) |old_block| {
+        if (old_block != 0) _ = freeBlockFor(state, @intCast(old_block));
+    }
+    for (&state.inodes[inode_num].i_block, 0..) |*slot, index| {
         slot.* = if (index < required) new_blocks[index] else 0;
     }
-    default_state.inodes[inode_num].i_size = data.len;
+    state.inodes[inode_num].i_size = data.len;
+}
+
+pub fn writeFile(inode_num: u32, data: []const u8) Error!void {
+    return writeFileFor(&default_state, inode_num, data);
 }
 
 /// Escreve `data` em `offset`, sem apagar o restante do arquivo.
@@ -732,11 +738,11 @@ pub fn truncate(inode_num: u32, new_size: usize) Error!void {
 /// Lê o arquivo a partir de `offset` para o buffer do chamador e devolve o
 /// número de bytes lidos. O fim do arquivo devolve zero, como uma leitura
 /// de sistema de arquivos.
-pub fn readFileAt(inode_num: u32, offset: usize, buffer: []u8) Error!usize {
-    if (inodeKind(inode_num) == null) return error.InvalidInode;
-    if (default_state.inodes[inode_num].i_type != .file) return error.NotAFile;
+pub fn readFileAtFor(state: *const State, inode_num: u32, offset: usize, buffer: []u8) Error!usize {
+    if (inodeKindFor(state, inode_num) == null) return error.InvalidInode;
+    if (state.inodes[inode_num].i_type != .file) return error.NotAFile;
 
-    const size = @as(usize, @intCast(default_state.inodes[inode_num].i_size));
+    const size = @as(usize, @intCast(state.inodes[inode_num].i_size));
     if (offset >= size or buffer.len == 0) return 0;
 
     const count = @min(buffer.len, size - offset);
@@ -746,10 +752,10 @@ pub fn readFileAt(inode_num: u32, offset: usize, buffer: []u8) Error!usize {
         const block_index = position / block_size;
         const inside = position % block_size;
         const chunk = @min(block_size - inside, count - destination);
-        const block = @as(usize, @intCast(default_state.inodes[inode_num].i_block[block_index]));
+        const block = @as(usize, @intCast(state.inodes[inode_num].i_block[block_index]));
         @memcpy(
             buffer[destination..][0..chunk],
-            default_state.memory[block * block_size + inside ..][0..chunk],
+            state.memory[block * block_size + inside ..][0..chunk],
         );
         destination += chunk;
         position += chunk;
@@ -759,8 +765,16 @@ pub fn readFileAt(inode_num: u32, offset: usize, buffer: []u8) Error!usize {
 }
 
 /// Lê o arquivo desde o início.
+pub fn readFileFor(state: *const State, inode_num: u32, buffer: []u8) Error!usize {
+    return readFileAtFor(state, inode_num, 0, buffer);
+}
+
+pub fn readFileAt(inode_num: u32, offset: usize, buffer: []u8) Error!usize {
+    return readFileAtFor(&default_state, inode_num, offset, buffer);
+}
+
 pub fn readFile(inode_num: u32, buffer: []u8) Error!usize {
-    return readFileAt(inode_num, 0, buffer);
+    return readFileFor(&default_state, inode_num, buffer);
 }
 
 /// Lista as entradas de um diretório, sem `.` e `..`.
@@ -1609,4 +1623,37 @@ test "file creation rejects invalid parents without leaking inodes" {
     try testing.expectError(error.NotADirectory, createFileFor(&other, file, "child"));
     try testing.expectError(error.InvalidName, createDirectoryFor(&other, root_inode, ".."));
     try testing.expectEqual(before, freeInodeCountFor(&other));
+}
+
+test "independent RamFS volumes write and read separate file contents" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const left = try createFile(root_inode, "same");
+    const right = try createFileFor(&other, root_inode, "same");
+    try writeFile(left, "left");
+    try writeFileFor(&other, right, "right-hand");
+    var buffer: [16]u8 = undefined;
+    const right_len = try readFileFor(&other, right, &buffer);
+    try testing.expectEqualStrings("right-hand", buffer[0..right_len]);
+    const left_len = try readFile(left, &buffer);
+    try testing.expectEqualStrings("left", buffer[0..left_len]);
+    try testing.expectEqual(@as(usize, 2), storageStats().used_blocks);
+    try testing.expectEqual(@as(usize, 2), storageStatsFor(&other).used_blocks);
+    try audit();
+}
+
+test "per-volume write preserves old data on allocation failure" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const file = try createFileFor(&other, root_inode, "data");
+    try writeFileFor(&other, file, "original");
+    var remaining: [block_count - 2]u32 = undefined;
+    for (&remaining) |*slot| slot.* = allocateBlockFor(&other) orelse unreachable;
+    try testing.expectError(error.NoSpace, writeFileFor(&other, file, "new"));
+    var buffer: [16]u8 = undefined;
+    const count = try readFileFor(&other, file, &buffer);
+    try testing.expectEqualStrings("original", buffer[0..count]);
+    for (remaining) |block| try testing.expect(freeBlockFor(&other, block));
 }
