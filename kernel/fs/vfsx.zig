@@ -166,6 +166,18 @@ pub const Namespace = struct {
         return count;
     }
 
+    /// Checks that an existing route still owns its original path prefix.
+    /// This prevents accepting a route shadowed by a newer nested mount.
+    pub fn isCurrentPathRoute(self: *const Namespace, path: []const u8, route_info: Route) bool {
+        if (!self.isCurrentRoute(route_info)) return false;
+        const current = self.route(path) catch return false;
+        return current.slot == route_info.slot and
+            current.generation == route_info.generation and
+            current.volume_id == route_info.volume_id and
+            current.backend == route_info.backend and
+            std.mem.eql(u8, current.relative_path, route_info.relative_path);
+    }
+
     /// Checks that a cached route still refers to the same mount instance.
     /// A slot can be reused after umount, but its generation cannot.
     pub fn isCurrentRoute(self: *const Namespace, route_info: Route) bool {
@@ -395,4 +407,31 @@ test "checked unmount respects nested mounts and protects root" {
     try testing.expect(ns.isMountPoint("/data"));
     try testing.expect(ns.isMountPoint("/data/nested"));
     try testing.expectError(error.NotMounted, ns.umountChecked("/missing", parent.generation));
+}
+
+test "path route detects shadowing by nested mount" {
+    var ns: Namespace = .{};
+    ns.init();
+    try ns.mount("/apps", .ramfs);
+    const path = "/apps/data/file";
+    const old = try ns.route(path);
+    try testing.expect(ns.isCurrentPathRoute(path, old));
+    try ns.mount("/apps/data", .ramfs);
+    try testing.expect(ns.isCurrentRoute(old));
+    try testing.expect(!ns.isCurrentPathRoute(path, old));
+    const updated = try ns.route(path);
+    try testing.expect(ns.isCurrentPathRoute(path, updated));
+    try ns.umount("/apps/data");
+    try testing.expect(!ns.isCurrentPathRoute(path, updated));
+    try testing.expect(ns.isCurrentPathRoute(path, old));
+}
+
+test "path route rejects mismatched paths and malformed inputs" {
+    var ns: Namespace = .{};
+    ns.init();
+    const original = try ns.route("/one");
+    try testing.expect(ns.isCurrentPathRoute("/one", original));
+    try testing.expect(!ns.isCurrentPathRoute("/two", original));
+    try testing.expect(!ns.isCurrentPathRoute("/../one", original));
+    try testing.expect(!ns.isCurrentPathRoute("", original));
 }
