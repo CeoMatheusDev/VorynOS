@@ -108,6 +108,25 @@ pub const Namespace = struct {
         self.mounts[index] = .{};
     }
 
+    /// Returns whether a path is an exact active mount point.
+    /// This is independent of longest-prefix routing and does not allocate.
+    pub fn isMountPoint(self: *const Namespace, path: []const u8) bool {
+        if (!validPath(path)) return false;
+        for (self.mounts) |entry| {
+            if (entry.active and std.mem.eql(u8, entry.name(), path)) return true;
+        }
+        return false;
+    }
+
+    /// Returns the number of active mounts, including the root mount.
+    pub fn activeMountCount(self: *const Namespace) usize {
+        var count: usize = 0;
+        for (self.mounts) |entry| {
+            if (entry.active) count += 1;
+        }
+        return count;
+    }
+
     pub fn route(self: *const Namespace, path: []const u8) Error!Route {
         if (!validPath(path)) return error.InvalidPath;
         var best: ?usize = null;
@@ -189,4 +208,37 @@ test "mount table is bounded and freed slots can be reused" {
     try ns.umount("/b");
     try ns.mount("/z", .ramfs);
     try testing.expectEqualStrings("/", (try ns.route("/z")).relative_path);
+}
+
+test "mount metadata counts active entries without changing routing" {
+    var ns: Namespace = .{};
+    ns.init();
+    try testing.expectEqual(@as(usize, 1), ns.activeMountCount());
+    try testing.expect(ns.isMountPoint("/"));
+    try testing.expect(!ns.isMountPoint("/apps"));
+    try ns.mount("/apps", .ramfs);
+    try ns.mount("/apps/data", .ramfs);
+    try testing.expectEqual(@as(usize, 3), ns.activeMountCount());
+    try testing.expect(ns.isMountPoint("/apps"));
+    try testing.expect(ns.isMountPoint("/apps/data"));
+    try testing.expect(!ns.isMountPoint("/apps/data/file"));
+    try testing.expect(!ns.isMountPoint("/apps/../data"));
+    try ns.umount("/apps/data");
+    try testing.expectEqual(@as(usize, 2), ns.activeMountCount());
+    try testing.expect(!ns.isMountPoint("/apps/data"));
+    try testing.expectEqualStrings("/data/file", (try ns.route("/apps/data/file")).relative_path);
+}
+
+test "mount routing preserves component boundaries and slot reuse" {
+    var ns: Namespace = .{};
+    ns.init();
+    try ns.mount("/vol", .ramfs);
+    const slot = (try ns.route("/vol/file")).slot;
+    try testing.expect(slot != 0);
+    try testing.expectEqual(@as(usize, 0), (try ns.route("/volume/file")).slot);
+    try ns.umount("/vol");
+    try testing.expectEqual(@as(usize, 0), (try ns.route("/vol/file")).slot);
+    try ns.mount("/other", .ramfs);
+    try testing.expectEqual(slot, (try ns.route("/other/file")).slot);
+    try testing.expectEqualStrings("/file", (try ns.route("/other/file")).relative_path);
 }
