@@ -25,6 +25,20 @@
 
 ---
 
+## Strategic priority — Native graphical desktop (F6)
+
+**The primary product-development focus is a fully native VorynOS graphical interface.** The goal is an independent, interactive desktop running on the VorynOS kernel, not a Linux/BSD-hosted shell or a graphical mockup. Work on F4/F5 and kernel isolation remains necessary where it unblocks safe graphics and native applications.
+
+Development on `feat/native-sdk` should incrementally deliver:
+
+1. **Reliable display and input:** validated framebuffer presentation, keyboard and pointer input, and a persistent event loop in QEMU.
+2. **Interactive window management:** focus, movement, stacking, clipping, incremental redraw, and reproducible input-to-pixel tests.
+3. **Protected graphics service:** explicit ownership of graphical resources, per-process surfaces, validated shared buffers, capability checks, and a stable user-mode ABI.
+4. **Voryn Desktop:** native shell, window decorations, launcher, task switching, and an initial terminal/file browser built with the native SDK.
+5. **Quality gates:** Zig 0.17.0 compilation, unit tests, QEMU interaction tests, framebuffer comparisons, fault isolation, and measured frame latency and memory use.
+
+**Current status:** F6 is experimental on this branch. Existing raster, compositor, dirty-region and input modules are foundations, **not** proof of a finished desktop. Do not mark the graphical desktop complete until an interactive Ring 3 application can create and update a window through a permission-checked interface and automated QEMU tests verify the resulting input and pixels. Preserve the existing syscall ABI and document any compatible extension before implementation.
+
 ## Overview
 
 **VorynOS** is an independent operating system project developed primarily in **Zig**, using **x86_64 Assembly** for operations requiring direct control over the processor architecture.
