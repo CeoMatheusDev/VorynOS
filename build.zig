@@ -270,6 +270,19 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(compositor_tests).step);
 
+    // F6.28: composição de janelas no buffer do modo usuário, sem syscalls
+    // nem acesso ao framebuffer.
+    const user_composition_test_module = b.createModule(.{
+        .root_source_file = b.path("user/composition.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const user_composition_tests = b.addTest(.{
+        .name = "user-composition-tests",
+        .root_module = user_composition_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(user_composition_tests).step);
+
     // F6.4: rastreamento de regiões modificadas e mutações de janelas.
     const damage_test_module = b.createModule(.{
         .root_source_file = b.path("kernel/graphics/damage.zig"),

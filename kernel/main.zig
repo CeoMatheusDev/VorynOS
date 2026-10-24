@@ -438,6 +438,18 @@ fn userTimeoutAddress() u64 {
     return userDataAddress() + usermode.data_timeout;
 }
 
+/// The address of the word that holds the result of the presentation that
+/// a process without the display capability made.
+fn userPresentRefusedAddress() u64 {
+    return userDataAddress() + usermode.data_present_refused;
+}
+
+/// The address of the word that holds the result of the input call that a
+/// process without the input capability made.
+fn userInputRefusedAddress() u64 {
+    return userDataAddress() + usermode.data_input_refused;
+}
+
 /// The address of the thirteenth word of the page of data of the user mode.
 ///
 /// The copy to the other process writes there the block that it copied.
@@ -1953,6 +1965,48 @@ fn reportCapabilities() void {
     } else {
         serial.printLine("[VNK] user: the grant with the rights of another kind was not refused, the result is 0x{x}", .{
             rights_refused,
+        });
+    }
+
+    // F6.28: the third process holds no display capability. The
+    // presentation call has to answer with the error of the missing
+    // capability, even though the request address and length are invalid:
+    // the capability check comes before the request is read.
+    attempts = 0;
+    var present_refused: u64 = 0;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        present_refused = userWord(stranger, userPresentRefusedAddress());
+        if (present_refused != 0) break;
+        cpu.halt();
+    }
+
+    if (present_refused == expected) {
+        serial.printLine("[VNK] user: the presentation without the display capability was refused with the error {d}", .{
+            syscall.Error.not_authorized,
+        });
+    } else {
+        serial.printLine("[VNK] user: the presentation without the display capability was not refused, the result is 0x{x}", .{
+            present_refused,
+        });
+    }
+
+    // The input call of the same process: the capability is checked before
+    // the output range and before an event is popped.
+    attempts = 0;
+    var input_refused: u64 = 0;
+    while (attempts < 10_000_000) : (attempts += 1) {
+        input_refused = userWord(stranger, userInputRefusedAddress());
+        if (input_refused != 0) break;
+        cpu.halt();
+    }
+
+    if (input_refused == expected) {
+        serial.printLine("[VNK] user: the input without the input capability was refused with the error {d}", .{
+            syscall.Error.not_authorized,
+        });
+    } else {
+        serial.printLine("[VNK] user: the input without the input capability was not refused, the result is 0x{x}", .{
+            input_refused,
         });
     }
 

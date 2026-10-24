@@ -361,6 +361,8 @@ voryn_capture_context:
  *   0x90  the result of the revocation of the address space
  *   0x98  the result of the grant with a kind that does not exist
  *   0xa0  the result of the grant with the rights of another kind
+ *   0xb0  the result of the presentation without the display capability
+ *   0xb8  the result of the input call without the input capability
  */
 .global voryn_user_program
 .type voryn_user_program, @function
@@ -505,6 +507,27 @@ voryn_user_program:
     movq $9, %rax             /* the number of the system call */
     syscall
     leaq 0x10A0(%rbx), %rdi
+    movq %rax, (%rdi)
+
+    /* F6.28: the process does not hold the display capability, and the
+     * presentation call has to be refused **before** the request is read.
+     * The arguments are deliberately invalid; a kernel that read the
+     * request first would answer with an address or length error instead
+     * of the capability error. */
+    movq $0, %rdi             /* an invalid request address */
+    movq $0, %rsi             /* an invalid request length */
+    movq $20, %rax            /* the number of the presentation call */
+    syscall
+    leaq 0x10B0(%rbx), %rdi
+    movq %rax, (%rdi)
+
+    /* The input call follows the same order: the capability is checked
+     * before the output range and before an event is popped. */
+    movq $0, %rdi             /* an invalid event address */
+    movq $0, %rsi             /* an invalid event length */
+    movq $21, %rax            /* the number of the input call */
+    syscall
+    leaq 0x10B8(%rbx), %rdi
     movq %rax, (%rdi)
 
     movabsq $0x0, %rdi

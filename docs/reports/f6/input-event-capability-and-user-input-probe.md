@@ -261,3 +261,11 @@ O F6.28 deve iniciar o compositor de usuário:
 - `docs/roadmap/phase-status.md`
 - `README.md`
 - `docs/reports/f6/input-event-capability-and-user-input-probe.md` (novo)
+
+**Nota posterior (F6.28):** a composição foi implementada no próprio
+processo nativo, e não em um processo de compositor separado. O F6.28
+entregou o módulo de composição, o quadro de 32x24, a comparação do
+screenshot P6 e as recusas de `present`/`input_poll` sem capability. O
+compositor separado, o compartilhamento de superfícies, o foco, o cursor e
+a fila por processo continuam como próximo incremento (F6.29 proposto).
+Ver [`user-space-composition-and-presentation-refusal.md`](user-space-composition-and-presentation-refusal.md).

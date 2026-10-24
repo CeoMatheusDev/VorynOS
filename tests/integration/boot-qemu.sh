@@ -137,6 +137,7 @@ WORK_DIRECTORY="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIRECTORY"' EXIT
 
 SERIAL_LOG="$WORK_DIRECTORY/serial.log"
+SCREENSHOT="$WORK_DIRECTORY/presentation.ppm"
 cp "$OVMF_VARS_PATH" "$WORK_DIRECTORY/vars.fd"
 
 echo "qemu-boot-test: booting $IMAGE (firmware: $OVMF_CODE_PATH, format: $OVMF_CODE_FORMAT)"
@@ -165,6 +166,7 @@ QEMU_PID=$!
 # not run until the timeout when the kernel is already at the end.
 DEADLINE=$(( SECONDS + TIMEOUT ))
 KEY_SENT=0
+SCREENSHOT_TAKEN=0
 
 while (( SECONDS < DEADLINE )); do
     if [[ "$KEY_SENT" -eq 0 ]] && grep -qF "[VNK] keyboard: ready for PS/2 input" "$SERIAL_LOG" 2>/dev/null; then
@@ -183,6 +185,86 @@ PY
             KEY_SENT=1
         fi
     fi
+
+    # F6.28: the application holds the composed frame until it receives Q.
+    # Capture the P6 screenshot first and only then release the application,
+    # so the screenshot is taken while the user-space pixels are visible.
+    if [[ "$SCREENSHOT_TAKEN" -eq 0 ]] && grep -qF "composition ready frame=32x24 at=0,0 checksum=0x" "$SERIAL_LOG" 2>/dev/null; then
+        if python3 - "$WORK_DIRECTORY/monitor.sock" "$SCREENSHOT" <<'PY'
+import os
+import socket
+import sys
+import time
+
+monitor_path, screenshot_path = sys.argv[1], sys.argv[2]
+if os.path.exists(screenshot_path):
+    os.unlink(screenshot_path)
+
+until = time.monotonic() + 2.0
+monitor = None
+while time.monotonic() < until:
+    candidate = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    candidate.settimeout(0.5)
+    try:
+        candidate.connect(monitor_path)
+        monitor = candidate
+        break
+    except OSError:
+        candidate.close()
+        time.sleep(0.02)
+if monitor is None:
+    sys.exit("monitor connection unavailable")
+
+buffer = b""
+
+def read_prompt():
+    global buffer
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if buffer.endswith(b"(qemu) "):
+            response = buffer
+            buffer = b""
+            return response
+        try:
+            chunk = monitor.recv(4096)
+        except socket.timeout:
+            continue
+        if not chunk:
+            raise OSError("QEMU monitor disconnected")
+        buffer += chunk
+        if len(buffer) > 1048576:
+            raise OSError("QEMU monitor response exceeds 1 MiB")
+    raise TimeoutError("QEMU monitor prompt timeout")
+
+try:
+    monitor.settimeout(0.5)
+    read_prompt()
+    monitor.sendall(("screendump " + screenshot_path + "\n").encode("ascii"))
+    response = read_prompt()
+    if b"unknown command" in response.lower() or b"error:" in response.lower():
+        sys.exit("QEMU monitor rejected screendump: " + repr(response[-300:]))
+
+    captured = False
+    for _ in range(200):
+        if os.path.isfile(screenshot_path) and os.path.getsize(screenshot_path) > 100:
+            captured = True
+            break
+        time.sleep(0.02)
+    if not captured:
+        sys.exit("QEMU screendump missing")
+
+    monitor.sendall(b"sendkey q 50\n")
+    response = read_prompt()
+    if b"unknown command" in response.lower() or b"error:" in response.lower():
+        sys.exit("QEMU monitor rejected sendkey q: " + repr(response[-300:]))
+finally:
+    monitor.close()
+PY
+        then
+            SCREENSHOT_TAKEN=1
+        fi
+    fi
+
     if grep -q "VORYN-KERNEL-READY" "$SERIAL_LOG" 2>/dev/null; then
         # The self test of the kernel runs after the marker, and the
         # console needs a moment to write the rest of the report.
@@ -280,6 +362,9 @@ require_pattern '\[VNK\] syscall 21 from user input_poll result 0x1' 'the input 
 require_marker "input event scancode=0x4d pressed=1 extended=1"
 require_pattern '\[VNK\] display: present 16x16 at 16,0 first=0xff' 'the input-driven presentation'
 require_marker "input present x=16 y=0"
+require_pattern '\[VNK\] display: present 32x24 at 0,0 first=0x606060' 'the composed frame read back'
+require_pattern 'composition ready frame=32x24 at=0,0 checksum=0x[0-9a-f]{16}' 'the user-space composition checksum'
+require_marker "composition released"
 require_pattern '\[VNK\] tasks: [0-9]+ ready' 'the report of the ready tasks'
 require_pattern '\[VNK\] tasks: [0-9]+ blocks' 'the report of the blocked tasks'
 require_marker "switch cost"
@@ -314,6 +399,8 @@ require_marker "[VNK] syscall 10 from user took the capability of the process 1 
 require_marker "[VNK] capabilities: the calls delegated the address space of the process 1 to the process 2 and took it back"
 require_marker "[VNK] user: the grant with an unknown kind was refused with the error 11"
 require_marker "[VNK] user: the grant with the rights of another kind was refused with the error 12"
+require_marker "[VNK] user: the presentation without the display capability was refused with the error 10"
+require_marker "[VNK] user: the input without the input capability was refused with the error 10"
 require_pattern '\[VNK\] capabilities: the channel 1 belongs to the process [0-9]+' 'the capability of the channel of the timeout'
 require_marker "[VNK] syscall 11 from user"
 require_marker "[VNK] user: the wait with a timeout expired with the error 13"
@@ -323,6 +410,24 @@ require_marker "[VNK] user: the copy between the two processes moved 8 bytes"
 require_marker "VORYN-KERNEL-READY"
 require_marker "[VNK] self test: the handler returned 0x42"
 require_marker "[VNK] EXCEPTION 6: invalid opcode"
+
+# F6.28: compare the pixels captured while the application was holding the
+# composed frame. The checksum comes from the application's own buffer, so
+# the test detects a wrong rectangle, a wrong stride or a lost pixel, not
+# only the presence of the serial marker.
+COMPOSITION_HASH="$(grep -oE 'composition ready frame=32x24 at=0,0 checksum=0x[0-9a-f]+' "$SERIAL_LOG" | tail -1 | sed -E 's/.*checksum=0x//')"
+if [[ "$SCREENSHOT_TAKEN" -ne 1 || ! -s "$SCREENSHOT" ]]; then
+    echo "FAIL: no presentation screenshot was captured" >&2
+    FAILURES=$((FAILURES + 1))
+elif [[ -z "$COMPOSITION_HASH" ]]; then
+    echo "FAIL: the composition checksum is missing from the serial console" >&2
+    FAILURES=$((FAILURES + 1))
+elif python3 tests/integration/compare-presentation.py "$SCREENSHOT" 0 0 32 24 "$COMPOSITION_HASH"; then
+    echo "ok: QEMU screenshot matches the user-space composition"
+else
+    echo "FAIL: the QEMU screenshot does not match the user-space composition" >&2
+    FAILURES=$((FAILURES + 1))
+fi
 
 if grep -qF "FATAL" "$SERIAL_LOG"; then
     echo "FAIL: the boot chain reported a fatal error" >&2

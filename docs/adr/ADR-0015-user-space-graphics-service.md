@@ -17,7 +17,7 @@
 | **Status** | ACCEPTED |
 | **Date** | 2026-10-24 |
 | **Scope** | Graphics, system calls and process isolation |
-| **Implementation** | `display_info`, `present` and `input_poll` TESTED LOCALLY; the compositor, the window manager and the input service PROPOSED |
+| **Implementation** | `display_info`, `present`, `input_poll`, the F6.28 user-space composition demo, screenshot comparison and capability-refusal tests TESTED LOCALLY; the full compositor, window manager, focus, cursor, surface sharing and input service PROPOSED |
 
 ## 1. Context
 
@@ -112,11 +112,13 @@ refused with the error 10, `not_authorized`.
 
 The first implementation has one compositor. In F6.26 the native toolchain
 application is the compositor stand-in: it receives the capability at boot
-and presents a 16x16 probe. The user-space compositor of F6.28 will receive
-the same capability; the kernel does not change the authority model for the
-demo. The capability model is used from the beginning, because adding it
-later would change the security properties of every existing presentation
-path.
+and presents a 16x16 probe. In F6.28 the same application composes a 32x24
+frame in its own memory before presenting one validated rectangle. It
+receives the same capability, and the kernel does not change the authority
+model for the demo. A separate compositor process that receives client
+surfaces remains proposed. The capability model is used from the beginning,
+because adding it later would change the security properties of every
+existing presentation path.
 
 ### 2.4 Input is a capability and a queue
 
@@ -144,7 +146,8 @@ event structure.
 
 The first input call is a probe, not a full input service. It has no
 blocking form, no pointer or mouse event, no focus and no timestamp. Those
-belong to the compositor and window manager increment (F6.28). The keyboard
+remain proposed for a later compositor and window-manager increment; F6.28
+only adds the visual frame and the capability-refusal tests. The keyboard
 interrupt handler never calls into a user process, and the service never
 reads the PS/2 controller directly.
 
@@ -156,11 +159,18 @@ memory. Sharing a surface between a client and the compositor requires a
 memory capability, which the contract does not have yet; that is a later
 increment.
 
-The compositor will draw the window decorations and the window contents
-into its own buffer and present the damaged rectangle. The kernel will not
-know about windows in the final design: it will know about the display and
-the validated rectangle. The window list, the focus and the z-order belong
-to the user-space service.
+F6.28 implements the first half of that model in the native application:
+`user/composition.zig` composes opaque windows in a process-owned surface,
+and the application presents one validated rectangle. The demo uses a 32x24
+grayscale frame, so the P6 screenshot comparison does not depend on the
+RGB/BGR order of the framebuffer. It has no client surface, focus, cursor or
+window manager; the kernel remains window-agnostic.
+
+A dedicated compositor will draw the window decorations and the window
+contents into its own buffer and present the damaged rectangle. The kernel
+will not know about windows in the final design: it will know about the
+display and the validated rectangle. The window list, the focus and the
+z-order belong to the user-space service.
 
 ## 3. Alternatives considered
 
@@ -210,6 +220,9 @@ bottleneck.
   the errors 23 and 24; it is additive.
 - Version 12 adds the call 21, `input_poll`, the input capability kind and
   the error 25; it is additive.
+- F6.28 does **not** change the ABI: it keeps version 12, adds no call,
+  capability kind or error, and only uses the existing `present` and
+  `input_poll`. The composition module lives in the user space.
 - The existing calls keep their numbers and meanings.
 
 ### 4.2 Security
@@ -225,6 +238,9 @@ bottleneck.
 - The input capability is checked before the output is touched and before
   an event is popped, so a process without the authority cannot drain the
   queue, and a bad address cannot lose an event.
+- The F6.28 frame is a stack buffer of the caller; `present` still validates
+  it as a readable user range, and the process still has no framebuffer
+  mapping.
 - The copy is bounded by the visible rectangle, by the 64 MiB presentation
   bound and by the framebuffer mapping that the kernel verified.
 
@@ -237,8 +253,10 @@ bottleneck.
   possible, and it is documented as a limitation.
 - The release build measured 3.79 ms per arrow for the kernel compositor.
   The F6.26 presentation and the F6.27 input-driven probe are 16x16
-  rectangles, not frame paths; F6.28 will instrument the user-space
-  compositor with the same TSC and QEMU harness.
+  rectangles, not frame paths. F6.28 validates a 32x24 composition and its
+  exact pixels, but it does not yet measure composition or copy latency; the
+  same TSC and QEMU harness can be applied when the composition moves to a
+  dedicated process.
 
 ### 4.4 Tests
 
@@ -256,10 +274,14 @@ bottleneck.
   polls before the key arrives.
 - A host test for the `InputEvent` layout, the flags, the version and the
   input capability kind and rights.
-- A host test that a process without the display capability is refused by
-  the capability check. A separate user process that exercises the refusal
-  through the `present` call in QEMU is F6.28.
-- The full screenshot comparison of a user-space frame is F6.28.
+- Host tests for the user-space composition module: clipping, z-order,
+  checksum, padding and invalid geometry (F6.28).
+- A QEMU test that a process without the display and input capabilities is
+  refused by `present` and `input_poll` before the request or output range
+  is read; the refusal is exercised by the third user process (F6.28).
+- A QEMU screenshot of the 32x24 frame composed by the native application,
+  compared pixel by pixel with the FNV-1a checksum published by the
+  application (F6.28).
 
 ## 5. Increments
 
@@ -268,7 +290,8 @@ bottleneck.
 | F6.25 | `display_info`, ABI 10, native SDK query, user stack alignment fix | TESTED LOCALLY |
 | F6.26 | display capability, `present`, ABI 11, validated rectangle, 16x16 probe | TESTED LOCALLY |
 | F6.27 | input capability, `input_poll`, ABI 12, user-space input probe and input-driven presentation | TESTED LOCALLY |
-| F6.28 | user-space compositor demo, window manager, focus, cursor, screenshot verification and the first desktop shell | PROPOSED |
+| F6.28 | user-space composition module, 32x24 frame, P6 screenshot verification, `present`/`input_poll` refusal tests and user window layout adjustment | TESTED LOCALLY |
+| F6.29 | dedicated compositor process, surface sharing and memory capability, window manager, focus, cursor, per-process or blocking input | PROPOSED |
 
 The F6.25 increment also fixed a latent ABI bug: user tasks started with a
 16-byte-aligned `RSP`, while a function entry expects `RSP + 8` to be
@@ -281,8 +304,8 @@ The F6.26 increment keeps the diagnostic kernel scene as the boot
 background. After the toolchain task terminates, the kernel draws the scene
 again, so the interactive screenshot test starts from the scene that the
 kernel owns. The presentation is proven by the serial read-back of the
-first pixel, not by a persistent rectangle; the full user-space frame is
-F6.28.
+first pixel, not by a persistent rectangle; the first user-space composed
+frame is delivered by F6.28.
 
 The F6.27 increment adds the input capability and the non-blocking
 `input_poll`. The native SDK application is still the graphics stand-in: it
@@ -292,8 +315,22 @@ presents the same probe at (16,0). The boot test sends `A` and `right` for
 the kernel; the user queue receives the right arrow while the diagnostic
 queue keeps the kernel's copy. The test therefore covers the capability
 grant, the syscall, the event decoding, the user-side validation and the
-input-driven presentation. The full compositor, the window manager and the
-screenshot comparison remain F6.28.
+input-driven presentation.
+
+The F6.28 increment adds `user/composition.zig`, which composes opaque
+windows with clipping and z-order in a surface owned by the process. The
+native application composes a 32x24 grayscale frame and presents it through
+the existing `present` call; the kernel remains unaware of the window list.
+The boot test captures a P6 screenshot through HMP while the application
+holds the frame, compares the 32x24 region with the FNV-1a checksum
+published by the application and releases the application with `Q`. A third
+user process calls `present` and `input_poll` without the display and input
+capabilities; both calls are refused with the error 10 before the request
+or output range is read. The user window was widened from `0x5000` to
+`0x6000` and the stack moved from `0x3000` to `0x4000` because the native
+ELF writable segment ends at `0x4000`; this is a layout adjustment, not an
+ABI change. The full compositor, surface sharing, window manager, focus,
+cursor and input service remain F6.29.
 
 ## 6. References
 
@@ -313,5 +350,7 @@ screenshot comparison remain F6.28.
   — the F6.26 report.
 - [`docs/reports/f6/input-event-capability-and-user-input-probe.md`](../reports/f6/input-event-capability-and-user-input-probe.md)
   — the F6.27 report.
+- [`docs/reports/f6/user-space-composition-and-presentation-refusal.md`](../reports/f6/user-space-composition-and-presentation-refusal.md)
+  — the F6.28 report.
 - [`docs/reports/f6/input-latency-and-exposed-strip-damage.md`](../reports/f6/input-latency-and-exposed-strip-damage.md)
   — the F6.24 measurements.

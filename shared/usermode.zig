@@ -23,7 +23,12 @@ pub const code_offset: u64 = 0x0000;
 pub const data_offset: u64 = 0x1000;
 
 /// The offset of the first page of the stack inside the window.
-pub const stack_offset: u64 = 0x3000;
+///
+/// The native ELF image places its writable segment below this offset. The
+/// F6.28 composition code made that segment end exactly at 0x4000, so the
+/// stack starts at the next page instead of at 0x3000. The materializer
+/// still rejects any segment or stack page that leaves the window.
+pub const stack_offset: u64 = 0x4000;
 
 /// The number of pages of the stack of the user mode.
 pub const stack_pages: u64 = 2;
@@ -94,6 +99,12 @@ pub const data_kind_refused: u64 = 0x98;
 pub const data_rights_refused: u64 = 0xA0;
 /// The result of the wait with a timeout.
 pub const data_timeout: u64 = 0xA8;
+/// The result of the presentation that a process without the display
+/// capability made.
+pub const data_present_refused: u64 = 0xB0;
+/// The result of the input call that a process without the input capability
+/// made.
+pub const data_input_refused: u64 = 0xB8;
 
 /// The block that the program of the user mode writes for the copy with the
 /// overlapping ranges.
@@ -105,6 +116,11 @@ const testing = std.testing;
 test "the window does not hold two pages in the same place" {
     try testing.expect(code_offset != data_offset);
     try testing.expect(data_offset != stack_offset);
+    try testing.expectEqual(@as(u64, 0), code_offset % 0x1000);
+    try testing.expectEqual(@as(u64, 0), data_offset % 0x1000);
+    try testing.expectEqual(@as(u64, 0), stack_offset % 0x1000);
+    try testing.expect(stack_offset >= data_offset + 0x1000);
+    try testing.expectEqual(@as(u64, 0), window_size % 0x1000);
     try testing.expect(stack_offset + stack_pages * 0x1000 == window_size);
 }
 
@@ -131,6 +147,8 @@ test "the words of the page of the data do not overlap" {
         data_kind_refused,
         data_rights_refused,
         data_timeout,
+        data_present_refused,
+        data_input_refused,
     };
 
     for (words, 0..) |word, index| {

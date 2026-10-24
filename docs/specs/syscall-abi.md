@@ -622,8 +622,9 @@ byte count.
 - **Surface sharing and a user-space compositor.** `present` writes a
   rectangle and `input_poll` delivers one key event, but there is no call
   that allocates or shares a surface, no window manager, no per-process
-  input queue, no pointer and no focus. The design is in ADR-0015, and the
-  compositor and the window manager are the next increment.
+  input queue, no pointer and no focus. F6.28 added a user-space
+  composition demo and a screenshot comparison, but the surface-sharing
+  call and the full compositor remain proposed in ADR-0015.
 - **The console and the files in the same call.** The `write` call knows
   only the console, and the file system has the calls 13 to 18. The
   `write` call does not accept a descriptor.
@@ -764,6 +765,10 @@ non-blocking and returns 1 when it wrote an event and 0 when the queue is
 empty; the output is validated before an event is popped.
 
 The version has no blocking input wait, no per-process input queue, no
-pointer or mouse event, no focus and no window manager. The full compositor
-and window manager remain proposed in
+pointer or mouse event, no focus and no window manager. F6.28 does not
+change the version 12 contract: it adds the user-space composition module
+and the QEMU screenshot comparison outside the syscall interface, and a
+third user process exercises the refusal of `present` and `input_poll`
+without the display and input capabilities. The full compositor and window
+manager remain proposed in
 [`ADR-0015`](../adr/ADR-0015-user-space-graphics-service.md).
