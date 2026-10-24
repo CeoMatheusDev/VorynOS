@@ -376,6 +376,11 @@ pub fn freeBlockCount() usize {
     return ramfs.freeBlockCount();
 }
 
+/// Inodes livres do RamFS, para diagnóstico e testes de recuperação.
+pub fn freeInodeCount() usize {
+    return ramfs.freeInodeCount();
+}
+
 /// Tipo do inode de um caminho, ou `null` quando ele não existe.
 pub fn kindOf(path: []const u8) ?inode.InodeType {
     const target = ramfs.resolvePath(backendPath(path) catch return null) catch return null;
