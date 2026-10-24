@@ -67,6 +67,7 @@ const keyboard = @import("voryn_keyboard");
 var graphics_front_x: usize = 0;
 var graphics_front_y: usize = 0;
 var graphics_ready: bool = false;
+var graphics_desktop: ?desktop_mod.Desktop = null;
 // F6.11: tecla I (Set 1, 0x17) seleciona o modo interativo durante o boot.
 var interactive_requested: bool = false;
 
@@ -915,7 +916,7 @@ fn presentGraphicsDemo() void {
     const back: [4]u8 = if (is_bgr) .{ 0x70, 0x36, 0x1e, 0 } else .{ 0x1e, 0x36, 0x70, 0 };
     // F10: the boot scene now uses the managed window session and bridge.
     // Keep the legacy keyboard redraw path until it is migrated separately.
-    var desktop = desktop_mod.Desktop.init(width, height, .{
+    graphics_desktop = desktop_mod.Desktop.init(width, height, .{
         .background = background,
         .active = front,
         .inactive = back,
@@ -927,7 +928,7 @@ fn presentGraphicsDemo() void {
         .bytes = ptr[0..size], .width = width, .height = height,
         .pitch = pitch, .bits_per_pixel = framebuffer.bits_per_pixel,
     };
-    _ = desktop.present(mapping) catch |err| {
+    _ = graphics_desktop.?.present(mapping) catch |err| {
         serial.printLine("[VNK] graphics: desktop presentation failed: {s}", .{@errorName(err)});
         return;
     };
@@ -957,20 +958,17 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
     const pitch: usize = @intCast(framebuffer.pitch);
     const size: usize = @intCast(framebuffer.size);
     const ptr: [*]u8 = @ptrFromInt(framebuffer.base);
-    var surface = (framebuffer_bridge.Mapping{ .bytes = ptr[0..size], .width = width, .height = height, .pitch = pitch, .bits_per_pixel = framebuffer.bits_per_pixel }).surface() catch return;
-    const masks_absent = framebuffer.red_mask == 0 and framebuffer.green_mask == 0 and framebuffer.blue_mask == 0;
-    const is_bgr = if (masks_absent) framebuffer.pixel_format == .bgr32 else framebuffer.red_mask == 0x00ff0000;
-    const background: [4]u8 = if (is_bgr) .{ 0x20, 0x17, 0x10, 0 } else .{ 0x10, 0x17, 0x20, 0 };
-    const front: [4]u8 = if (is_bgr) .{ 0xb0, 0x86, 0x30, 0 } else .{ 0x30, 0x86, 0xb0, 0 };
-    const back: [4]u8 = if (is_bgr) .{ 0x70, 0x36, 0x1e, 0 } else .{ 0x1e, 0x36, 0x70, 0 };
-    var windows = [_]compositor.Window{
-        .{ .x = width / 8, .y = height / 8, .width = width / 2, .height = height / 2, .color = back },
-        .{ .x = graphics_front_x, .y = graphics_front_y, .width = width / 2, .height = height / 3, .color = front },
+    const desktop = &(graphics_desktop orelse return);
+    const slot = desktop.frame.session_state.windows.slots[desktop.front.slot];
+    if (!slot.occupied or slot.generation != desktop.front.generation) return;
+    const current = slot.window;
+    var next: compositor.Window = .{
+        .x = current.x, .y = current.y,
+        .width = current.width, .height = current.height,
+        .color = .{ 0, 0, 0, 0 },
     };
-    var next = windows[1];
     const bounds: compositor.Rect = .{ .x = 0, .y = 0, .width = width, .height = height };
     const setup_done = cpu.readTimestamp();
-
     const moved = keyboard_motion.move(&next, bounds, event, @max(@as(usize, 1), width / 32));
     const motion_done = cpu.readTimestamp();
     serial.printLine("[VNK] graphics: arrow ack scancode=0x{x} moved={d} x={d} y={d}", .{
@@ -981,14 +979,21 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
         recordArrowPerf(start, setup_done, motion_done, ack_done, ack_done, ack_done, 0);
         return;
     }
-    var tracker: damage.Tracker = .{};
-    damage.updateWindow(&tracker, bounds, &windows[1], next);
-    // Render the updated geometry, not the stale window coordinates.
-    windows[1] = next;
-    const pixels = tracker.redraw(&surface, background, &windows);
+    desktop.moveFront(next.x, next.y) catch |err| {
+        serial.printLine("[VNK] graphics: window move failed: {s}", .{@errorName(err)});
+        return;
+    };
+    const rendered = desktop.present(.{
+        .bytes = ptr[0..size], .width = width, .height = height,
+        .pitch = pitch, .bits_per_pixel = framebuffer.bits_per_pixel,
+    }) catch |err| {
+        serial.printLine("[VNK] graphics: redraw failed: {s}", .{@errorName(err)});
+        return;
+    };
     const render_done = cpu.readTimestamp();
     graphics_front_x = next.x;
     graphics_front_y = next.y;
+    const pixels: usize = if (rendered) width *| height else 0;
     serial.printLine("[VNK] graphics: keyboard move x={d} y={d} redraw={d} pixels", .{ next.x, next.y, pixels });
     const end = cpu.readTimestamp();
     recordArrowPerf(start, setup_done, motion_done, ack_done, render_done, end, pixels);
