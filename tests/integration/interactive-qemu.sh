@@ -185,6 +185,7 @@ stage_origin = None
 before_path = os.path.join(work_dir, "before.ppm")
 after_path = os.path.join(work_dir, "after.ppm")
 movement_pattern = re.compile(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)")
+ack_pattern = re.compile(r"\[VNK\] graphics: arrow ack scancode=0x([0-9a-f]+) moved=([01]) x=(\d+) y=(\d+)")
 
 def monitor_command(command):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
@@ -229,6 +230,7 @@ def expected_move(position, key, width, height):
     return (x, max(0, y - step_size))
 
 baseline = 0
+ack_baseline = 0
 no_op_deadline = None
 while time.monotonic() < deadline:
     try:
@@ -272,14 +274,26 @@ while time.monotonic() < deadline:
             steps *= 3
             print(f"ok: stress route has {len(steps)} acknowledged movements", flush=True)
         baseline = len(movement_pattern.findall(log))
+        ack_baseline = len(ack_pattern.findall(log))
         monitor_command("sendkey " + steps[step] + " 50")
         state = "movement"
         if bounds and expected_move(old_position, steps[step], width, height) == old_position:
             no_op_deadline = time.monotonic() + 0.25
     elif state == "movement":
         positions = movement_pattern.findall(log)
+        acknowledgements = ack_pattern.findall(log)
+        if len(acknowledgements) > ack_baseline + 1:
+            sys.exit(f"FAIL: duplicate arrow acknowledgements at step {step + 1}")
+        if len(acknowledgements) == ack_baseline + 1:
+            scancode, moved_text, ack_x, ack_y = acknowledgements[-1]
+            expected_scancode = {"left": 0x4b, "right": 0x4d, "up": 0x48, "down": 0x50}[steps[step]]
+            expected_position = expected_move(old_position, steps[step], width, height)
+            if int(scancode, 16) != expected_scancode or (int(ack_x), int(ack_y)) != expected_position:
+                sys.exit(f"FAIL: invalid arrow acknowledgement at step {step + 1}")
+            if int(moved_text) != int(expected_position != old_position):
+                sys.exit(f"FAIL: incorrect arrow moved flag at step {step + 1}")
         no_op = bounds and expected_move(old_position, steps[step], width, height) == old_position
-        if no_op and no_op_deadline is not None and time.monotonic() >= no_op_deadline:
+        if no_op and len(acknowledgements) == ack_baseline + 1:
             if len(positions) != baseline:
                 sys.exit(f"FAIL: unexpected movement while clamped at step {step + 1}")
             screenshot(after_path)
@@ -302,11 +316,14 @@ while time.monotonic() < deadline:
             before_path, after_path = after_path, before_path
             stage_origin = old_position
             baseline = len(positions)
+            ack_baseline = len(acknowledgements)
             no_op_deadline = None
             monitor_command("sendkey " + steps[step] + " 50")
             if bounds and expected_move(old_position, steps[step], width, height) == old_position:
                 no_op_deadline = time.monotonic() + 0.25
         elif len(positions) > baseline:
+            if len(acknowledgements) != ack_baseline + 1:
+                sys.exit(f"FAIL: missing arrow acknowledgement at step {step + 1}")
             if len(positions) != baseline + 1:
                 sys.exit("FAIL: unexpected additional keyboard movements")
             new_position = tuple(map(int, positions[-1]))
@@ -340,6 +357,7 @@ while time.monotonic() < deadline:
                 before_path, after_path = after_path, before_path
                 stage_origin = new_position
             baseline = len(positions)
+            ack_baseline = len(acknowledgements)
             monitor_command("sendkey " + steps[step] + " 50")
             if bounds and expected_move(old_position, steps[step], width, height) == old_position:
                 no_op_deadline = time.monotonic() + 0.25
