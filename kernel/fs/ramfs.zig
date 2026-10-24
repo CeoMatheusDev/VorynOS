@@ -262,6 +262,8 @@ pub const AuditError = error{
     DuplicateBlockReference,
     BlockBitmapMismatch,
     InvalidFileLayout,
+    DuplicateDirectoryName,
+    InvalidDirectoryName,
 };
 
 pub fn audit() AuditError!void {
@@ -301,6 +303,16 @@ pub fn audit() AuditError!void {
             return error.InvalidDirectoryEntry;
         if (inodes[entry.inode].i_links_count == 0 or entry.name_len == 0 or entry.name_len > max_name_len)
             return error.InvalidDirectoryEntry;
+        const name = entry.name[0..entry.name_len];
+        if (!validName(name)) return error.InvalidDirectoryName;
+    }
+    for (dir_entries, 0..) |entry, index| {
+        if (!entry.used) continue;
+        for (dir_entries[index + 1 ..]) |other| {
+            if (!other.used or other.parent != entry.parent) continue;
+            if (std.mem.eql(u8, entry.name[0..entry.name_len], other.name[0..other.name_len]))
+                return error.DuplicateDirectoryName;
+        }
     }
 }
 
@@ -1289,5 +1301,40 @@ test "storage statistics track truncate and released file" {
     const after = storageStats();
     try testing.expectEqual(@as(usize, 0), after.allocated_data_bytes);
     try testing.expectEqual(@as(usize, 0), after.used_dir_entries);
+    try audit();
+}
+
+test "audit detects duplicate names within the same directory" {
+    init();
+    const first = try createFile(root_inode, "first");
+    const second = try createFile(root_inode, "second");
+    try audit();
+    var second_slot: ?usize = null;
+    for (dir_entries, 0..) |entry, index| {
+        if (entry.used and entry.inode == second) second_slot = index;
+    }
+    const slot = second_slot orelse unreachable;
+    const saved = dir_entries[slot];
+    dir_entries[slot].name = @splat(0);
+    @memcpy(dir_entries[slot].name[0..5], "first");
+    dir_entries[slot].name_len = 5;
+    try testing.expectError(error.DuplicateDirectoryName, audit());
+    dir_entries[slot] = saved;
+    try testing.expectEqual(first, lookup(root_inode, "first").?);
+    try audit();
+}
+
+test "audit detects malformed directory entry names" {
+    init();
+    const file = try createFile(root_inode, "valid");
+    var slot: ?usize = null;
+    for (dir_entries, 0..) |entry, index| {
+        if (entry.used and entry.inode == file) slot = index;
+    }
+    const index = slot orelse unreachable;
+    const saved = dir_entries[index];
+    dir_entries[index].name[0] = '/';
+    try testing.expectError(error.InvalidDirectoryName, audit());
+    dir_entries[index] = saved;
     try audit();
 }
