@@ -163,6 +163,24 @@ fn descriptor(process_id: u64, fd: Fd) ?*OpenFile {
     return entry;
 }
 
+/// Valida flags e disponibilidade antes de qualquer mutação do namespace.
+fn preflightDescriptor(process_id: u64, flags: u16) Error!void {
+    const table = tableFor(process_id) orelse return error.UnknownProcess;
+    const access = flags & O_ACCMODE;
+    if (access != O_RDONLY and access != O_WRONLY and access != O_RDWR) return error.InvalidFlags;
+    if (flags & O_TRUNC != 0 and !writable(flags)) return error.NotWritable;
+
+    const process_index: usize = @intCast(process_id);
+    var retired_free = false;
+    for (table, 0..) |entry, index| {
+        if (entry.used) continue;
+        if ((fd_generations[process_index][index] & max_fd_sequence) != max_fd_sequence) return;
+        retired_free = true;
+    }
+    if (retired_free) return error.DescriptorGenerationExhausted;
+    return error.TooManyOpenFiles;
+}
+
 /// Registra um inode na tabela do processo e devolve o descritor.
 fn installDescriptor(process_id: u64, inode_num: u32, flags: u16) Error!Fd {
     const table = tableFor(process_id) orelse return error.UnknownProcess;
@@ -249,6 +267,7 @@ fn createInode(path: []const u8) Error!u32 {
 /// Cria um arquivo e devolve um descritor aberto para leitura e escrita.
 pub fn create(process_id: u64, path: []const u8, mode: u16) Error!Fd {
     _ = mode;
+    try preflightDescriptor(process_id, O_RDWR);
     const inode_num = try createInode(path);
     return installDescriptor(process_id, inode_num, O_RDWR);
 }
@@ -262,6 +281,7 @@ pub fn mkdir(path: []const u8) Error!u32 {
 /// Abre um arquivo. As flags `O_CREAT` criam o arquivo quando ele não
 /// existe; as demais exigem que o caminho já exista.
 pub fn open(process_id: u64, path: []const u8, flags: u16) Error!Fd {
+    try preflightDescriptor(process_id, flags);
     const target = ramfs.resolvePath(try backendPath(path)) catch |err| {
         if (err == error.EntryNotFound and flags & O_CREAT != 0) {
             const inode_num = try createInode(path);
@@ -813,4 +833,40 @@ test "all retired slots report generation exhaustion" {
     }
     try testing.expectError(error.DescriptorGenerationExhausted, create(process, "/no-generation", 0o600));
     try testing.expectError(error.DescriptorGenerationExhausted, open(process, "/no-generation", O_RDONLY));
+}
+
+test "create rejects full descriptor table before modifying namespace" {
+    init();
+    const process: u64 = 0;
+    var fds: [max_open_files]Fd = undefined;
+    for (&fds, 0..) |*fd, index| {
+        var name: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&name, "/filled-{d}", .{index});
+        fd.* = try create(process, path, 0o600);
+    }
+    const before_inodes = freeInodeCount();
+    const before_blocks = freeBlockCount();
+    try testing.expectError(error.TooManyOpenFiles, create(process, "/must-not-exist", 0o600));
+    try testing.expectError(error.TooManyOpenFiles, open(process, "/must-not-exist", O_CREAT | O_RDWR));
+    try testing.expectError(error.EntryNotFound, ramfs.resolvePath("/must-not-exist"));
+    try testing.expectEqual(before_inodes, freeInodeCount());
+    try testing.expectEqual(before_blocks, freeBlockCount());
+    try closeAll(process);
+}
+
+test "generation exhaustion rejects create without allocating inode" {
+    init();
+    const process: usize = 7;
+    const previous = fd_generations[process];
+    defer fd_generations[process] = previous;
+    for (&fd_generations[process]) |*generation| {
+        generation.* = (@as(u32, @intCast(process)) << 24) | max_fd_sequence;
+    }
+    const before_inodes = freeInodeCount();
+    const before_blocks = freeBlockCount();
+    try testing.expectError(error.DescriptorGenerationExhausted, create(process, "/retired-no-create", 0o600));
+    try testing.expectError(error.DescriptorGenerationExhausted, open(process, "/retired-no-create", O_CREAT | O_RDWR));
+    try testing.expectError(error.EntryNotFound, ramfs.resolvePath("/retired-no-create"));
+    try testing.expectEqual(before_inodes, freeInodeCount());
+    try testing.expectEqual(before_blocks, freeBlockCount());
 }
