@@ -444,35 +444,44 @@ fn validName(name: []const u8) bool {
 }
 
 /// Procura uma entrada pelo nome dentro de um diretório.
-pub fn lookup(parent: u32, name: []const u8) ?u32 {
+/// Resolves a name in one initialized RamFS instance.
+pub fn lookupFor(state: *const State, parent: u32, name: []const u8) ?u32 {
     if (parent >= inode_count) return null;
-    for (default_state.dir_entries) |entry| {
-        if (!entry.used) continue;
-        if (entry.parent != parent) continue;
+    for (state.dir_entries) |entry| {
+        if (!entry.used or entry.parent != parent) continue;
         if (std.mem.eql(u8, entry.name[0..entry.name_len], name)) return entry.inode;
     }
     return null;
 }
 
-/// Adiciona uma entrada de diretório. O inode já tem de existir.
-pub fn addDirEntry(parent: u32, name: []const u8, inode_num: u32) Error!void {
-    if (inodeKind(parent) != .directory) return error.NotADirectory;
-    if (inodeKind(inode_num) == null) return error.InvalidInode;
-    if (!validName(name)) return error.InvalidName;
-    if (lookup(parent, name) != null) return error.NameExists;
+pub fn lookup(parent: u32, name: []const u8) ?u32 {
+    return lookupFor(&default_state, parent, name);
+}
 
-    for (&default_state.dir_entries) |*entry| {
+/// Inserts a directory entry only when both inodes belong to this volume.
+pub fn addDirEntryFor(state: *State, parent: u32, name: []const u8, inode_num: u32) Error!void {
+    if (parent >= inode_count or state.inodes[parent].i_links_count == 0 or
+        state.inodes[parent].i_type != .directory) return error.NotADirectory;
+    if (inode_num >= inode_count or state.inodes[inode_num].i_links_count == 0)
+        return error.InvalidInode;
+    if (!validName(name)) return error.InvalidName;
+    if (lookupFor(state, parent, name) != null) return error.NameExists;
+
+    for (&state.dir_entries) |*entry| {
         if (entry.used) continue;
         entry.used = true;
         entry.parent = parent;
         entry.inode = inode_num;
-        entry.name_len = @as(u8, @intCast(name.len));
+        entry.name_len = @intCast(name.len);
         @memset(entry.name[0..], 0);
         @memcpy(entry.name[0..name.len], name);
         return;
     }
-
     return error.DirectoryFull;
+}
+
+pub fn addDirEntry(parent: u32, name: []const u8, inode_num: u32) Error!void {
+    return addDirEntryFor(&default_state, parent, name, inode_num);
 }
 
 /// Renomeia ou move um arquivo regular sem invalidar seu inode e descritores.
@@ -554,21 +563,22 @@ pub fn createDirectory(parent: u32, name: []const u8) Error!u32 {
 /// Componentes vazios e `.` são ignorados. O componente `..` é recusado,
 /// porque o RamFS ainda não mantém a cadeia de diretórios pais de forma
 /// segura para navegação.
-pub fn resolvePath(path: []const u8) Error!u32 {
+pub fn resolvePathFor(state: *const State, path: []const u8) Error!u32 {
     if (path.len == 0) return error.InvalidPath;
-
     var current = root_inode;
     var iterator = std.mem.splitScalar(u8, path, '/');
     while (iterator.next()) |component| {
-        if (component.len == 0) continue;
-        if (std.mem.eql(u8, component, ".")) continue;
+        if (component.len == 0 or std.mem.eql(u8, component, ".")) continue;
         if (std.mem.eql(u8, component, "..")) return error.InvalidPath;
-        if (inodeKind(current) != .directory) return error.NotADirectory;
-
-        current = lookup(current, component) orelse return error.EntryNotFound;
+        if (current >= inode_count or state.inodes[current].i_links_count == 0 or
+            state.inodes[current].i_type != .directory) return error.NotADirectory;
+        current = lookupFor(state, current, component) orelse return error.EntryNotFound;
     }
-
     return current;
+}
+
+pub fn resolvePath(path: []const u8) Error!u32 {
+    return resolvePathFor(&default_state, path);
 }
 
 /// Calcula quantos blocos um arquivo de `length` bytes ocupa.
@@ -1538,4 +1548,30 @@ test "independent inode allocators preserve per-volume state" {
     try testing.expectEqual(@as(usize, 1), other.inodes[root_inode].i_links_count);
     releaseInodeFor(&default_state, first);
     try audit();
+}
+
+test "directory entries and path resolution are isolated by RamFS state" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const left = try allocateInodeFor(&default_state, .file);
+    const right = try allocateInodeFor(&other, .file);
+    try addDirEntryFor(&default_state, root_inode, "only-left", left);
+    try addDirEntryFor(&other, root_inode, "only-right", right);
+    try testing.expectEqual(left, try resolvePathFor(&default_state, "/only-left"));
+    try testing.expectEqual(right, try resolvePathFor(&other, "/only-right"));
+    try testing.expectError(error.EntryNotFound, resolvePathFor(&other, "/only-left"));
+    try testing.expectError(error.EntryNotFound, resolvePathFor(&default_state, "/only-right"));
+    try testing.expectError(error.NameExists, addDirEntryFor(&other, root_inode, "only-right", right));
+    try audit();
+}
+
+test "directory entry insertion rejects foreign or invalid inode" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const foreign = try allocateInodeFor(&default_state, .file);
+    try testing.expectError(error.InvalidInode, addDirEntryFor(&other, root_inode, "foreign", foreign));
+    try testing.expectError(error.InvalidName, addDirEntryFor(&other, root_inode, "../bad", root_inode));
+    try testing.expectEqual(@as(usize, 0), storageStatsFor(&other).used_dir_entries);
 }
