@@ -1038,3 +1038,66 @@ test "failed extension can be retried after blocks become available" {
     try testing.expectEqual(@as(usize, 6), try readFileAt(file, 0, &old));
     try testing.expectEqualStrings("stable", &old);
 }
+
+
+// M0.3.20: namespace saturation and transactional inode allocation.
+test "inode exhaustion does not create a directory entry and released inode is reusable" {
+    init();
+    var ids: [inode_count - 1]u32 = undefined;
+    for (&ids, 0..) |*slot, index| {
+        var name: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&name, "inode-{d}", .{index});
+        slot.* = try createFile(root_inode, path);
+    }
+    try testing.expectEqual(@as(usize, 0), freeInodeCount());
+    const blocks_before = freeBlockCount();
+    try testing.expectError(error.NoFreeInode, createFile(root_inode, "overflow"));
+    try testing.expectError(error.NoFreeInode, createDirectory(root_inode, "overflow-dir"));
+    try testing.expect(lookup(root_inode, "overflow") == null);
+    try testing.expect(lookup(root_inode, "overflow-dir") == null);
+    try testing.expectEqual(blocks_before, freeBlockCount());
+
+    const removed = try unlinkFile(root_inode, "inode-0");
+    try testing.expectEqual(ids[0], removed);
+    releaseUnlinked(removed);
+    try testing.expectEqual(@as(usize, 1), freeInodeCount());
+    const reused = try createFile(root_inode, "reused");
+    try testing.expectEqual(removed, reused);
+    try testing.expectEqual(@as(usize, 0), freeInodeCount());
+}
+
+test "full directory table rejects new entry without leaking allocated inode" {
+    init();
+    const anchor = try createFile(root_inode, "anchor");
+    // addDirEntry permits an existing inode in multiple entries. This
+    // directly saturates the fixed directory table without 64 inodes.
+    for (0..dir_entry_count - 1) |index| {
+        var name: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&name, "alias-{d}", .{index});
+        try addDirEntry(root_inode, path, anchor);
+    }
+    const inodes_before = freeInodeCount();
+    const blocks_before = freeBlockCount();
+    try testing.expectError(error.DirectoryFull, createFile(root_inode, "extra"));
+    try testing.expectError(error.DirectoryFull, createDirectory(root_inode, "extra-dir"));
+    try testing.expect(lookup(root_inode, "extra") == null);
+    try testing.expect(lookup(root_inode, "extra-dir") == null);
+    try testing.expectEqual(inodes_before, freeInodeCount());
+    try testing.expectEqual(blocks_before, freeBlockCount());
+    var entries: [dir_entry_count]DirEntryInfo = undefined;
+    try testing.expectEqual(@as(usize, dir_entry_count), try listDir(root_inode, &entries));
+}
+
+test "duplicate and invalid names do not consume namespace resources" {
+    init();
+    const original = try createFile(root_inode, "stable");
+    const inodes_before = freeInodeCount();
+    const blocks_before = freeBlockCount();
+    try testing.expectError(error.NameExists, createFile(root_inode, "stable"));
+    try testing.expectError(error.NameExists, createDirectory(root_inode, "stable"));
+    try testing.expectError(error.InvalidName, createFile(root_inode, ".."));
+    try testing.expectError(error.InvalidName, createDirectory(root_inode, "bad/name"));
+    try testing.expectEqual(original, lookup(root_inode, "stable").?);
+    try testing.expectEqual(inodes_before, freeInodeCount());
+    try testing.expectEqual(blocks_before, freeBlockCount());
+}
