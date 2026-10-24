@@ -68,6 +68,9 @@ pub const max_path_len: usize = 255;
 /// Descritor de arquivo aberto.
 pub const Fd = u32;
 
+/// Handle interno com geração; a ABI atual de syscalls continua usando Fd.
+pub const CheckedFd = u64;
+
 /// Erros da fachada.
 pub const Error = ramfs.Error || vfsx.Error || error{
     /// A tabela de arquivos abertos está cheia.
@@ -94,11 +97,16 @@ const OpenFile = struct {
     inode: u32 = 0,
     offset: usize = 0,
     flags: u16 = 0,
+    generation: u32 = 0,
 };
 
 /// Tabelas de arquivos abertos, uma por processo.
 var open_files: [max_processes][max_open_files]OpenFile =
     @splat(@splat(OpenFile{}));
+
+/// Contadores persistentes por posição: não reiniciam ao fechar a tabela.
+var fd_generations: [max_processes][max_open_files]u32 =
+    @splat(@splat(0));
 
 /// Inodes removidos do namespace, aguardando o último close.
 var unlinked: [ramfs.inode_count]bool = @splat(false);
@@ -180,7 +188,11 @@ fn installDescriptor(process_id: u64, inode_num: u32, flags: u16) Error!Fd {
         offset = @intCast(ramfs.sizeOf(inode_num) orelse 0);
     }
 
+    const process_index: usize = @intCast(process_id);
+    fd_generations[process_index][index] +%= 1;
+    if (fd_generations[process_index][index] == 0) fd_generations[process_index][index] = 1;
     table[index] = .{
+        .generation = fd_generations[process_index][index],
         .used = true,
         .inode = inode_num,
         .offset = offset,
@@ -245,6 +257,29 @@ pub fn open(process_id: u64, path: []const u8, flags: u16) Error!Fd {
         return err;
     };
     return installDescriptor(process_id, target, flags);
+}
+
+/// Emite um handle verificável para um descritor já aberto.
+/// O identificador inclui geração e posição; o ID do processo é validado
+/// separadamente, evitando acesso cruzado entre tabelas.
+pub fn checkedFd(process_id: u64, fd: Fd) Error!CheckedFd {
+    const entry = descriptor(process_id, fd) orelse return error.BadDescriptor;
+    return (@as(u64, entry.generation) << 32) | @as(u64, fd);
+}
+
+/// Valida geração e processo antes de devolver o índice da tabela.
+pub fn validateCheckedFd(process_id: u64, handle: CheckedFd) Error!Fd {
+    const fd: Fd = @truncate(handle);
+    const generation: u32 = @truncate(handle >> 32);
+    if (generation == 0) return error.BadDescriptor;
+    const entry = descriptor(process_id, fd) orelse return error.BadDescriptor;
+    if (entry.generation != generation) return error.BadDescriptor;
+    return fd;
+}
+
+/// Fecha apenas se o handle ainda identifica a mesma abertura.
+pub fn closeChecked(process_id: u64, handle: CheckedFd) Error!void {
+    return close(process_id, try validateCheckedFd(process_id, handle));
 }
 
 /// Fecha um descritor.
@@ -712,4 +747,32 @@ test "unlink and process slot reuse cannot resurrect reclaimed inode" {
     try testing.expectEqual(fd, fresh);
     try testing.expectEqual(@as(usize, 0), try tell(4, fresh));
     try closeAll(4);
+}
+
+test "checked handles reject stale generation after fd reuse" {
+    init();
+    const first = try create(0, "/checked-first", 0o600);
+    const old_handle = try checkedFd(0, first);
+    try closeChecked(0, old_handle);
+    const second = try create(0, "/checked-second", 0o600);
+    try testing.expectEqual(first, second);
+    const new_handle = try checkedFd(0, second);
+    try testing.expect(old_handle != new_handle);
+    try testing.expectError(error.BadDescriptor, validateCheckedFd(0, old_handle));
+    try testing.expectError(error.BadDescriptor, closeChecked(0, old_handle));
+    try testing.expectEqual(second, try validateCheckedFd(0, new_handle));
+    try closeChecked(0, new_handle);
+}
+
+test "checked handles reject cross-process use and termination reuse" {
+    init();
+    const first = try create(1, "/checked-owner", 0o600);
+    const handle = try checkedFd(1, first);
+    try testing.expectError(error.BadDescriptor, validateCheckedFd(2, handle));
+    try closeAll(1);
+    try testing.expectError(error.BadDescriptor, validateCheckedFd(1, handle));
+    const reused = try open(1, "/checked-owner", O_RDONLY);
+    try testing.expectEqual(first, reused);
+    try testing.expectError(error.BadDescriptor, validateCheckedFd(1, handle));
+    try closeAll(1);
 }
