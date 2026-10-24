@@ -954,3 +954,51 @@ test "writeFile replacement NoSpace preserves original contents" {
     try testing.expectEqualStrings("original", &result);
     for (held[0..held_count]) |block| try testing.expect(freeBlock(block));
 }
+
+test "writeFileAt crossing block boundary preserves neighboring bytes" {
+    init();
+    const file = try createFile(root_inode, "boundary");
+    const original: [block_size * 2]u8 = @splat(0x41);
+    try writeFile(file, &original);
+    const free_before = freeBlockCount();
+    try testing.expectEqual(@as(usize, 4), try writeFileAt(file, block_size - 2, "WXYZ"));
+    try testing.expectEqual(free_before, freeBlockCount());
+    try testing.expectEqual(@as(u64, block_size * 2), sizeOf(file).?);
+    var window: [6]u8 = undefined;
+    try testing.expectEqual(@as(usize, 6), try readFileAt(file, block_size - 3, &window));
+    try testing.expectEqualStrings("AWXYZA", &window);
+}
+
+test "truncate to zero releases blocks and subsequent writes start clean" {
+    init();
+    const file = try createFile(root_inode, "zero");
+    const original: [block_size * 2]u8 = @splat(0x9a);
+    try writeFile(file, &original);
+    const before = freeBlockCount();
+    try truncate(file, 0);
+    try testing.expectEqual(@as(u64, 0), sizeOf(file).?);
+    try testing.expectEqual(before + 2, freeBlockCount());
+    for (inodes[file].i_block) |block| try testing.expectEqual(@as(u32, 0), block);
+    try testing.expectEqual(@as(usize, 1), try writeFileAt(file, block_size + 2, "Z"));
+    var gap: [block_size + 2]u8 = undefined;
+    try testing.expectEqual(gap.len, try readFileAt(file, 0, &gap));
+    for (gap) |byte| try testing.expectEqual(@as(u8, 0), byte);
+    var last: [1]u8 = undefined;
+    try testing.expectEqual(@as(usize, 1), try readFileAt(file, block_size + 2, &last));
+    try testing.expectEqual(@as(u8, 'Z'), last[0]);
+}
+
+test "empty writes leave inode and block allocation unchanged" {
+    init();
+    const file = try createFile(root_inode, "empty");
+    try writeFile(file, "data");
+    const before = freeBlockCount();
+    const first_block = inodes[file].i_block[0];
+    try testing.expectEqual(@as(usize, 0), try writeFileAt(file, max_file_size + 1, ""));
+    try testing.expectEqual(before, freeBlockCount());
+    try testing.expectEqual(first_block, inodes[file].i_block[0]);
+    try testing.expectEqual(@as(u64, 4), sizeOf(file).?);
+    var result: [4]u8 = undefined;
+    try testing.expectEqual(@as(usize, 4), try readFileAt(file, 0, &result));
+    try testing.expectEqualStrings("data", &result);
+}
