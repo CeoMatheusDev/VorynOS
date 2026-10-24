@@ -99,6 +99,27 @@ const RenderLatency = struct {
     cycles_max: u64 = 0,
     pixels_sum: u64 = 0,
     baseline_sum: u64 = 0,
+    // Fixed-size recent history: no heap use on the graphics event path.
+    recent_cycles: [32]u64 = [_]u64{0} ** 32,
+    recent_count: usize = 0,
+    recent_next: usize = 0,
+
+    fn percentileCycles(self: *const RenderLatency, percentile: u8) u64 {
+        if (self.recent_count == 0) return 0;
+        var sorted: [32]u64 = undefined;
+        @memcpy(sorted[0..self.recent_count], self.recent_cycles[0..self.recent_count]);
+        // Insertion sort: bounded to 32 entries and only used for reporting.
+        for (1..self.recent_count) |i| {
+            const value = sorted[i];
+            var j = i;
+            while (j > 0 and sorted[j - 1] > value) : (j -= 1) {
+                sorted[j] = sorted[j - 1];
+            }
+            sorted[j] = value;
+        }
+        const rank = (@as(usize, @min(percentile, 100)) * (self.recent_count - 1) + 99) / 100;
+        return sorted[rank];
+    }
 
     fn record(self: *RenderLatency, cycles: u64, pixels: usize, baseline: usize) void {
         self.samples +|= 1;
@@ -107,6 +128,9 @@ const RenderLatency = struct {
         self.cycles_max = @max(self.cycles_max, cycles);
         self.pixels_sum +|= @as(u64, @intCast(pixels));
         self.baseline_sum +|= @as(u64, @intCast(baseline));
+        self.recent_cycles[self.recent_next] = cycles;
+        self.recent_next = (self.recent_next + 1) % self.recent_cycles.len;
+        if (self.recent_count < self.recent_cycles.len) self.recent_count += 1;
     }
 
     fn meanCycles(self: *const RenderLatency) u64 {
@@ -1030,6 +1054,15 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
             render_latency.cycles_max,
             render_latency.pixels_sum,
             render_latency.baseline_sum,
+        },
+    );
+    serial.printLine(
+        "[VNK] graphics: latency window={d} p50_cycles={d} p95_cycles={d} p99_cycles={d}",
+        .{
+            render_latency.recent_count,
+            render_latency.percentileCycles(50),
+            render_latency.percentileCycles(95),
+            render_latency.percentileCycles(99),
         },
     );
     serial.printLine("[VNK] graphics: redraw benchmark cycles={d} pixels={d} baseline={d} saved={d}", .{
@@ -2861,4 +2894,20 @@ test "F14 render latency accumulates bounded min mean max and baseline" {
     try std.testing.expectEqual(@as(u64, 300), stats.cycles_max);
     try std.testing.expectEqual(@as(u64, 210), stats.pixels_sum);
     try std.testing.expectEqual(@as(u64, 360), stats.baseline_sum);
+}
+
+test "F14.1 latency percentile window handles empty, ordering and eviction" {
+    var stats: RenderLatency = .{};
+    try std.testing.expectEqual(@as(u64, 0), stats.percentileCycles(95));
+    stats.record(400, 1, 2);
+    stats.record(100, 1, 2);
+    stats.record(300, 1, 2);
+    stats.record(200, 1, 2);
+    try std.testing.expectEqual(@as(u64, 200), stats.percentileCycles(50));
+    try std.testing.expectEqual(@as(u64, 400), stats.percentileCycles(95));
+    for (0..32) |i| stats.record(@as(u64, @intCast(i + 1)), 1, 2);
+    try std.testing.expectEqual(@as(usize, 32), stats.recent_count);
+    try std.testing.expectEqual(@as(u64, 16), stats.percentileCycles(50));
+    try std.testing.expectEqual(@as(u64, 31), stats.percentileCycles(95));
+    try std.testing.expectEqual(@as(u64, 32), stats.percentileCycles(99));
 }
