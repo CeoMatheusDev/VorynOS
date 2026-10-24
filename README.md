@@ -25,6 +25,19 @@
 
 ---
 
+## Engineering principle — Native implementation and measurable performance
+
+VorynOS prioritizes **original, independently maintained implementations of the subsystems it needs**: boot chain, kernel, memory management, scheduler, IPC, filesystem, drivers, native SDK, graphics stack and desktop. Its performance goals are low latency, predictable execution, small memory footprint, efficient CPU use and minimal unnecessary overhead.
+
+- Build essential OS subsystems natively rather than presenting Linux, BSD or third-party desktop software as VorynOS internals.
+- Use external development tools and established hardware/file-format/ABI standards when necessary for compatibility and correctness; independently implementing a standard is compatible with architectural originality.
+- Prefer straightforward data layouts, bounded allocation, explicit ownership, minimal copying, incremental rendering and isolation by default.
+- Require repeatable baselines and benchmarks before claiming performance improvements; compare latency, throughput, CPU cycles, memory usage and binary size where applicable.
+- Never trade away memory safety, access control, fault isolation or correctness for speculative optimization. Do not invent proprietary cryptographic primitives.
+- Document dependency exceptions, performance hypotheses, measurements, regressions and acceptance criteria. If an optimization has no measurable benefit, revert or simplify it.
+
+**Originality is a design constraint; performance is an evidence-based engineering outcome.**
+
 ## Strategic priority — Native graphical desktop (F6)
 
 **The primary product-development focus is a fully native VorynOS graphical interface.** The goal is an independent, interactive desktop running on the VorynOS kernel, not a Linux/BSD-hosted shell or a graphical mockup. Work on F4/F5 and kernel isolation remains necessary where it unblocks safe graphics and native applications.
