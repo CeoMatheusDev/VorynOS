@@ -23,6 +23,7 @@
 
 pub const ramfs = @import("fs/ramfs.zig");
 pub const fs = @import("fs/fs.zig");
+pub const vfsx = @import("fs/vfsx.zig");
 pub const elf_loader = @import("elf_loader.zig");
 pub const native_image = @import("native_image.zig");
 
@@ -33,6 +34,7 @@ const usermode = voryn.usermode;
 test {
     _ = @import("fs/ramfs.zig");
     _ = @import("fs/fs.zig");
+    _ = @import("fs/vfsx.zig");
     _ = @import("elf_loader.zig");
     _ = @import("native_image.zig");
 }
