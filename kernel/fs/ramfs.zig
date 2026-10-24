@@ -1407,3 +1407,16 @@ test "audit rejects directory with multiple parent links" {
     try addDirEntry(b, "alias", child);
     try testing.expectError(error.DirectoryMultipleParents, audit());
 }
+
+test "default RamFS state retains legacy API behavior" {
+    init();
+    try audit();
+    const file = try createFile(root_inode, "state");
+    try writeFile(file, "separated");
+    try testing.expectEqual(@as(usize, 9), @as(usize, @intCast(default_state.inodes[file].i_size)));
+    try testing.expectEqual(@as(usize, 1), storageStats().used_dir_entries);
+    try audit();
+    init();
+    try testing.expectEqual(@as(usize, 0), storageStats().used_dir_entries);
+    try audit();
+}
