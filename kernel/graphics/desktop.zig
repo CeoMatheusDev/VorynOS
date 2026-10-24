@@ -108,7 +108,7 @@ pub const Desktop = struct {
         }
         pixels +|= self.frame.presentDirty(&surface, new_rect);
         self.frame.dirty = false;
-        if (timing) |result| result.composition_cycles = clock.?.*() - composition_start;
+        if (timing) |result| result.composition_cycles = if (clock) |read| read() - composition_start else 0;
         return pixels;
     }
 
