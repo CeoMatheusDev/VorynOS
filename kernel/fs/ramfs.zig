@@ -215,6 +215,46 @@ pub fn freeInodeCount() usize {
     return count;
 }
 
+/// Read-only consistency audit for the in-memory block allocator and directory.
+/// Orphan inodes are permitted because unlink defers reclamation until close.
+pub const AuditError = error{
+    MissingRoot,
+    InvalidDirectoryEntry,
+    InvalidBlockReference,
+    DuplicateBlockReference,
+    BlockBitmapMismatch,
+};
+
+pub fn audit() AuditError!void {
+    if (inodes[root_inode].i_links_count == 0 or inodes[root_inode].i_type != .directory)
+        return error.MissingRoot;
+
+    var referenced: [block_count]bool = @splat(false);
+    referenced[0] = true;
+    for (inodes) |entry| {
+        if (entry.i_links_count == 0) continue;
+        for (entry.i_block) |block| {
+            if (block == 0) continue;
+            const index: usize = @intCast(block);
+            if (index >= block_count) return error.InvalidBlockReference;
+            if (referenced[index]) return error.DuplicateBlockReference;
+            referenced[index] = true;
+        }
+    }
+    for (referenced, 0..) |used, index| {
+        if (blockUsed(index) != used) return error.BlockBitmapMismatch;
+    }
+    for (dir_entries) |entry| {
+        if (!entry.used) continue;
+        if (entry.parent >= inode_count or entry.inode >= inode_count)
+            return error.InvalidDirectoryEntry;
+        if (inodes[entry.parent].i_links_count == 0 or inodes[entry.parent].i_type != .directory)
+            return error.InvalidDirectoryEntry;
+        if (inodes[entry.inode].i_links_count == 0 or entry.name_len == 0 or entry.name_len > max_name_len)
+            return error.InvalidDirectoryEntry;
+    }
+}
+
 /// Devolve o tipo do inode, ou `null` quando o inode está livre.
 pub fn inodeKind(inode_num: u32) ?inode.InodeType {
     if (inode_num >= inode_count) return null;
@@ -1100,4 +1140,39 @@ test "duplicate and invalid names do not consume namespace resources" {
     try testing.expectEqual(original, lookup(root_inode, "stable").?);
     try testing.expectEqual(inodes_before, freeInodeCount());
     try testing.expectEqual(blocks_before, freeBlockCount());
+}
+
+test "audit validates initialized and populated RamFS" {
+    init();
+    try audit();
+    const file = try createFile(root_inode, "audit-file");
+    try writeFile(file, "integrity");
+    try audit();
+    try testing.expectEqual(@as(usize, block_count - 2), freeBlockCount());
+}
+
+test "audit detects allocator bitmap mismatch without modifying data" {
+    init();
+    const file = try createFile(root_inode, "file");
+    try writeFile(file, "payload");
+    try audit();
+    const block: usize = @intCast(inodes[file].i_block[0]);
+    setBlockUsed(block, false);
+    try testing.expectError(error.BlockBitmapMismatch, audit());
+    setBlockUsed(block, true);
+    try audit();
+}
+
+test "audit detects invalid directory reference" {
+    init();
+    _ = try createFile(root_inode, "file");
+    try audit();
+    var slot: usize = 0;
+    while (slot < dir_entry_count and !dir_entries[slot].used) : (slot += 1) {}
+    try testing.expect(slot < dir_entry_count);
+    const original = dir_entries[slot].inode;
+    dir_entries[slot].inode = @intCast(inode_count);
+    try testing.expectError(error.InvalidDirectoryEntry, audit());
+    dir_entries[slot].inode = original;
+    try audit();
 }
