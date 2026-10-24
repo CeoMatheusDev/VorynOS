@@ -836,3 +836,17 @@ zig test kernel/graphics/window_renderer.zig
 zig build test
 zig build
 ```
+
+### F6 window movement checkpoint (2026-10-24)
+
+- `kernel/graphics/frame.zig` now exposes owner-checked `moveWindow` with stale-handle validation and redraw invalidation only when position changes.
+- A new test verifies unauthorized movement rejection, no-op movement, old/new pixel repaint, and stale handle rejection after destruction.
+- **New code not yet validated by Zig on Fedora.** The last supplied logs confirmed 23 tests passing for `frame.zig` before this change, plus 12 tests each for `session.zig` and `window_renderer.zig` (imported tests overlap).
+
+```sh
+zig test kernel/graphics/frame.zig
+zig build test
+zig build
+```
+
+The live PS/2 input loop, framebuffer mapping, and QEMU desktop integration remain pending.
