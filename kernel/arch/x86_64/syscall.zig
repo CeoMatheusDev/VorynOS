@@ -228,6 +228,9 @@ pub const Number = struct {
     pub const fs_create: u64 = 17;
     /// Make a directory in the RAMFS filesystem.
     pub const fs_mkdir: u64 = 18;
+    /// Shrink an open regular file to a specified byte length.
+    /// Arguments: RDI = descriptor, RSI = new size; result: 0 or negative error.
+    pub const fs_truncate: u64 = 22;
     /// Read the display metadata into a structure of the user mode.
     ///
     /// The call is read-only and exposes no framebuffer address: the user
@@ -604,6 +607,14 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
                 frame.rax,
             });
         },
+        Number.fs_truncate => {
+            frame.rax = fsTruncate(frame.rdi, frame.rsi, privilege);
+            serial.printLine("[VNK] syscall {d} from {s} fs_truncate result 0x{x}", .{
+                number,
+                caller,
+                frame.rax,
+            });
+        },
         Number.display_info => {
             frame.rax = displayInfo(frame.rdi, frame.rsi, privilege);
             serial.printLine("[VNK] syscall {d} from {s} display_info result 0x{x}", .{
@@ -701,10 +712,11 @@ fn fsFailure(err: anyerror) u64 {
         error.EntryNotFound => failure(Error.no_such_file),
         error.NoSpace, error.NoFreeInode, error.DirectoryFull => failure(Error.no_space),
         error.BadDescriptor => failure(Error.bad_descriptor),
-        error.TooManyOpenFiles => failure(Error.too_many_open_files),
+        error.TooManyOpenFiles, error.DescriptorGenerationExhausted => failure(Error.too_many_open_files),
         error.NameExists => failure(Error.name_exists),
         error.InvalidName, error.InvalidPath => failure(Error.invalid_name),
         error.FileTooLarge => failure(Error.file_too_large),
+        error.InvalidOffset => failure(Error.invalid_length),
         else => failure(Error.io_error),
     };
 }
@@ -736,6 +748,19 @@ fn fsClose(descriptor: u64, privilege: u64) u64 {
 
     const process = callerProcess() orelse return failure(Error.not_authorized);
     fs_module.close(process, @intCast(descriptor)) catch |err| return fsFailure(err);
+    return 0;
+}
+
+/// Truncates an open file, validating the caller's descriptor and size.
+/// No user pointers are dereferenced. Ownership is enforced by the FS table.
+fn fsTruncate(descriptor: u64, new_size: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+    if (descriptor > std.math.maxInt(u32)) return failure(Error.bad_descriptor);
+    if (new_size > std.math.maxInt(usize)) return failure(Error.file_too_large);
+
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+    fs_module.truncateFd(process, @intCast(descriptor), @intCast(new_size)) catch |err|
+        return fsFailure(err);
     return 0;
 }
 

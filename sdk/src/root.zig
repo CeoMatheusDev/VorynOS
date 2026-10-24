@@ -97,6 +97,11 @@ pub fn fsCreate(path: []const u8) u64 {
     return syscall.call(syscall.Number.fs_create, @intFromPtr(path.ptr), path.len, 0, 0).status;
 }
 
+/// Shrinks an open file. The descriptor must permit writes.
+pub fn fsTruncate(fd: u64, new_size: u64) u64 {
+    return syscall.call(syscall.Number.fs_truncate, fd, new_size, 0, 0).status;
+}
+
 pub fn fsMkdir(path: []const u8) u64 {
     return syscall.call(syscall.Number.fs_mkdir, @intFromPtr(path.ptr), path.len, 0, 0).status;
 }

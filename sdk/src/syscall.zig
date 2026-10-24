@@ -35,6 +35,8 @@ pub const Number = struct {
     pub const display_info: u64 = 19;
     pub const present: u64 = 20;
     pub const input_poll: u64 = 21;
+    /// Shrink an open file: RDI=fd, RSI=new size.
+    pub const fs_truncate: u64 = 22;
 };
 
 /// Códigos de erro estáveis definidos por VSC-0001 v12.
@@ -116,6 +118,7 @@ test "ABI call numbers are stable" {
     try std.testing.expectEqual(@as(u64, 19), Number.display_info);
     try std.testing.expectEqual(@as(u64, 20), Number.present);
     try std.testing.expectEqual(@as(u64, 21), Number.input_poll);
+    try std.testing.expectEqual(@as(u64, 22), Number.fs_truncate);
     try std.testing.expectEqual(@as(u32, 12), abi_version);
 }
 
