@@ -31,7 +31,7 @@ pub const Session = struct {
 
     /// Route a pointer click to the uppermost visible window.
     /// Return false for clicks outside windows; full queues report an error.
-    pub fn pointerDown(self: *Session, x: usize, y: usize) events.Error!bool {
+    pub fn pointerDown(self: *Session, x: usize, y: usize) Error!bool {
         const handle = self.windows.hitTest(x, y) orelse return false;
         const slot = &self.windows.slots[handle.slot];
         const owner = slot.window.owner;
