@@ -489,17 +489,17 @@ pub fn addDirEntry(parent: u32, name: []const u8, inode_num: u32) Error!void {
 }
 
 /// Renomeia ou move um arquivo regular sem invalidar seu inode e descritores.
-pub fn renameFile(source_parent: u32, source_name: []const u8, target_parent: u32, target_name: []const u8) Error!void {
-    if (inodeKind(source_parent) != .directory or inodeKind(target_parent) != .directory)
+pub fn renameFileFor(state: *State, source_parent: u32, source_name: []const u8, target_parent: u32, target_name: []const u8) Error!void {
+    if (inodeKindFor(state, source_parent) != .directory or inodeKindFor(state, target_parent) != .directory)
         return error.NotADirectory;
     if (!validName(source_name) or !validName(target_name)) return error.InvalidName;
 
-    const source_inode = lookup(source_parent, source_name) orelse return error.EntryNotFound;
-    if (inodeKind(source_inode) != .file) return error.NotAFile;
+    const source_inode = lookupFor(state, source_parent, source_name) orelse return error.EntryNotFound;
+    if (inodeKindFor(state, source_inode) != .file) return error.NotAFile;
     if (source_parent == target_parent and std.mem.eql(u8, source_name, target_name)) return;
-    if (lookup(target_parent, target_name) != null) return error.NameExists;
+    if (lookupFor(state, target_parent, target_name) != null) return error.NameExists;
 
-    for (&default_state.dir_entries) |*entry| {
+    for (&state.dir_entries) |*entry| {
         if (!entry.used or entry.parent != source_parent or entry.inode != source_inode) continue;
         if (!std.mem.eql(u8, entry.name[0..entry.name_len], source_name)) continue;
         entry.parent = target_parent;
@@ -513,12 +513,12 @@ pub fn renameFile(source_parent: u32, source_name: []const u8, target_parent: u3
 
 /// Desvincula um arquivo regular do diretório sem liberar seu inode.
 /// O chamador deve liberar o inode quando não houver descritores abertos.
-pub fn unlinkFile(parent: u32, name: []const u8) Error!u32 {
-    if (inodeKind(parent) != .directory) return error.NotADirectory;
+pub fn unlinkFileFor(state: *State, parent: u32, name: []const u8) Error!u32 {
+    if (inodeKindFor(state, parent) != .directory) return error.NotADirectory;
     if (!validName(name)) return error.InvalidName;
-    const target = lookup(parent, name) orelse return error.EntryNotFound;
-    if (inodeKind(target) != .file) return error.NotAFile;
-    for (&default_state.dir_entries) |*entry| {
+    const target = lookupFor(state, parent, name) orelse return error.EntryNotFound;
+    if (inodeKindFor(state, target) != .file) return error.NotAFile;
+    for (&state.dir_entries) |*entry| {
         if (!entry.used or entry.parent != parent or entry.inode != target) continue;
         if (!std.mem.eql(u8, entry.name[0..entry.name_len], name)) continue;
         entry.* = .{};
@@ -528,12 +528,24 @@ pub fn unlinkFile(parent: u32, name: []const u8) Error!u32 {
 }
 
 /// Libera inode desvinculado; nunca deve ser chamado com descritores vivos.
-pub fn releaseUnlinked(inode_num: u32) void {
-    if (inode_num == root_inode or inodeKind(inode_num) != .file) return;
-    for (default_state.dir_entries) |entry| {
+pub fn releaseUnlinkedFor(state: *State, inode_num: u32) void {
+    if (inode_num == root_inode or inodeKindFor(state, inode_num) != .file) return;
+    for (state.dir_entries) |entry| {
         if (entry.used and entry.inode == inode_num) return;
     }
-    releaseInode(inode_num);
+    releaseInodeFor(state, inode_num);
+}
+
+pub fn renameFile(source_parent: u32, source_name: []const u8, target_parent: u32, target_name: []const u8) Error!void {
+    return renameFileFor(&default_state, source_parent, source_name, target_parent, target_name);
+}
+
+pub fn unlinkFile(parent: u32, name: []const u8) Error!u32 {
+    return unlinkFileFor(&default_state, parent, name);
+}
+
+pub fn releaseUnlinked(inode_num: u32) void {
+    releaseUnlinkedFor(&default_state, inode_num);
 }
 
 /// Cria um arquivo vazio dentro de um diretório.
@@ -1709,4 +1721,38 @@ test "per-volume offset extension failure leaves original content" {
     try testing.expectEqualStrings("old", buf[0..count]);
     try testing.expectError(error.InvalidOffset, truncateFor(&other, file, 4));
     for (remaining) |block| try testing.expect(freeBlockFor(&other, block));
+}
+
+test "rename and unlink are isolated between RamFS instances" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const left = try createFile(root_inode, "item");
+    const right = try createFileFor(&other, root_inode, "item");
+    try writeFile(left, "left");
+    try writeFileFor(&other, right, "right");
+    try renameFileFor(&other, root_inode, "item", root_inode, "moved");
+    try testing.expectError(error.EntryNotFound, resolvePathFor(&other, "/item"));
+    try testing.expectEqual(right, try resolvePathFor(&other, "/moved"));
+    try testing.expectEqual(left, try resolvePath("/item"));
+    const unlinked = try unlinkFileFor(&other, root_inode, "moved");
+    try testing.expectEqual(right, unlinked);
+    var buf: [8]u8 = undefined;
+    const count = try readFileFor(&other, unlinked, &buf);
+    try testing.expectEqualStrings("right", buf[0..count]);
+    releaseUnlinkedFor(&other, unlinked);
+    try testing.expectEqual(@as(usize, 1), storageStatsFor(&other).used_inodes);
+    try testing.expectEqual(@as(usize, 1), storageStatsFor(&other).used_blocks);
+    try testing.expectEqual(left, try resolvePath("/item"));
+    try audit();
+}
+
+test "per-volume rename rejects collisions without mutation" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const source = try createFileFor(&other, root_inode, "source");
+    _ = try createFileFor(&other, root_inode, "target");
+    try testing.expectError(error.NameExists, renameFileFor(&other, root_inode, "source", root_inode, "target"));
+    try testing.expectEqual(source, try resolvePathFor(&other, "/source"));
 }
