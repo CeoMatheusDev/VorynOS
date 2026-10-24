@@ -46,6 +46,9 @@ pub const Session = struct {
             .data0 = @intCast(@min(dx, max)),
             .data1 = @intCast(@min(dy, max)),
         });
+        // Commit focus/z-order only after delivery succeeds. A full mailbox
+        // must not change the visible window order or keyboard recipient.
+        try self.windows.raise(handle, owner);
         return true;
     }
 
@@ -129,4 +132,36 @@ test "keyboard delivery rejects full mailbox without changing focus" {
     for (0..events.queue_capacity) |_| try std.testing.expect(try s.keyEvent(true, 1));
     try std.testing.expectError(error.Full, s.keyEvent(false, 1));
     try std.testing.expectEqual(window, s.windows.focused.?);
+}
+
+test "pointer click activates underlying window for subsequent keyboard input" {
+    var s = Session{};
+    try s.registerClient(1);
+    try s.registerClient(2);
+    const bottom = try s.createWindow(1, 0, 0, 8, 8);
+    const top = try s.createWindow(2, 4, 4, 8, 8);
+    try std.testing.expectEqual(top, s.windows.focused.?);
+    try std.testing.expect(try s.pointerDown(1, 1));
+    try std.testing.expectEqual(bottom, s.windows.focused.?);
+    try std.testing.expect(try s.keyEvent(true, 42));
+    try std.testing.expectEqual(events.Kind.pointer_down, (try s.router.receive(1, 1)).?.kind);
+    const key = (try s.router.receive(1, 1)).?;
+    try std.testing.expectEqual(events.Kind.key_down, key.kind);
+    try std.testing.expectEqual(bottom.slot, key.window_slot);
+    try std.testing.expect((try s.router.receive(2, 2)) == null);
+    try std.testing.expectEqual(bottom, s.windows.hitTest(5, 5).?);
+}
+
+test "full click queue preserves focus and stacking order" {
+    var s = Session{};
+    try s.registerClient(1);
+    try s.registerClient(2);
+    const bottom = try s.createWindow(1, 0, 0, 8, 8);
+    const top = try s.createWindow(2, 4, 4, 8, 8);
+    for (0..events.queue_capacity) |_| try s.router.send(1, .{
+        .kind = .pointer_move, .window_slot = bottom.slot, .window_generation = bottom.generation,
+    });
+    try std.testing.expectError(error.Full, s.pointerDown(1, 1));
+    try std.testing.expectEqual(top, s.windows.focused.?);
+    try std.testing.expectEqual(top, s.windows.hitTest(5, 5).?);
 }
