@@ -189,8 +189,12 @@ fn installDescriptor(process_id: u64, inode_num: u32, flags: u16) Error!Fd {
     }
 
     const process_index: usize = @intCast(process_id);
-    fd_generations[process_index][index] +%= 1;
-    if (fd_generations[process_index][index] == 0) fd_generations[process_index][index] = 1;
+    // 24 bits para a geração e 8 bits para a identidade da tabela.
+    // A reutilização após 2^24 aberturas da mesma posição requer política
+    // adicional de aposentadoria de slots antes de expor handles à ABI.
+    var sequence = (fd_generations[process_index][index] & 0x00ff_ffff) + 1;
+    if (sequence > 0x00ff_ffff) sequence = 1;
+    fd_generations[process_index][index] = (@as(u32, @intCast(process_index)) << 24) | sequence;
     table[index] = .{
         .generation = fd_generations[process_index][index],
         .used = true,
