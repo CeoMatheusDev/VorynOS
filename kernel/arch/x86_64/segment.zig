@@ -355,7 +355,7 @@ test "TSS descriptor stores the upper half of the TSS base" {
     try testing.expectEqual(@as(u32, 0), entries[1].high);
     try testing.expectEqual(@as(u32, 103), entries[0].low & 0xffff);
     try testing.expectEqual(@as(u32, 0x89), (entries[0].high >> 8) & 0xff);
-    try testing.expectEqual(@as(u32, 0x9a), entries[0].low >> 16);
-    try testing.expectEqual(@as(u32, 0xbc), entries[0].high & 0xff);
-    try testing.expectEqual(@as(u32, 0xde), entries[0].high >> 24);
+    try testing.expectEqual(@as(u32, 0xdef0), entries[0].low >> 16);
+    try testing.expectEqual(@as(u32, 0x9a), entries[0].high & 0xff);
+    try testing.expectEqual(@as(u32, 0xbc), entries[0].high >> 24);
 }
