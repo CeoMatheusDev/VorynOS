@@ -900,3 +900,57 @@ test "writeFileAt NoSpace rolls back partial block allocation" {
     try testing.expectEqualStrings("preserved", &result);
     for (held[0..held_count]) |block| try testing.expect(freeBlock(block));
 }
+
+test "truncate frees trailing blocks and zeroes retained block tail" {
+    init();
+    const target = try createFile(root_inode, "truncate-target");
+    const payload: [block_size * 3]u8 = @splat(0x7b);
+    try writeFile(target, &payload);
+    const before = freeBlockCount();
+    try truncate(target, block_size + 3);
+    try testing.expectEqual(@as(u64, block_size + 3), sizeOf(target).?);
+    try testing.expectEqual(before + 1, freeBlockCount());
+    try testing.expectEqual(@as(u32, 0), inodes[target].i_block[2]);
+    const extension: [block_size - 3]u8 = @splat(0x2a);
+    _ = try writeFileAt(target, block_size * 2, &extension);
+    var gap: [block_size - 3]u8 = undefined;
+    const read_count = try readFileAt(target, block_size + 3, &gap);
+    try testing.expectEqual(gap.len, read_count);
+    for (gap) |byte| try testing.expectEqual(@as(u8, 0), byte);
+    try testing.expectEqual(@as(u64, block_size * 3 - 3), sizeOf(target).?);
+}
+
+test "writeFileAt rejects out of range offsets without modifying file" {
+    init();
+    const target = try createFile(root_inode, "offset-target");
+    try writeFile(target, "original");
+    const before = freeBlockCount();
+    try testing.expectError(error.FileTooLarge, writeFileAt(target, max_file_size, "x"));
+    try testing.expectError(error.FileTooLarge, writeFileAt(target, std.math.maxInt(usize), "x"));
+    try testing.expectEqual(before, freeBlockCount());
+    try testing.expectEqual(@as(u64, 8), sizeOf(target).?);
+    var result: [8]u8 = undefined;
+    try testing.expectEqual(@as(usize, 8), try readFileAt(target, 0, &result));
+    try testing.expectEqualStrings("original", &result);
+}
+
+test "writeFile replacement NoSpace preserves original contents" {
+    init();
+    const target = try createFile(root_inode, "replace-target");
+    try writeFile(target, "original");
+    var held: [block_count - 1]u32 = undefined;
+    var held_count: usize = 0;
+    while (freeBlockCount() > 1) {
+        held[held_count] = allocateBlock() orelse return error.TestUnexpectedResult;
+        held_count += 1;
+    }
+    const before = freeBlockCount();
+    const replacement: [block_size + 1]u8 = @splat(0x55);
+    try testing.expectError(error.NoSpace, writeFile(target, &replacement));
+    try testing.expectEqual(before, freeBlockCount());
+    try testing.expectEqual(@as(u64, 8), sizeOf(target).?);
+    var result: [8]u8 = undefined;
+    try testing.expectEqual(@as(usize, 8), try readFileAt(target, 0, &result));
+    try testing.expectEqualStrings("original", &result);
+    for (held[0..held_count]) |block| try testing.expect(freeBlock(block));
+}
