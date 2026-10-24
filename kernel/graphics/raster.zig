@@ -44,20 +44,24 @@ pub const Surface = struct {
         if (x >= self.width or y >= self.height) return;
         const w = @min(width, self.width - x);
         const h = @min(height, self.height - y);
-        // Build a contiguous row using exponentially growing, disjoint
-        // copies. Avoid per-pixel clipping and offset calculations in the
-        // framebuffer hot path (especially expensive under emulated GOP).
+        // Empty rectangles are legal and must never index row[0..4].
+        if (w == 0 or h == 0) return;
+
+        // Generate the pattern only once, then copy the completed scanline.
+        // Rows never overlap because pitch >= width * 4 (checked by init).
         const row_bytes = w * 4;
-        for (0..h) |dy| {
+        const first_offset = y * self.pitch + x * 4;
+        const first = self.pixels[first_offset..][0..row_bytes];
+        @memcpy(first[0..4], &color);
+        var filled: usize = 4;
+        while (filled < row_bytes) {
+            const count = @min(filled, row_bytes - filled);
+            @memcpy(first[filled..][0..count], first[0..count]);
+            filled += count;
+        }
+        for (1..h) |dy| {
             const offset = (y + dy) * self.pitch + x * 4;
-            const row = self.pixels[offset..][0..row_bytes];
-            @memcpy(row[0..4], &color);
-            var filled: usize = 4;
-            while (filled < row_bytes) {
-                const count = @min(filled, row_bytes - filled);
-                @memcpy(row[filled..][0..count], row[0..count]);
-                filled += count;
-            }
+            @memcpy(self.pixels[offset..][0..row_bytes], first);
         }
     }
 
@@ -107,4 +111,13 @@ test "bulk rectangle fill preserves pitch and clips edges" {
     }
     surface.fillRect(4, 4, std.math.maxInt(usize), std.math.maxInt(usize), .{ 9, 8, 7, 6 });
     try std.testing.expectEqualSlices(u8, &.{ 9, 8, 7, 6 }, data[4 * 24 + 16 ..][0..4]);
+}
+
+test "empty rectangle is a no-op even on the last valid coordinate" {
+    var data: [4 * 4 * 4]u8 = @splat(0x6a);
+    var surface = try Surface.init(&data, 4, 4, 16);
+    surface.fillRect(3, 3, 0, 1, .{ 1, 2, 3, 4 });
+    surface.fillRect(3, 3, 1, 0, .{ 1, 2, 3, 4 });
+    surface.fillRect(0, 0, 0, std.math.maxInt(usize), .{ 1, 2, 3, 4 });
+    for (data) |byte| try std.testing.expectEqual(@as(u8, 0x6a), byte);
 }
