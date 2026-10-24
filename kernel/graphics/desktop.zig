@@ -17,6 +17,14 @@ pub const Desktop = struct {
     back: wm.Handle,
     front: wm.Handle,
 
+    pub fn initInPlace(self: *Desktop, width: usize, height: usize, palette: renderer.Palette) !void {
+        if (width == 0 or height == 0) return error.InvalidGeometry;
+        self.* = .{ .frame = .{ .palette = palette }, .back = undefined, .front = undefined };
+        try self.frame.session_state.registerClient(system_owner);
+        self.back = try self.frame.createWindow(system_owner, width / 8, height / 8, @max(@as(usize, 1), width / 2), @max(@as(usize, 1), height / 2));
+        self.front = try self.frame.createWindow(system_owner, width / 4, height / 4, @max(@as(usize, 1), width / 2), @max(@as(usize, 1), height / 3));
+    }
+
     pub fn init(width: usize, height: usize, palette: renderer.Palette) !Desktop {
         if (width == 0 or height == 0) return error.InvalidGeometry;
         var desktop: Desktop = undefined;
