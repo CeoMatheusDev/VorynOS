@@ -49,6 +49,21 @@ pub const Session = struct {
         return true;
     }
 
+    /// Keyboard input is delivered exclusively to the currently focused window.
+    /// The generation tag allows consumers to reject events from destroyed windows.
+    pub fn keyEvent(self: *Session, pressed: bool, keycode: u32) events.Error!bool {
+        const handle = self.windows.focused orelse return false;
+        const slot = &self.windows.slots[handle.slot];
+        if (!slot.occupied or !slot.window.visible or slot.generation != handle.generation) return false;
+        try self.router.send(slot.window.owner, .{
+            .kind = if (pressed) .key_down else .key_up,
+            .window_slot = handle.slot,
+            .window_generation = handle.generation,
+            .data0 = @intCast(keycode),
+        });
+        return true;
+    }
+
     /// Only the owner can destroy a window; old queued events remain tagged
     /// with the old generation so consumers can discard them safely.
     pub fn destroyWindow(self: *Session, process: u64, handle: wm.Handle) wm.Error!void {
@@ -83,4 +98,35 @@ test "unregistered clients and foreign window deletion fail" {
     try std.testing.expectError(error.InvalidHandle, s.destroyWindow(2, handle));
     try s.destroyWindow(1, handle);
     try std.testing.expect(!(try s.pointerDown(0, 0)));
+}
+
+test "keyboard events follow focus and do not leak to other clients" {
+    var s = Session{};
+    try s.registerClient(11);
+    try s.registerClient(22);
+    const first = try s.createWindow(11, 0, 0, 10, 10);
+    const second = try s.createWindow(22, 0, 0, 10, 10);
+    try std.testing.expect(try s.keyEvent(true, 30));
+    try std.testing.expect((try s.router.receive(11, 11)) == null);
+    const down = (try s.router.receive(22, 22)).?;
+    try std.testing.expectEqual(events.Kind.key_down, down.kind);
+    try std.testing.expectEqual(second.generation, down.window_generation);
+    try std.testing.expectEqual(@as(i64, 30), down.data0);
+    try s.windows.raise(first, 11);
+    try std.testing.expect(try s.keyEvent(false, 30));
+    const up = (try s.router.receive(11, 11)).?;
+    try std.testing.expectEqual(events.Kind.key_up, up.kind);
+    try std.testing.expectEqual(first.slot, up.window_slot);
+    try s.destroyWindow(11, first);
+    try s.destroyWindow(22, second);
+    try std.testing.expect(!(try s.keyEvent(true, 30)));
+}
+
+test "keyboard delivery rejects full mailbox without changing focus" {
+    var s = Session{};
+    try s.registerClient(7);
+    const window = try s.createWindow(7, 0, 0, 1, 1);
+    for (0..events.queue_capacity) |_| try std.testing.expect(try s.keyEvent(true, 1));
+    try std.testing.expectError(error.Full, s.keyEvent(false, 1));
+    try std.testing.expectEqual(window, s.windows.focused.?);
 }
