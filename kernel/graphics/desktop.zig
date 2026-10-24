@@ -58,8 +58,31 @@ pub const Desktop = struct {
         }
         const old_rect: compositor.Rect = .{ .x = previous.x, .y = previous.y, .width = previous.width, .height = previous.height };
         const new_rect: compositor.Rect = .{ .x = x, .y = y, .width = previous.width, .height = previous.height };
-        const pixels = self.frame.presentDirty(&surface, old_rect) +|
-            self.frame.presentDirty(&surface, new_rect);
+        // Paint the old footprint excluding its overlap with the new one.
+        // The new footprint is painted once, so overlapping pixels are not
+        // written twice. Clip before calculating endpoints to avoid overflow.
+        const ox = @min(old_rect.x, surface.width);
+        const oy = @min(old_rect.y, surface.height);
+        const oright = ox + @min(old_rect.width, surface.width - ox);
+        const obottom = oy + @min(old_rect.height, surface.height - oy);
+        const nx = @min(new_rect.x, surface.width);
+        const ny = @min(new_rect.y, surface.height);
+        const nright = nx + @min(new_rect.width, surface.width - nx);
+        const nbottom = ny + @min(new_rect.height, surface.height - ny);
+        const ix = @max(ox, nx);
+        const iy = @max(oy, ny);
+        const iright = @min(oright, nright);
+        const ibottom = @min(obottom, nbottom);
+        var pixels: usize = 0;
+        if (ix < iright and iy < ibottom) {
+            pixels +|= self.frame.presentDirty(&surface, .{ .x = ox, .y = oy, .width = oright - ox, .height = iy - oy });
+            pixels +|= self.frame.presentDirty(&surface, .{ .x = ox, .y = ibottom, .width = oright - ox, .height = obottom - ibottom });
+            pixels +|= self.frame.presentDirty(&surface, .{ .x = ox, .y = iy, .width = ix - ox, .height = ibottom - iy });
+            pixels +|= self.frame.presentDirty(&surface, .{ .x = iright, .y = iy, .width = oright - iright, .height = ibottom - iy });
+        } else {
+            pixels +|= self.frame.presentDirty(&surface, old_rect);
+        }
+        pixels +|= self.frame.presentDirty(&surface, new_rect);
         self.frame.dirty = false;
         return pixels;
     }
@@ -139,4 +162,24 @@ test "invalid mapping does not move desktop window" {
     }, 5, 5));
     const slot = desktop.frame.session_state.windows.slots[desktop.front.slot];
     try std.testing.expectEqual(@as(usize, 2), slot.window.x);
+}
+
+test "overlapping movement paints each pixel at most once" {
+    const palette: renderer.Palette = .{
+        .background = .{ 0, 0, 0, 0 },
+        .active = .{ 9, 9, 9, 9 },
+        .inactive = .{ 3, 3, 3, 3 },
+    };
+    var desktop = try Desktop.init(32, 24, palette);
+    var pixels: [32 * 24 * 4]u8 = @splat(0);
+    const mapping: bridge.Mapping = .{ .bytes = &pixels, .width = 32, .height = 24, .pitch = 128, .bits_per_pixel = 32 };
+    try std.testing.expect(try desktop.present(mapping));
+    // Front footprint is 16x8. Moving one pixel horizontally yields
+    // a union of 17x8, rather than the former 32x8 writes.
+    const writes = try desktop.moveFrontAndPresent(mapping, 9, 6);
+    try std.testing.expectEqual(@as(usize, 17 * 8), writes);
+    var expected: [32 * 24 * 4]u8 = @splat(0);
+    var surface = try @import("raster.zig").Surface.init(&expected, 32, 24, 128);
+    renderer.render(&surface, &desktop.frame.session_state.windows, palette);
+    try std.testing.expectEqualSlices(u8, &expected, &pixels);
 }
