@@ -198,21 +198,56 @@ after_path = os.path.join(work_dir, "after.ppm")
 movement_pattern = re.compile(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)")
 ack_pattern = re.compile(r"\[VNK\] graphics: arrow ack scancode=0x([0-9a-f]+) moved=([01]) x=(\d+) y=(\d+)")
 
-def monitor_command(command):
-    # Rapid sendkey bursts can exhaust the host-side UNIX monitor socket
-    # buffer. Retry transient EAGAIN without silently dropping a command.
-    retry_deadline = min(deadline, time.monotonic() + 5)
-    while True:
+# Reuse one HMP connection and consume the prompt after every command.
+# Closing a fresh socket for each sendkey previously caused monitor backlog.
+monitor_socket = None
+monitor_buffer = b""
+
+def monitor_read_prompt():
+    global monitor_buffer
+    until = min(deadline, time.monotonic() + 5)
+    while time.monotonic() < until:
+        if monitor_buffer.endswith(b"(qemu) "):
+            response = monitor_buffer
+            monitor_buffer = b""
+            return response
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(2)
-                sock.connect(monitor_path)
-                sock.sendall((command + "\n").encode("ascii"))
-            return
-        except BlockingIOError:
-            if time.monotonic() >= retry_deadline:
-                sys.exit("FAIL: QEMU monitor remained unavailable: " + command)
-            time.sleep(0.02)
+            chunk = monitor_socket.recv(4096)
+        except socket.timeout:
+            continue
+        if not chunk:
+            raise OSError("QEMU monitor disconnected")
+        monitor_buffer += chunk
+        if len(monitor_buffer) > 1048576:
+            raise OSError("QEMU monitor response exceeds 1 MiB")
+    raise TimeoutError("QEMU monitor prompt timeout")
+
+def monitor_command(command):
+    global monitor_socket, monitor_buffer
+    if monitor_socket is None:
+        until = min(deadline, time.monotonic() + 5)
+        while True:
+            candidate = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            candidate.settimeout(0.5)
+            try:
+                candidate.connect(monitor_path)
+                monitor_socket = candidate
+                monitor_read_prompt()
+                break
+            except (OSError, TimeoutError):
+                candidate.close()
+                monitor_socket = None
+                monitor_buffer = b""
+                if time.monotonic() >= until:
+                    sys.exit("FAIL: QEMU monitor connection unavailable")
+                time.sleep(0.02)
+    try:
+        monitor_socket.sendall((command + "\\n").encode("ascii"))
+        response = monitor_read_prompt()
+    except (OSError, TimeoutError) as exc:
+        sys.exit(f"FAIL: QEMU monitor command {command!r}: {exc}")
+    if b"unknown command" in response.lower() or b"error:" in response.lower():
+        sys.exit(f"FAIL: QEMU monitor rejected {command!r}: {response[-300:]!r}")
 
 def screenshot(path):
     if os.path.exists(path):
@@ -299,6 +334,9 @@ while time.monotonic() < deadline:
         if burst:
             steps = ["right", "down", "left", "up"] * (burst_count // 4)
             burst_started = time.monotonic()
+            burst_ack_started = None
+            burst_first_ack = None
+            burst_last_ack = None
             burst_origin = old_position
             burst_expected = []
             position = old_position
@@ -331,6 +369,10 @@ while time.monotonic() < deadline:
             code, actual_moved, x, y = actual
             if (int(code, 16), int(actual_moved), int(x), int(y)) != (scan_codes[key], moved, *position):
                 sys.exit(f"FAIL: burst acknowledgement {index + 1}: expected {expected}, got {actual}")
+        if acknowledgements and burst_first_ack is None:
+            burst_first_ack = time.monotonic()
+        if len(acknowledgements) == len(steps) and burst_last_ack is None:
+            burst_last_ack = time.monotonic()
         # Refill only after all events from the preceding window were ACKed.
         # This tests sustained traffic without overflowing the host injector.
         if len(acknowledgements) == burst_sent and burst_sent < len(steps):
@@ -375,6 +417,9 @@ while time.monotonic() < deadline:
             elapsed = time.monotonic() - burst_started
             print(f"ok: burst {len(steps)} ordered acknowledgements and framebuffer verified", flush=True)
             print(f"ok: burst {len(steps)} events in {elapsed:.3f}s ({len(steps) / elapsed:.1f} events/s end-to-end)", flush=True)
+            if burst_first_ack is not None and burst_last_ack is not None:
+                ack_span = burst_last_ack - burst_first_ack
+                print(f"ok: burst ACK observation span {ack_span:.3f}s (includes polling and QEMU scheduling)", flush=True)
             sys.exit(0)
     elif state == "movement":
         positions = movement_pattern.findall(log)
