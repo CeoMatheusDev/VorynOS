@@ -215,6 +215,44 @@ pub fn freeInodeCount() usize {
     return count;
 }
 
+/// Fixed-size snapshot of allocator and namespace occupancy.
+/// Counters are observational; callers must ensure mutations are quiescent.
+pub const StorageStats = struct {
+    total_blocks: usize,
+    used_blocks: usize,
+    free_blocks: usize,
+    total_inodes: usize,
+    used_inodes: usize,
+    free_inodes: usize,
+    total_dir_entries: usize,
+    used_dir_entries: usize,
+    free_dir_entries: usize,
+    total_bytes: usize,
+    allocated_data_bytes: usize,
+};
+
+pub fn storageStats() StorageStats {
+    const free_blocks = freeBlockCount();
+    const free_inodes = freeInodeCount();
+    var used_entries: usize = 0;
+    for (dir_entries) |entry| {
+        if (entry.used) used_entries += 1;
+    }
+    return .{
+        .total_blocks = block_count,
+        .used_blocks = block_count - free_blocks,
+        .free_blocks = free_blocks,
+        .total_inodes = inode_count,
+        .used_inodes = inode_count - free_inodes,
+        .free_inodes = free_inodes,
+        .total_dir_entries = dir_entry_count,
+        .used_dir_entries = used_entries,
+        .free_dir_entries = dir_entry_count - used_entries,
+        .total_bytes = total_size,
+        .allocated_data_bytes = (block_count - free_blocks - 1) * block_size,
+    };
+}
+
 /// Read-only consistency audit for the in-memory block allocator and directory.
 /// Orphan inodes are permitted because unlink defers reclamation until close.
 pub const AuditError = error{
@@ -1218,5 +1256,38 @@ test "audit rejects file size exceeding direct block capacity" {
     inodes[file].i_size = max_file_size + 1;
     try testing.expectError(error.InvalidFileLayout, audit());
     inodes[file].i_size = original;
+    try audit();
+}
+
+test "storage statistics reflect initialization and file allocation" {
+    init();
+    const initial = storageStats();
+    try testing.expectEqual(@as(usize, 1), initial.used_blocks);
+    try testing.expectEqual(@as(usize, 1), initial.used_inodes);
+    try testing.expectEqual(@as(usize, 0), initial.used_dir_entries);
+    try testing.expectEqual(@as(usize, 0), initial.allocated_data_bytes);
+    const file = try createFile(root_inode, "stats");
+    try writeFile(file, "data");
+    const after = storageStats();
+    try testing.expectEqual(initial.used_blocks + 1, after.used_blocks);
+    try testing.expectEqual(initial.used_inodes + 1, after.used_inodes);
+    try testing.expectEqual(@as(usize, 1), after.used_dir_entries);
+    try testing.expectEqual(@as(usize, block_size), after.allocated_data_bytes);
+    try audit();
+}
+
+test "storage statistics track truncate and released file" {
+    init();
+    const file = try createFile(root_inode, "stats-truncate");
+    var payload: [block_size + 1]u8 = @splat(7);
+    try writeFile(file, &payload);
+    try testing.expectEqual(@as(usize, 2 * block_size), storageStats().allocated_data_bytes);
+    try truncate(file, 1);
+    try testing.expectEqual(@as(usize, block_size), storageStats().allocated_data_bytes);
+    _ = try unlinkFile(root_inode, "stats-truncate");
+    releaseUnlinked(file);
+    const after = storageStats();
+    try testing.expectEqual(@as(usize, 0), after.allocated_data_bytes);
+    try testing.expectEqual(@as(usize, 0), after.used_dir_entries);
     try audit();
 }
