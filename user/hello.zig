@@ -180,6 +180,31 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     const count = sdk.fsRead(fd, &data);
     if (sdk.syscall.isError(count) or count != data.len) sdk.exit(4);
     if (sdk.fsClose(fd) != 0) sdk.exit(5);
+
+    // M0.3.16: prova real da syscall 22 a partir de ring 3.
+    // Cria um arquivo isolado, escreve, encolhe, reabre e confere os bytes.
+    const truncate_fd = sdk.fsCreate("/apps/truncate-probe.txt");
+    if (sdk.syscall.isError(truncate_fd)) sdk.exit(20);
+    if (sdk.fsWrite(truncate_fd, "abcdef") != 6) sdk.exit(21);
+    if (sdk.fsTruncate(truncate_fd, 3) != 0) sdk.exit(22);
+    // A syscall não altera o offset de escrita já avançado.
+    if (sdk.fsClose(truncate_fd) != 0) sdk.exit(23);
+
+    const read_fd = sdk.fsOpen("/apps/truncate-probe.txt", 0);
+    if (sdk.syscall.isError(read_fd)) sdk.exit(24);
+    // A abertura somente-leitura não pode truncar.
+    const denied = sdk.fsTruncate(read_fd, 0);
+    if (!sdk.syscall.isError(denied)) sdk.exit(25);
+    var truncated: [8]u8 = undefined;
+    const truncated_count = sdk.fsRead(read_fd, &truncated);
+    if (truncated_count != 3 or
+        truncated[0] != 'a' or truncated[1] != 'b' or truncated[2] != 'c')
+    {
+        sdk.exit(26);
+    }
+    if (sdk.fsClose(read_fd) != 0) sdk.exit(27);
+    _ = sdk.write("fs truncate user probe ok\n");
+
     const message = "toolchain ELF\n";
     const result = sdk.write(message);
     sdk.exit(if (sdk.syscall.isError(result)) 1 else 0);
