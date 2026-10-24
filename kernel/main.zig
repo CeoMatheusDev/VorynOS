@@ -91,6 +91,32 @@ const PerfWindow = struct {
 var perf_tsc_hz: u64 = 0;
 var perf_window: PerfWindow = .{};
 
+/// F14: allocation-free render latency statistics across arrow events.
+const RenderLatency = struct {
+    samples: u64 = 0,
+    cycles_sum: u64 = 0,
+    cycles_min: u64 = std.math.maxInt(u64),
+    cycles_max: u64 = 0,
+    pixels_sum: u64 = 0,
+    baseline_sum: u64 = 0,
+
+    fn record(self: *RenderLatency, cycles: u64, pixels: usize, baseline: usize) void {
+        self.samples +|= 1;
+        self.cycles_sum +|= cycles;
+        self.cycles_min = @min(self.cycles_min, cycles);
+        self.cycles_max = @max(self.cycles_max, cycles);
+        self.pixels_sum +|= @as(u64, @intCast(pixels));
+        self.baseline_sum +|= @as(u64, @intCast(baseline));
+    }
+
+    fn meanCycles(self: *const RenderLatency) u64 {
+        return if (self.samples == 0) 0 else self.cycles_sum / self.samples;
+    }
+};
+
+var render_latency: RenderLatency = .{};
+
+
 fn cyclesToMicroseconds(cycles: u64) u64 {
     if (perf_tsc_hz == 0) return 0;
     return @intCast(@as(u128, cycles) * 1_000_000 / perf_tsc_hz);
@@ -994,6 +1020,18 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
         (@min(current.height, height - @min(next.y, height)));
     const baseline_writes = old_area +| new_area;
     const saved_writes = baseline_writes -| pixels;
+    render_latency.record(render_cycles, pixels, baseline_writes);
+    serial.printLine(
+        "[VNK] graphics: latency samples={d} min_cycles={d} mean_cycles={d} max_cycles={d} total_pixels={d} total_baseline={d}",
+        .{
+            render_latency.samples,
+            render_latency.cycles_min,
+            render_latency.meanCycles(),
+            render_latency.cycles_max,
+            render_latency.pixels_sum,
+            render_latency.baseline_sum,
+        },
+    );
     serial.printLine("[VNK] graphics: redraw benchmark cycles={d} pixels={d} baseline={d} saved={d}", .{
         render_cycles, pixels, baseline_writes, saved_writes,
     });
@@ -2809,4 +2847,18 @@ fn selfTest() void {
     asm volatile ("ud2");
     serial.printLine("[VNK] FATAL: the exception handling did not stop the kernel", .{});
     port.haltForever();
+}
+
+test "F14 render latency accumulates bounded min mean max and baseline" {
+    var stats: RenderLatency = .{};
+    try std.testing.expectEqual(@as(u64, 0), stats.meanCycles());
+    stats.record(300, 80, 120);
+    stats.record(100, 60, 120);
+    stats.record(200, 70, 120);
+    try std.testing.expectEqual(@as(u64, 3), stats.samples);
+    try std.testing.expectEqual(@as(u64, 100), stats.cycles_min);
+    try std.testing.expectEqual(@as(u64, 200), stats.meanCycles());
+    try std.testing.expectEqual(@as(u64, 300), stats.cycles_max);
+    try std.testing.expectEqual(@as(u64, 210), stats.pixels_sum);
+    try std.testing.expectEqual(@as(u64, 360), stats.baseline_sum);
 }
