@@ -223,6 +223,7 @@ pub const AuditError = error{
     InvalidBlockReference,
     DuplicateBlockReference,
     BlockBitmapMismatch,
+    InvalidFileLayout,
 };
 
 pub fn audit() AuditError!void {
@@ -233,6 +234,16 @@ pub fn audit() AuditError!void {
     referenced[0] = true;
     for (inodes) |entry| {
         if (entry.i_links_count == 0) continue;
+        if (entry.i_type == .file) {
+            if (entry.i_size > max_file_size) return error.InvalidFileLayout;
+            const expected: usize = if (entry.i_size == 0) 0 else
+                (@as(usize, @intCast(entry.i_size)) - 1) / block_size + 1;
+            for (entry.i_block, 0..) |block, index| {
+                if ((index < expected and block == 0) or
+                    (index >= expected and block != 0))
+                    return error.InvalidFileLayout;
+            }
+        }
         for (entry.i_block) |block| {
             if (block == 0) continue;
             const index: usize = @intCast(block);
@@ -1174,5 +1185,38 @@ test "audit detects invalid directory reference" {
     dir_entries[slot].inode = @intCast(inode_count);
     try testing.expectError(error.InvalidDirectoryEntry, audit());
     dir_entries[slot].inode = original;
+    try audit();
+}
+
+test "audit rejects missing required file block" {
+    init();
+    const file = try createFile(root_inode, "required");
+    try writeFile(file, "data");
+    const saved = inodes[file].i_block[0];
+    inodes[file].i_block[0] = 0;
+    try testing.expectError(error.InvalidFileLayout, audit());
+    inodes[file].i_block[0] = saved;
+    try audit();
+}
+
+test "audit rejects blocks beyond logical file size" {
+    init();
+    const file = try createFile(root_inode, "trailing");
+    try writeFile(file, "data");
+    const extra = allocateBlock() orelse return error.NoSpace;
+    inodes[file].i_block[1] = extra;
+    try testing.expectError(error.InvalidFileLayout, audit());
+    inodes[file].i_block[1] = 0;
+    _ = freeBlock(extra);
+    try audit();
+}
+
+test "audit rejects file size exceeding direct block capacity" {
+    init();
+    const file = try createFile(root_inode, "oversize");
+    const original = inodes[file].i_size;
+    inodes[file].i_size = max_file_size + 1;
+    try testing.expectError(error.InvalidFileLayout, audit());
+    inodes[file].i_size = original;
     try audit();
 }
