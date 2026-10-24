@@ -20,6 +20,7 @@ EDGES=false
 STRESS=false
 BOUNDS=false
 BURST=false
+BURST_COUNT=16
 
 for argument in "$@"; do
     case "$argument" in
@@ -29,12 +30,18 @@ for argument in "$@"; do
         --stress) STRESS=true ;;
         --bounds) BOUNDS=true ;;
         --burst) BURST=true ;;
+        --burst-count=*) BURST=true; BURST_COUNT="${argument#--burst-count=}" ;;
         *)
             echo "qemu-boot-test: unknown argument: $argument" >&2
             exit 2
             ;;
     esac
 done
+
+if ! [[ "$BURST_COUNT" =~ ^(16|64|128|256)$ ]]; then
+    echo "qemu-interactive-test: --burst-count must be 16, 64, 128 or 256" >&2
+    exit 2
+fi
 
 if [[ -z "$IMAGE" ]]; then
     echo "qemu-boot-test: --image is required" >&2
@@ -164,20 +171,21 @@ trap 'cleanup_qemu; rm -rf "$WORK_DIRECTORY"' EXIT
 
 # The script injects I during boot, then RIGHT only after the persistent
 # loop marker. This distinguishes the permanent loop from the boot pump.
-if ! python3 - "$SERIAL_LOG" "$MONITOR_SOCKET" "$QEMU_PID" "$TIMEOUT" "$WORK_DIRECTORY" "$EDGES" "$STRESS" "$BOUNDS" "$BURST" <<'PY'
+if ! python3 - "$SERIAL_LOG" "$MONITOR_SOCKET" "$QEMU_PID" "$TIMEOUT" "$WORK_DIRECTORY" "$EDGES" "$STRESS" "$BOUNDS" "$BURST" "$BURST_COUNT" <<'PY'
 import os
 import re
 import socket
 import sys
 import time
 
-log_path, monitor_path, pid_text, timeout_text, work_dir, edges_text, stress_text, bounds_text, burst_text = sys.argv[1:]
+log_path, monitor_path, pid_text, timeout_text, work_dir, edges_text, stress_text, bounds_text, burst_text, burst_count_text = sys.argv[1:]
 edges = edges_text == "true"
 stress = stress_text == "true"
 bounds = bounds_text == "true"
 burst = burst_text == "true"
+burst_count = int(burst_count_text)
 if sum((edges, stress, bounds, burst)) > 1:
-    sys.exit("FAIL: --edges, --stress and --bounds are mutually exclusive")
+    sys.exit("FAIL: --edges, --stress, --bounds and --burst are mutually exclusive")
 pid = int(pid_text)
 deadline = time.monotonic() + int(timeout_text)
 state = "boot"
@@ -289,7 +297,8 @@ while time.monotonic() < deadline:
         baseline = len(movement_pattern.findall(log))
         ack_baseline = len(ack_pattern.findall(log))
         if burst:
-            steps = ["right", "down", "left", "up"] * 4
+            steps = ["right", "down", "left", "up"] * (burst_count // 4)
+            burst_started = time.monotonic()
             burst_origin = old_position
             burst_expected = []
             position = old_position
@@ -351,7 +360,9 @@ while time.monotonic() < deadline:
             print(result.stdout, end="", flush=True)
             if result.returncode:
                 sys.exit("FAIL: burst framebuffer validation: " + (result.stderr.strip() or result.stdout.strip()))
+            elapsed = time.monotonic() - burst_started
             print(f"ok: burst {len(steps)} ordered acknowledgements and framebuffer verified", flush=True)
+            print(f"ok: burst {len(steps)} events in {elapsed:.3f}s ({len(steps) / elapsed:.1f} events/s end-to-end)", flush=True)
             sys.exit(0)
     elif state == "movement":
         positions = movement_pattern.findall(log)
@@ -440,7 +451,8 @@ while time.monotonic() < deadline:
     except ProcessLookupError:
         sys.exit("FAIL: QEMU exited before interactive validation")
     time.sleep(0.02)
-sys.exit(f"FAIL: timeout waiting for interactive state {state}, step {step + 1}")
+sys.exit(f"FAIL: timeout waiting for interactive state {state}, step {step + 1}"
+         + (f", burst acks={len(acknowledgements)}/{len(steps)}, movements={len(positions)}" if state == "burst" else ""))
 
 PY
 then
