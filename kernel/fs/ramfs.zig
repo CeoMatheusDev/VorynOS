@@ -22,7 +22,7 @@
 //!   * 256 blocos de 4 KiB (1 MiB no total), numerados de 0 a 255;
 //!   * o bloco 0 é reservado para o superbloco e nunca é entregue;
 //!   * o bitmap tem um bit por bloco, com 1 significando **usado**;
-//!   * 32 inodes, numerados de 0 a 31; o inode 0 é o diretório raiz;
+//!   * 32 default_state.inodes, numerados de 0 a 31; o inode 0 é o diretório raiz;
 //!   * cada inode aponta para até 12 blocos diretos (48 KiB por arquivo);
 //!   * uma tabela fixa de entradas de diretório guarda nome, pai e inode.
 //!
@@ -111,24 +111,24 @@ pub const DirEntryInfo = struct {
     name: []const u8,
 };
 
-/// Área de armazenamento do RamFS.
-var memory: [total_size]u8 = undefined;
+/// Estado de uma instância RamFS, separado das operações.
+/// A implementação legada continua usando a instância default_state;
+/// operações parametrizadas por *State serão introduzidas gradualmente.
+pub const State = struct {
+    memory: [total_size]u8 = undefined,
+    block_bitmap: [block_count / 8]u8 = undefined,
+    inodes: [inode_count]inode.InodeOnDisk = undefined,
+    dir_entries: [dir_entry_count]DirEntry = undefined,
+};
 
-/// Bitmap de blocos, com 1 significando usado.
-var block_bitmap: [block_count / 8]u8 = undefined;
-
-/// Tabela de inodes.
-var inodes: [inode_count]inode.InodeOnDisk = undefined;
-
-/// Tabela de entradas de diretório.
-var dir_entries: [dir_entry_count]DirEntry = undefined;
+var default_state: State = .{};
 
 /// Inicializa o RamFS e apaga todo o conteúdo anterior.
 pub fn init() void {
-    @memset(memory[0..], 0);
-    @memset(block_bitmap[0..], 0);
+    @memset(default_state.memory[0..], 0);
+    @memset(default_state.block_bitmap[0..], 0);
 
-    for (&inodes) |*entry| {
+    for (&default_state.inodes) |*entry| {
         entry.* = .{
             .i_type = .file,
             .i_permissions = 0o755,
@@ -138,7 +138,7 @@ pub fn init() void {
         };
     }
 
-    for (&dir_entries) |*entry| {
+    for (&default_state.dir_entries) |*entry| {
         entry.* = .{};
     }
 
@@ -147,7 +147,7 @@ pub fn init() void {
 
     // O inode 0 é o diretório raiz. O contador de links funciona como
     // marcador de inode ocupado: zero significa livre.
-    inodes[root_inode] = .{
+    default_state.inodes[root_inode] = .{
         .i_type = .directory,
         .i_permissions = 0o755,
         .i_links_count = 1,
@@ -159,16 +159,16 @@ pub fn init() void {
 /// Verdadeiro quando o bloco está marcado como usado.
 fn blockUsed(block: usize) bool {
     const mask = @as(u8, 1) << @intCast(block % 8);
-    return block_bitmap[block / 8] & mask != 0;
+    return default_state.block_bitmap[block / 8] & mask != 0;
 }
 
 /// Marca ou desmarca um bloco.
 fn setBlockUsed(block: usize, used: bool) void {
     const mask = @as(u8, 1) << @intCast(block % 8);
     if (used) {
-        block_bitmap[block / 8] |= mask;
+        default_state.block_bitmap[block / 8] |= mask;
     } else {
-        block_bitmap[block / 8] &= ~mask;
+        default_state.block_bitmap[block / 8] &= ~mask;
     }
 }
 
@@ -179,7 +179,7 @@ pub fn allocateBlock() ?u32 {
     while (index < block_count) : (index += 1) {
         if (blockUsed(index)) continue;
         setBlockUsed(index, true);
-        @memset(memory[index * block_size ..][0..block_size], 0);
+        @memset(default_state.memory[index * block_size ..][0..block_size], 0);
         return @as(u32, @intCast(index));
     }
     return null;
@@ -193,7 +193,7 @@ pub fn freeBlock(block: u32) bool {
     if (!blockUsed(index)) return false;
 
     setBlockUsed(index, false);
-    @memset(memory[index * block_size ..][0..block_size], 0);
+    @memset(default_state.memory[index * block_size ..][0..block_size], 0);
     return true;
 }
 
@@ -209,7 +209,7 @@ pub fn freeBlockCount() usize {
 /// Número de inodes livres.
 pub fn freeInodeCount() usize {
     var count: usize = 0;
-    for (inodes) |entry| {
+    for (default_state.inodes) |entry| {
         if (entry.i_links_count == 0) count += 1;
     }
     return count;
@@ -235,7 +235,7 @@ pub fn storageStats() StorageStats {
     const free_blocks = freeBlockCount();
     const free_inodes = freeInodeCount();
     var used_entries: usize = 0;
-    for (dir_entries) |entry| {
+    for (default_state.dir_entries) |entry| {
         if (entry.used) used_entries += 1;
     }
     return .{
@@ -269,12 +269,12 @@ pub const AuditError = error{
 };
 
 pub fn audit() AuditError!void {
-    if (inodes[root_inode].i_links_count == 0 or inodes[root_inode].i_type != .directory)
+    if (default_state.inodes[root_inode].i_links_count == 0 or default_state.inodes[root_inode].i_type != .directory)
         return error.MissingRoot;
 
     var referenced: [block_count]bool = @splat(false);
     referenced[0] = true;
-    for (inodes) |entry| {
+    for (default_state.inodes) |entry| {
         if (entry.i_links_count == 0) continue;
         if (entry.i_type == .file) {
             if (entry.i_size > max_file_size) return error.InvalidFileLayout;
@@ -297,13 +297,13 @@ pub fn audit() AuditError!void {
     for (referenced, 0..) |used, index| {
         if (blockUsed(index) != used) return error.BlockBitmapMismatch;
     }
-    for (dir_entries) |entry| {
+    for (default_state.dir_entries) |entry| {
         if (!entry.used) continue;
         if (entry.parent >= inode_count or entry.inode >= inode_count)
             return error.InvalidDirectoryEntry;
-        if (inodes[entry.parent].i_links_count == 0 or inodes[entry.parent].i_type != .directory)
+        if (default_state.inodes[entry.parent].i_links_count == 0 or default_state.inodes[entry.parent].i_type != .directory)
             return error.InvalidDirectoryEntry;
-        if (inodes[entry.inode].i_links_count == 0 or entry.name_len == 0 or entry.name_len > max_name_len)
+        if (default_state.inodes[entry.inode].i_links_count == 0 or entry.name_len == 0 or entry.name_len > max_name_len)
             return error.InvalidDirectoryEntry;
         const name = entry.name[0..entry.name_len];
         if (!validName(name)) return error.InvalidDirectoryName;
@@ -311,11 +311,11 @@ pub fn audit() AuditError!void {
     // Each directory except the root must have at most one parent.
     // Follow parent chains with a bounded walk to detect cycles without
     // recursion or allocation. Unreachable directories are allowed for now.
-    for (dir_entries) |entry| {
-        if (!entry.used or inodes[entry.inode].i_type != .directory) continue;
+    for (default_state.dir_entries) |entry| {
+        if (!entry.used or default_state.inodes[entry.inode].i_type != .directory) continue;
         if (entry.inode == root_inode) return error.DirectoryCycle;
         var parent_links: usize = 0;
-        for (dir_entries) |other| {
+        for (default_state.dir_entries) |other| {
             if (other.used and other.inode == entry.inode) parent_links += 1;
         }
         if (parent_links > 1) return error.DirectoryMultipleParents;
@@ -326,7 +326,7 @@ pub fn audit() AuditError!void {
             if (depth >= inode_count or cursor == entry.inode)
                 return error.DirectoryCycle;
             var next: ?u32 = null;
-            for (dir_entries) |candidate| {
+            for (default_state.dir_entries) |candidate| {
                 if (candidate.used and candidate.inode == cursor) {
                     next = candidate.parent;
                     break;
@@ -335,9 +335,9 @@ pub fn audit() AuditError!void {
             cursor = next orelse break;
         }
     }
-    for (dir_entries, 0..) |entry, index| {
+    for (default_state.dir_entries, 0..) |entry, index| {
         if (!entry.used) continue;
-        for (dir_entries[index + 1 ..]) |other| {
+        for (default_state.dir_entries[index + 1 ..]) |other| {
             if (!other.used or other.parent != entry.parent) continue;
             if (std.mem.eql(u8, entry.name[0..entry.name_len], other.name[0..other.name_len]))
                 return error.DuplicateDirectoryName;
@@ -348,14 +348,14 @@ pub fn audit() AuditError!void {
 /// Devolve o tipo do inode, ou `null` quando o inode está livre.
 pub fn inodeKind(inode_num: u32) ?inode.InodeType {
     if (inode_num >= inode_count) return null;
-    const entry = inodes[inode_num];
+    const entry = default_state.inodes[inode_num];
     if (entry.i_links_count == 0) return null;
     return entry.i_type;
 }
 
 /// Aloca um inode do tipo pedido.
 fn allocateInode(kind: inode.InodeType) Error!u32 {
-    for (&inodes, 0..) |*entry, index| {
+    for (&default_state.inodes, 0..) |*entry, index| {
         if (entry.i_links_count != 0) continue;
         entry.* = .{
             .i_type = kind,
@@ -372,7 +372,7 @@ fn allocateInode(kind: inode.InodeType) Error!u32 {
 /// Libera um inode e todos os blocos dele.
 fn releaseInode(inode_num: u32) void {
     if (inode_num >= inode_count) return;
-    const entry = &inodes[inode_num];
+    const entry = &default_state.inodes[inode_num];
     for (entry.i_block) |block| {
         if (block != 0) _ = freeBlock(@as(u32, @intCast(block)));
     }
@@ -398,7 +398,7 @@ fn validName(name: []const u8) bool {
 /// Procura uma entrada pelo nome dentro de um diretório.
 pub fn lookup(parent: u32, name: []const u8) ?u32 {
     if (parent >= inode_count) return null;
-    for (dir_entries) |entry| {
+    for (default_state.dir_entries) |entry| {
         if (!entry.used) continue;
         if (entry.parent != parent) continue;
         if (std.mem.eql(u8, entry.name[0..entry.name_len], name)) return entry.inode;
@@ -413,7 +413,7 @@ pub fn addDirEntry(parent: u32, name: []const u8, inode_num: u32) Error!void {
     if (!validName(name)) return error.InvalidName;
     if (lookup(parent, name) != null) return error.NameExists;
 
-    for (&dir_entries) |*entry| {
+    for (&default_state.dir_entries) |*entry| {
         if (entry.used) continue;
         entry.used = true;
         entry.parent = parent;
@@ -438,7 +438,7 @@ pub fn renameFile(source_parent: u32, source_name: []const u8, target_parent: u3
     if (source_parent == target_parent and std.mem.eql(u8, source_name, target_name)) return;
     if (lookup(target_parent, target_name) != null) return error.NameExists;
 
-    for (&dir_entries) |*entry| {
+    for (&default_state.dir_entries) |*entry| {
         if (!entry.used or entry.parent != source_parent or entry.inode != source_inode) continue;
         if (!std.mem.eql(u8, entry.name[0..entry.name_len], source_name)) continue;
         entry.parent = target_parent;
@@ -457,7 +457,7 @@ pub fn unlinkFile(parent: u32, name: []const u8) Error!u32 {
     if (!validName(name)) return error.InvalidName;
     const target = lookup(parent, name) orelse return error.EntryNotFound;
     if (inodeKind(target) != .file) return error.NotAFile;
-    for (&dir_entries) |*entry| {
+    for (&default_state.dir_entries) |*entry| {
         if (!entry.used or entry.parent != parent or entry.inode != target) continue;
         if (!std.mem.eql(u8, entry.name[0..entry.name_len], name)) continue;
         entry.* = .{};
@@ -469,7 +469,7 @@ pub fn unlinkFile(parent: u32, name: []const u8) Error!u32 {
 /// Libera inode desvinculado; nunca deve ser chamado com descritores vivos.
 pub fn releaseUnlinked(inode_num: u32) void {
     if (inode_num == root_inode or inodeKind(inode_num) != .file) return;
-    for (dir_entries) |entry| {
+    for (default_state.dir_entries) |entry| {
         if (entry.used and entry.inode == inode_num) return;
     }
     releaseInode(inode_num);
@@ -539,17 +539,17 @@ fn ensureBlocks(inode_num: u32, required: usize) Error!void {
     var new_count: usize = 0;
     errdefer {
         for (new_indices[0..new_count]) |index| {
-            const block = inodes[inode_num].i_block[index];
+            const block = default_state.inodes[inode_num].i_block[index];
             _ = freeBlock(@as(u32, @intCast(block)));
-            inodes[inode_num].i_block[index] = 0;
+            default_state.inodes[inode_num].i_block[index] = 0;
         }
     }
 
     var count: usize = 0;
     while (count < required) : (count += 1) {
-        if (inodes[inode_num].i_block[count] != 0) continue;
+        if (default_state.inodes[inode_num].i_block[count] != 0) continue;
         const block = allocateBlock() orelse return error.NoSpace;
-        inodes[inode_num].i_block[count] = block;
+        default_state.inodes[inode_num].i_block[count] = block;
         new_indices[new_count] = count;
         new_count += 1;
     }
@@ -557,7 +557,7 @@ fn ensureBlocks(inode_num: u32, required: usize) Error!void {
 
 /// Libera todos os blocos de um inode e zera os ponteiros.
 fn releaseBlocks(inode_num: u32) void {
-    for (&inodes[inode_num].i_block) |*block| {
+    for (&default_state.inodes[inode_num].i_block) |*block| {
         if (block.* != 0) {
             _ = freeBlock(@as(u32, @intCast(block.*)));
             block.* = 0;
@@ -568,7 +568,7 @@ fn releaseBlocks(inode_num: u32) void {
 /// Substitui o conteúdo de um arquivo.
 pub fn writeFile(inode_num: u32, data: []const u8) Error!void {
     if (inodeKind(inode_num) == null) return error.InvalidInode;
-    if (inodes[inode_num].i_type != .file) return error.NotAFile;
+    if (default_state.inodes[inode_num].i_type != .file) return error.NotAFile;
 
     const required = try blocksFor(data.len);
 
@@ -590,15 +590,15 @@ pub fn writeFile(inode_num: u32, data: []const u8) Error!void {
     for (new_blocks[0..required]) |block| {
         const count = @min(block_size, data.len - offset);
         const start = @as(usize, block) * block_size;
-        @memcpy(memory[start..][0..count], data[offset..][0..count]);
+        @memcpy(default_state.memory[start..][0..count], data[offset..][0..count]);
         offset += count;
     }
 
     releaseBlocks(inode_num);
-    for (&inodes[inode_num].i_block, 0..) |*slot, index| {
+    for (&default_state.inodes[inode_num].i_block, 0..) |*slot, index| {
         slot.* = if (index < required) new_blocks[index] else 0;
     }
-    inodes[inode_num].i_size = data.len;
+    default_state.inodes[inode_num].i_size = data.len;
 }
 
 /// Escreve `data` em `offset`, sem apagar o restante do arquivo.
@@ -608,7 +608,7 @@ pub fn writeFile(inode_num: u32, data: []const u8) Error!void {
 /// alocados zerados.
 pub fn writeFileAt(inode_num: u32, offset: usize, data: []const u8) Error!usize {
     if (inodeKind(inode_num) == null) return error.InvalidInode;
-    if (inodes[inode_num].i_type != .file) return error.NotAFile;
+    if (default_state.inodes[inode_num].i_type != .file) return error.NotAFile;
     if (data.len == 0) return 0;
 
     const end = std.math.add(usize, offset, data.len) catch return error.FileTooLarge;
@@ -621,45 +621,45 @@ pub fn writeFileAt(inode_num: u32, offset: usize, data: []const u8) Error!usize 
         const block_index = position / block_size;
         const inside = position % block_size;
         const count = @min(block_size - inside, data.len - source);
-        const block = @as(usize, @intCast(inodes[inode_num].i_block[block_index]));
+        const block = @as(usize, @intCast(default_state.inodes[inode_num].i_block[block_index]));
         @memcpy(
-            memory[block * block_size + inside ..][0..count],
+            default_state.memory[block * block_size + inside ..][0..count],
             data[source..][0..count],
         );
         source += count;
         position += count;
     }
 
-    if (inodes[inode_num].i_size < end) inodes[inode_num].i_size = end;
+    if (default_state.inodes[inode_num].i_size < end) default_state.inodes[inode_num].i_size = end;
     return data.len;
 }
 
 /// Encolhe um arquivo para `new_size` bytes.
 pub fn truncate(inode_num: u32, new_size: usize) Error!void {
     if (inodeKind(inode_num) == null) return error.InvalidInode;
-    if (inodes[inode_num].i_type != .file) return error.NotAFile;
-    if (new_size > inodes[inode_num].i_size) return error.InvalidOffset;
+    if (default_state.inodes[inode_num].i_type != .file) return error.NotAFile;
+    if (new_size > default_state.inodes[inode_num].i_size) return error.InvalidOffset;
     if (new_size > max_file_size) return error.FileTooLarge;
 
     const required = try blocksFor(new_size);
     var index = required;
     while (index < direct_blocks) : (index += 1) {
-        const block = inodes[inode_num].i_block[index];
+        const block = default_state.inodes[inode_num].i_block[index];
         if (block != 0) {
             _ = freeBlock(@as(u32, @intCast(block)));
-            inodes[inode_num].i_block[index] = 0;
+            default_state.inodes[inode_num].i_block[index] = 0;
         }
     }
 
     // O restante do último bloco fica inacessível pelo tamanho, mas é
     // zerado para que uma futura extensão não exponha dados antigos.
     if (new_size % block_size != 0 and required > 0) {
-        const block = @as(usize, @intCast(inodes[inode_num].i_block[required - 1]));
+        const block = @as(usize, @intCast(default_state.inodes[inode_num].i_block[required - 1]));
         const start = block * block_size + (new_size % block_size);
-        @memset(memory[start..][0 .. block_size - (new_size % block_size)], 0);
+        @memset(default_state.memory[start..][0 .. block_size - (new_size % block_size)], 0);
     }
 
-    inodes[inode_num].i_size = new_size;
+    default_state.inodes[inode_num].i_size = new_size;
 }
 
 /// Lê o arquivo a partir de `offset` para o buffer do chamador e devolve o
@@ -667,9 +667,9 @@ pub fn truncate(inode_num: u32, new_size: usize) Error!void {
 /// de sistema de arquivos.
 pub fn readFileAt(inode_num: u32, offset: usize, buffer: []u8) Error!usize {
     if (inodeKind(inode_num) == null) return error.InvalidInode;
-    if (inodes[inode_num].i_type != .file) return error.NotAFile;
+    if (default_state.inodes[inode_num].i_type != .file) return error.NotAFile;
 
-    const size = @as(usize, @intCast(inodes[inode_num].i_size));
+    const size = @as(usize, @intCast(default_state.inodes[inode_num].i_size));
     if (offset >= size or buffer.len == 0) return 0;
 
     const count = @min(buffer.len, size - offset);
@@ -679,10 +679,10 @@ pub fn readFileAt(inode_num: u32, offset: usize, buffer: []u8) Error!usize {
         const block_index = position / block_size;
         const inside = position % block_size;
         const chunk = @min(block_size - inside, count - destination);
-        const block = @as(usize, @intCast(inodes[inode_num].i_block[block_index]));
+        const block = @as(usize, @intCast(default_state.inodes[inode_num].i_block[block_index]));
         @memcpy(
             buffer[destination..][0..chunk],
-            memory[block * block_size + inside ..][0..chunk],
+            default_state.memory[block * block_size + inside ..][0..chunk],
         );
         destination += chunk;
         position += chunk;
@@ -701,7 +701,7 @@ pub fn listDir(directory: u32, out: []DirEntryInfo) Error!usize {
     if (inodeKind(directory) != .directory) return error.NotADirectory;
 
     var count: usize = 0;
-    for (&dir_entries) |*entry| {
+    for (&default_state.dir_entries) |*entry| {
         if (!entry.used) continue;
         if (entry.parent != directory) continue;
         if (count >= out.len) return error.BufferTooSmall;
@@ -720,8 +720,8 @@ pub fn listDir(directory: u32, out: []DirEntryInfo) Error!usize {
 /// Tamanho de um arquivo, ou `null` quando o inode não é um arquivo.
 pub fn sizeOf(inode_num: u32) ?u64 {
     if (inodeKind(inode_num) == null) return null;
-    if (inodes[inode_num].i_type != .file) return null;
-    return inodes[inode_num].i_size;
+    if (default_state.inodes[inode_num].i_type != .file) return null;
+    return default_state.inodes[inode_num].i_size;
 }
 
 /// Informações do superbloco do RamFS.
@@ -743,7 +743,7 @@ pub fn getFsInfo() superblock.SuperblockOnDisk {
 /// Informações de um inode.
 pub fn getInodeInfo(inode_num: u32) Error!inode.InodeOnDisk {
     if (inodeKind(inode_num) == null) return error.InvalidInode;
-    return inodes[inode_num];
+    return default_state.inodes[inode_num];
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,7 +1006,7 @@ test "writeFileAt NoSpace rolls back partial block allocation" {
     const target = try createFile(root_inode, "target");
     _ = try writeFileAt(target, 0, "preserved");
     const original_size = sizeOf(target).?;
-    const original_block = inodes[target].i_block[0];
+    const original_block = default_state.inodes[target].i_block[0];
 
     // Leave exactly one free block: extending to three blocks must fail
     // after allocating the first new block.
@@ -1020,9 +1020,9 @@ test "writeFileAt NoSpace rolls back partial block allocation" {
     const payload: [block_size * 2 + 1]u8 = @splat(0x5a);
     try testing.expectError(error.NoSpace, writeFileAt(target, 0, &payload));
     try testing.expectEqual(original_size, sizeOf(target).?);
-    try testing.expectEqual(original_block, inodes[target].i_block[0]);
-    try testing.expectEqual(@as(u32, 0), inodes[target].i_block[1]);
-    try testing.expectEqual(@as(u32, 0), inodes[target].i_block[2]);
+    try testing.expectEqual(original_block, default_state.inodes[target].i_block[0]);
+    try testing.expectEqual(@as(u32, 0), default_state.inodes[target].i_block[1]);
+    try testing.expectEqual(@as(u32, 0), default_state.inodes[target].i_block[2]);
     try testing.expectEqual(before_free, freeBlockCount());
     var result: [9]u8 = undefined;
     const read_count = try readFileAt(target, 0, &result);
@@ -1040,7 +1040,7 @@ test "truncate frees trailing blocks and zeroes retained block tail" {
     try truncate(target, block_size + 3);
     try testing.expectEqual(@as(u64, block_size + 3), sizeOf(target).?);
     try testing.expectEqual(before + 1, freeBlockCount());
-    try testing.expectEqual(@as(u32, 0), inodes[target].i_block[2]);
+    try testing.expectEqual(@as(u32, 0), default_state.inodes[target].i_block[2]);
     const extension: [block_size - 3]u8 = @splat(0x2a);
     _ = try writeFileAt(target, block_size * 2, &extension);
     var gap: [block_size - 3]u8 = undefined;
@@ -1108,7 +1108,7 @@ test "truncate to zero releases blocks and subsequent writes start clean" {
     try truncate(file, 0);
     try testing.expectEqual(@as(u64, 0), sizeOf(file).?);
     try testing.expectEqual(before + 2, freeBlockCount());
-    for (inodes[file].i_block) |block| try testing.expectEqual(@as(u32, 0), block);
+    for (default_state.inodes[file].i_block) |block| try testing.expectEqual(@as(u32, 0), block);
     try testing.expectEqual(@as(usize, 1), try writeFileAt(file, block_size + 2, "Z"));
     var gap: [block_size + 2]u8 = undefined;
     try testing.expectEqual(gap.len, try readFileAt(file, 0, &gap));
@@ -1123,10 +1123,10 @@ test "empty writes leave inode and block allocation unchanged" {
     const file = try createFile(root_inode, "empty");
     try writeFile(file, "data");
     const before = freeBlockCount();
-    const first_block = inodes[file].i_block[0];
+    const first_block = default_state.inodes[file].i_block[0];
     try testing.expectEqual(@as(usize, 0), try writeFileAt(file, max_file_size + 1, ""));
     try testing.expectEqual(before, freeBlockCount());
-    try testing.expectEqual(first_block, inodes[file].i_block[0]);
+    try testing.expectEqual(first_block, default_state.inodes[file].i_block[0]);
     try testing.expectEqual(@as(u64, 4), sizeOf(file).?);
     var result: [4]u8 = undefined;
     try testing.expectEqual(@as(usize, 4), try readFileAt(file, 0, &result));
@@ -1200,7 +1200,7 @@ test "full directory table rejects new entry without leaking allocated inode" {
     init();
     const anchor = try createFile(root_inode, "anchor");
     // addDirEntry permits an existing inode in multiple entries. This
-    // directly saturates the fixed directory table without 64 inodes.
+    // directly saturates the fixed directory table without 64 default_state.inodes.
     for (0..dir_entry_count - 1) |index| {
         var name: [32]u8 = undefined;
         const path = try std.fmt.bufPrint(&name, "alias-{d}", .{index});
@@ -1246,7 +1246,7 @@ test "audit detects allocator bitmap mismatch without modifying data" {
     const file = try createFile(root_inode, "file");
     try writeFile(file, "payload");
     try audit();
-    const block: usize = @intCast(inodes[file].i_block[0]);
+    const block: usize = @intCast(default_state.inodes[file].i_block[0]);
     setBlockUsed(block, false);
     try testing.expectError(error.BlockBitmapMismatch, audit());
     setBlockUsed(block, true);
@@ -1258,12 +1258,12 @@ test "audit detects invalid directory reference" {
     _ = try createFile(root_inode, "file");
     try audit();
     var slot: usize = 0;
-    while (slot < dir_entry_count and !dir_entries[slot].used) : (slot += 1) {}
+    while (slot < dir_entry_count and !default_state.dir_entries[slot].used) : (slot += 1) {}
     try testing.expect(slot < dir_entry_count);
-    const original = dir_entries[slot].inode;
-    dir_entries[slot].inode = @intCast(inode_count);
+    const original = default_state.dir_entries[slot].inode;
+    default_state.dir_entries[slot].inode = @intCast(inode_count);
     try testing.expectError(error.InvalidDirectoryEntry, audit());
-    dir_entries[slot].inode = original;
+    default_state.dir_entries[slot].inode = original;
     try audit();
 }
 
@@ -1271,10 +1271,10 @@ test "audit rejects missing required file block" {
     init();
     const file = try createFile(root_inode, "required");
     try writeFile(file, "data");
-    const saved = inodes[file].i_block[0];
-    inodes[file].i_block[0] = 0;
+    const saved = default_state.inodes[file].i_block[0];
+    default_state.inodes[file].i_block[0] = 0;
     try testing.expectError(error.InvalidFileLayout, audit());
-    inodes[file].i_block[0] = saved;
+    default_state.inodes[file].i_block[0] = saved;
     try audit();
 }
 
@@ -1283,9 +1283,9 @@ test "audit rejects blocks beyond logical file size" {
     const file = try createFile(root_inode, "trailing");
     try writeFile(file, "data");
     const extra = allocateBlock() orelse return error.NoSpace;
-    inodes[file].i_block[1] = extra;
+    default_state.inodes[file].i_block[1] = extra;
     try testing.expectError(error.InvalidFileLayout, audit());
-    inodes[file].i_block[1] = 0;
+    default_state.inodes[file].i_block[1] = 0;
     _ = freeBlock(extra);
     try audit();
 }
@@ -1293,10 +1293,10 @@ test "audit rejects blocks beyond logical file size" {
 test "audit rejects file size exceeding direct block capacity" {
     init();
     const file = try createFile(root_inode, "oversize");
-    const original = inodes[file].i_size;
-    inodes[file].i_size = max_file_size + 1;
+    const original = default_state.inodes[file].i_size;
+    default_state.inodes[file].i_size = max_file_size + 1;
     try testing.expectError(error.InvalidFileLayout, audit());
-    inodes[file].i_size = original;
+    default_state.inodes[file].i_size = original;
     try audit();
 }
 
@@ -1339,16 +1339,16 @@ test "audit detects duplicate names within the same directory" {
     const second = try createFile(root_inode, "second");
     try audit();
     var second_slot: ?usize = null;
-    for (dir_entries, 0..) |entry, index| {
+    for (default_state.dir_entries, 0..) |entry, index| {
         if (entry.used and entry.inode == second) second_slot = index;
     }
     const slot = second_slot orelse unreachable;
-    const saved = dir_entries[slot];
-    dir_entries[slot].name = @splat(0);
-    @memcpy(dir_entries[slot].name[0..5], "first");
-    dir_entries[slot].name_len = 5;
+    const saved = default_state.dir_entries[slot];
+    default_state.dir_entries[slot].name = @splat(0);
+    @memcpy(default_state.dir_entries[slot].name[0..5], "first");
+    default_state.dir_entries[slot].name_len = 5;
     try testing.expectError(error.DuplicateDirectoryName, audit());
-    dir_entries[slot] = saved;
+    default_state.dir_entries[slot] = saved;
     try testing.expectEqual(first, lookup(root_inode, "first").?);
     try audit();
 }
@@ -1357,14 +1357,14 @@ test "audit detects malformed directory entry names" {
     init();
     const file = try createFile(root_inode, "valid");
     var slot: ?usize = null;
-    for (dir_entries, 0..) |entry, index| {
+    for (default_state.dir_entries, 0..) |entry, index| {
         if (entry.used and entry.inode == file) slot = index;
     }
     const index = slot orelse unreachable;
-    const saved = dir_entries[index];
-    dir_entries[index].name[0] = '/';
+    const saved = default_state.dir_entries[index];
+    default_state.dir_entries[index].name[0] = '/';
     try testing.expectError(error.InvalidDirectoryName, audit());
-    dir_entries[index] = saved;
+    default_state.dir_entries[index] = saved;
     try audit();
 }
 
@@ -1372,14 +1372,14 @@ test "audit detects directory self-cycle" {
     init();
     const folder = try createDirectory(root_inode, "loop");
     var slot: ?usize = null;
-    for (dir_entries, 0..) |entry, index| {
+    for (default_state.dir_entries, 0..) |entry, index| {
         if (entry.used and entry.inode == folder) slot = index;
     }
     const index = slot orelse unreachable;
-    const saved = dir_entries[index].parent;
-    dir_entries[index].parent = folder;
+    const saved = default_state.dir_entries[index].parent;
+    default_state.dir_entries[index].parent = folder;
     try testing.expectError(error.DirectoryCycle, audit());
-    dir_entries[index].parent = saved;
+    default_state.dir_entries[index].parent = saved;
     try audit();
 }
 
@@ -1388,14 +1388,14 @@ test "audit detects directory cycle across two nodes" {
     const a = try createDirectory(root_inode, "a");
     const b = try createDirectory(a, "b");
     var a_slot: ?usize = null;
-    for (dir_entries, 0..) |entry, index| {
+    for (default_state.dir_entries, 0..) |entry, index| {
         if (entry.used and entry.inode == a) a_slot = index;
     }
     const index = a_slot orelse unreachable;
-    const saved = dir_entries[index].parent;
-    dir_entries[index].parent = b;
+    const saved = default_state.dir_entries[index].parent;
+    default_state.dir_entries[index].parent = b;
     try testing.expectError(error.DirectoryCycle, audit());
-    dir_entries[index].parent = saved;
+    default_state.dir_entries[index].parent = saved;
     try audit();
 }
 
