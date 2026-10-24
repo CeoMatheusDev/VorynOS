@@ -885,11 +885,6 @@ fn presentGraphicsDemo() void {
     const height: usize = @intCast(framebuffer.height);
     const pitch: usize = @intCast(framebuffer.pitch);
     const ptr: [*]u8 = @ptrFromInt(framebuffer.base);
-    var surface = (framebuffer_bridge.Mapping{ .bytes = ptr[0..size], .width = width, .height = height, .pitch = pitch, .bits_per_pixel = framebuffer.bits_per_pixel }).surface() catch {
-        serial.printLine("[VNK] graphics: invalid framebuffer geometry", .{});
-        return;
-    };
-
     // GOP descreve layouts RGB/BGR também pelo enum. Alguns firmwares
     // deixam as máscaras zeradas nos modos predefinidos.
     const masks_absent = framebuffer.red_mask == 0 and
