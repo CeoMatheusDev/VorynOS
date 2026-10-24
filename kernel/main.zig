@@ -1129,7 +1129,7 @@ fn installTimer() void {
     serial.printLine("[VNK] timer: {d} Hz, {d} ticks", .{ timer.ticksPerSecond(), timer.ticks() });
     serial.printLine("[VNK] perf: timestamp counter {d} Hz", .{perf_tsc_hz});
 
-    // F6.9: event pump por 50 ticks, em vez de consumir toda a fila
+    // F15.3: reserve two seconds for repeated PS/2 redraw measurements.\n    // Event consumption remains interrupt-driven, not a busy polling loop.\n    // F6.9: event pump por 50 ticks, em vez de consumir toda a fila
     // apenas no final. O trabalho de composição ocorre com IRQs habilitadas.
     // CLI protege somente a retirada de um evento da fila SPSC de IRQ1.
     serial.printLine("[VNK] keyboard: ready for PS/2 input", .{});
@@ -1138,7 +1138,7 @@ fn installTimer() void {
     var pressed: usize = 0;
     var released: usize = 0;
     var graphics_updates: usize = 0;
-    while (timer.ticks() - input_start < 50) {
+    while (timer.ticks() - input_start < 200) {
         cpu.disableInterrupts();
         const maybe_event = ps2.popIrqsDisabled();
         cpu.enableInterrupts();
