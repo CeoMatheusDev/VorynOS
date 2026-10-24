@@ -7,6 +7,7 @@ const session = @import("session.zig");
 const renderer = @import("window_renderer.zig");
 const raster = @import("raster.zig");
 const compositor = @import("compositor.zig");
+const wm = @import("window_manager.zig");
 
 pub const Frame = struct {
     session_state: session.Session = .{},
@@ -27,14 +28,25 @@ pub const Frame = struct {
         return hit;
     }
 
-    pub fn createWindow(self: *Frame, owner: u64, x: usize, y: usize, width: usize, height: usize) session.Error!@import("window_manager.zig").Handle {
+    pub fn createWindow(self: *Frame, owner: u64, x: usize, y: usize, width: usize, height: usize) session.Error!wm.Handle {
         const handle = try self.session_state.createWindow(owner, x, y, width, height);
         self.dirty = true;
         return handle;
     }
 
-    pub fn destroyWindow(self: *Frame, owner: u64, handle: @import("window_manager.zig").Handle) @import("window_manager.zig").Error!void {
+    pub fn destroyWindow(self: *Frame, owner: u64, handle: wm.Handle) wm.Error!void {
         try self.session_state.destroyWindow(owner, handle);
+        self.dirty = true;
+    }
+
+    /// Move an owned window; redraw both its previous and new locations.
+    pub fn moveWindow(self: *Frame, owner: u64, handle: wm.Handle, x: usize, y: usize) wm.Error!void {
+        if (handle.slot >= wm.capacity) return error.InvalidHandle;
+        const slot = &self.session_state.windows.slots[handle.slot];
+        if (!slot.occupied or slot.generation != handle.generation or handle.generation == 0 or slot.window.owner != owner)
+            return error.InvalidHandle;
+        if (slot.window.x == x and slot.window.y == y) return;
+        try self.session_state.windows.move(handle, owner, x, y);
         self.dirty = true;
     }
 
@@ -101,4 +113,30 @@ test "rejected click does not invalidate frame" {
     });
     try std.testing.expectError(error.Full, frame.pointerDown(0, 0));
     try std.testing.expect(!frame.present(&surface));
+}
+
+test "window movement invalidates old and new pixels and checks ownership" {
+    const palette: renderer.Palette = .{
+        .background = .{ 0, 0, 0, 0 },
+        .active = .{ 7, 7, 7, 7 },
+        .inactive = .{ 2, 2, 2, 2 },
+    };
+    var frame = Frame.init(palette);
+    try frame.session_state.registerClient(1);
+    const handle = try frame.createWindow(1, 0, 0, 1, 1);
+    var pixels: [64]u8 = @splat(0);
+    var surface = try raster.Surface.init(&pixels, 4, 4, 16);
+    try std.testing.expect(frame.present(&surface));
+    try std.testing.expectError(error.InvalidHandle, frame.moveWindow(2, handle, 2, 2));
+    try std.testing.expect(!frame.present(&surface));
+    try frame.moveWindow(1, handle, 0, 0);
+    try std.testing.expect(!frame.present(&surface));
+    try frame.moveWindow(1, handle, 2, 2);
+    try std.testing.expect(frame.present(&surface));
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, pixels[0..4]);
+    try std.testing.expectEqualSlices(u8, &.{ 7, 7, 7, 7 }, pixels[40..44]);
+    try frame.destroyWindow(1, handle);
+    try std.testing.expectError(error.InvalidHandle, frame.moveWindow(1, handle, 1, 1));
+    try std.testing.expect(frame.present(&surface));
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, pixels[40..44]);
 }
