@@ -25,6 +25,21 @@
 
 const std = @import("std");
 const ramfs = @import("./ramfs.zig");
+const vfsx = @import("./vfsx.zig");
+
+/// Namespace único de montagem para a fachada atual.
+var namespace: vfsx.Namespace = .{};
+
+/// Encaminha caminhos absolutos ao VFSX; preserva caminhos relativos legados.
+fn backendPath(path: []const u8) Error![]const u8 {
+    if (path.len == 0) return error.InvalidPath;
+    if (path[0] != '/') return path;
+    const route = try namespace.route(path);
+    return switch (route.backend) {
+        .ramfs => route.relative_path,
+    };
+}
+
 const inode = @import("./inode.zig");
 
 /// Flags de abertura.
@@ -54,7 +69,7 @@ pub const max_path_len: usize = 255;
 pub const Fd = u32;
 
 /// Erros da fachada.
-pub const Error = ramfs.Error || error{
+pub const Error = ramfs.Error || vfsx.Error || error{
     /// A tabela de arquivos abertos está cheia.
     TooManyOpenFiles,
     /// O descritor não existe ou já foi fechado.
@@ -86,6 +101,7 @@ var open_files: [max_processes][max_open_files]OpenFile =
 /// Inicializa o RamFS e fecha todos os descritores de todos os processos.
 pub fn init() void {
     ramfs.init();
+    namespace.init();
     for (&open_files) |*table| {
         for (table) |*entry| entry.* = .{};
     }
@@ -184,7 +200,7 @@ fn splitPath(path: []const u8) Error!PathParts {
 
 /// Cria o inode de um arquivo e adiciona a entrada de diretório.
 fn createInode(path: []const u8) Error!u32 {
-    const parts = try splitPath(path);
+    const parts = try splitPath(try backendPath(path));
     return ramfs.createFile(parts.parent, parts.name);
 }
 
@@ -204,7 +220,7 @@ pub fn mkdir(path: []const u8) Error!u32 {
 /// Abre um arquivo. As flags `O_CREAT` criam o arquivo quando ele não
 /// existe; as demais exigem que o caminho já exista.
 pub fn open(process_id: u64, path: []const u8, flags: u16) Error!Fd {
-    const target = ramfs.resolvePath(path) catch |err| {
+    const target = ramfs.resolvePath(try backendPath(path)) catch |err| {
         if (err == error.EntryNotFound and flags & O_CREAT != 0) {
             const inode_num = try createInode(path);
             return installDescriptor(process_id, inode_num, flags);
@@ -254,19 +270,19 @@ pub fn tell(process_id: u64, fd: Fd) Error!usize {
 
 /// Lê um arquivo inteiro pelo caminho, sem abrir descritor.
 pub fn readFile(path: []const u8, buffer: []u8) Error!usize {
-    const target = try ramfs.resolvePath(path);
+    const target = try ramfs.resolvePath(try backendPath(path));
     return ramfs.readFile(target, buffer);
 }
 
 /// Substitui o conteúdo de um arquivo pelo caminho, sem abrir descritor.
 pub fn writeFile(path: []const u8, data: []const u8) Error!void {
-    const target = try ramfs.resolvePath(path);
+    const target = try ramfs.resolvePath(try backendPath(path));
     return ramfs.writeFile(target, data);
 }
 
 /// Tamanho de um arquivo pelo caminho.
 pub fn sizeOf(path: []const u8) Error!u64 {
-    const target = try ramfs.resolvePath(path);
+    const target = try ramfs.resolvePath(try backendPath(path));
     if (ramfs.inodeKind(target) != .file) return error.NotAFile;
     return ramfs.sizeOf(target) orelse error.NotAFile;
 }
@@ -278,7 +294,7 @@ pub fn freeBlockCount() usize {
 
 /// Tipo do inode de um caminho, ou `null` quando ele não existe.
 pub fn kindOf(path: []const u8) ?inode.InodeType {
-    const target = ramfs.resolvePath(path) catch return null;
+    const target = ramfs.resolvePath(backendPath(path) catch return null) catch return null;
     return ramfs.inodeKind(target);
 }
 
@@ -437,4 +453,17 @@ test "descriptor table is bounded and reusable" {
     for (descriptors) |descriptor_fd| {
         try close(0, descriptor_fd);
     }
+}
+
+// M0.3.1: facade dispatch regression coverage.
+test "VFSX routes absolute facade paths and rejects traversal" {
+    init();
+    const fd = try create(0, "/route.txt", 0o644);
+    _ = try write(0, fd, "vfsx");
+    try close(0, fd);
+    var data: [8]u8 = undefined;
+    const count = try readFile("/route.txt", &data);
+    try testing.expectEqualStrings("vfsx", data[0..count]);
+    try testing.expectError(error.InvalidPath, open(0, "/../route.txt", O_RDONLY));
+    try testing.expectError(error.InvalidPath, mkdir("/a/../b"));
 }
