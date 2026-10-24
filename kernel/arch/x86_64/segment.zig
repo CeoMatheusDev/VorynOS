@@ -214,8 +214,8 @@ fn dataSegment(access: u8, flags: u8) Entry {
 /// the type `0x89` and not `0x09`.
 fn taskSegment(base: u64, limit: u16) [2]Entry {
     const base_low: u32 = @truncate(base);
-    const base_mid: u32 = @truncate(base >> 16);
-    const base_high: u32 = @truncate(base >> 24);
+    const base_mid: u32 = @as(u32, @truncate(base >> 16)) & 0xFF;
+    const base_high: u32 = @as(u32, @truncate(base >> 24)) & 0xFF;
 
     return .{
         .{
@@ -355,4 +355,7 @@ test "TSS descriptor stores the upper half of the TSS base" {
     try testing.expectEqual(@as(u32, 0), entries[1].high);
     try testing.expectEqual(@as(u32, 103), entries[0].low & 0xffff);
     try testing.expectEqual(@as(u32, 0x89), (entries[0].high >> 8) & 0xff);
+    try testing.expectEqual(@as(u32, 0x9a), entries[0].low >> 16);
+    try testing.expectEqual(@as(u32, 0xbc), entries[0].high & 0xff);
+    try testing.expectEqual(@as(u32, 0xde), entries[0].high >> 24);
 }
