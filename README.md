@@ -821,3 +821,18 @@ zig test kernel/graphics/window_renderer.zig
 zig build test
 zig build
 ```
+
+### F6 frame coordination checkpoint (2026-10-24)
+
+- Added `kernel/graphics/frame.zig`, a bounded coordinator that owns a graphics session, tracks full-frame invalidation, and calls the existing window renderer only when needed.
+- Successful focus-changing clicks invalidate the frame; rejected clicks (including full mailboxes) leave the frame clean. Window creation and destruction invalidate the frame. An explicit dirty-region path is also available.
+- Two new host-side tests cover redraw behavior and failed-click handling. **Not yet compiled or run**. The Fedora logs previously confirmed 12 passing tests each for `session.zig` and `window_renderer.zig`, and successful image generation.
+- This is a host-testable coordinator, **not yet wired into the live kernel input loop or framebuffer**.
+
+```sh
+zig test kernel/graphics/frame.zig
+zig test kernel/graphics/session.zig
+zig test kernel/graphics/window_renderer.zig
+zig build test
+zig build
+```
