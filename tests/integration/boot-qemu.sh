@@ -171,15 +171,21 @@ SCREENSHOT_TAKEN=0
 while (( SECONDS < DEADLINE )); do
     if [[ "$KEY_SENT" -eq 0 ]] && grep -qF "[VNK] keyboard: ready for PS/2 input" "$SERIAL_LOG" 2>/dev/null; then
         # HMP envia make e break pela controladora PS/2 virtualizada.
-        # A janela de 50 ticks mantém o kernel disponível para o evento.
+        # A janela de 200 ticks mantém o kernel disponível para 16 eventos.
         if python3 - "$WORK_DIRECTORY/monitor.sock" <<'PY'
 import socket
 import sys
+import time
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
     monitor.settimeout(2)
     monitor.connect(sys.argv[1])
     monitor.sendall(b"sendkey a 50\n")
-    monitor.sendall(b"sendkey right 50\n")
+    # Each press must include a release before the next make event.
+    # Alternate directions so the window never reaches the screen edge.
+    for index in range(16):
+        key = b"right" if index % 2 == 0 else b"left"
+        monitor.sendall(b"sendkey " + key + b" 30\n")
+        time.sleep(0.085)
 PY
         then
             KEY_SENT=1
@@ -434,7 +440,7 @@ else
 fi
 
 # F14.2: verify latency counters and pixel savings from the actual QEMU log.
-# Independently recompute exact nearest-rank percentiles for every available sample.\n# The current boot injects one arrow press; do not claim multi-sample coverage.
+# Independently recompute exact nearest-rank percentiles for every available sample.\n# F15.3 requires at least 16 measured redraws from real PS/2 events.
 if python3 - "$SERIAL_LOG" <<'PY'
 import re
 import sys
@@ -457,6 +463,8 @@ benchmark = re.findall(
 )
 if not summary or len(summary) != len(window) or len(summary) != len(benchmark):
     sys.exit("missing or unmatched F14 latency/redraw records")
+if len(summary) < 16:
+    sys.exit(f"F15.3 requires at least 16 measured redraws, got {len(summary)}")
 previous_samples = 0
 previous_pixels = 0
 previous_baseline = 0
