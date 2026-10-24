@@ -1131,3 +1131,40 @@ test "truncate and rewrite repeatedly reuse released blocks" {
     try unlink("/cycle");
     try testing.expectEqual(before_blocks, freeBlockCount());
 }
+
+
+// M0.3.20: descriptor preflight and namespace exhaustion.
+test "inode exhaustion through facade preserves namespace and descriptor slots" {
+    init();
+    for (0..ramfs.inode_count - 1) |index| {
+        var name: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&name, "/full-inode-{d}", .{index});
+        const fd = try create(0, path, 0o600);
+        try close(0, fd);
+    }
+    try testing.expectEqual(@as(usize, 0), freeInodeCount());
+    const blocks_before = freeBlockCount();
+    try testing.expectError(error.NoFreeInode, create(0, "/not-created", 0o600));
+    try testing.expectError(error.NoFreeInode, open(0, "/not-created", O_CREAT | O_RDWR));
+    try testing.expectError(error.NoFreeInode, mkdir("/not-created-dir"));
+    try testing.expect(kindOf("/not-created") == null);
+    try testing.expect(kindOf("/not-created-dir") == null);
+    try testing.expectEqual(blocks_before, freeBlockCount());
+    try unlink("/full-inode-0");
+    const recovered = try create(0, "/reused-inode", 0o600);
+    try testing.expectEqual(@as(usize, 0), freeInodeCount());
+    try close(0, recovered);
+}
+
+test "failed O_CREAT does not invalidate an existing checked descriptor" {
+    init();
+    const existing = try create(0, "/existing", 0o600);
+    const handle = try checkedFd(0, existing);
+    const inode_before = freeInodeCount();
+    try testing.expectError(error.NameExists, create(0, "/existing", 0o600));
+    try testing.expectError(error.InvalidName, create(0, "/..", 0o600));
+    try testing.expectEqual(inode_before, freeInodeCount());
+    try validateCheckedFd(0, handle);
+    try testing.expectEqual(@as(usize, 2), try write(0, existing, "ok"));
+    try closeAll(0);
+}
