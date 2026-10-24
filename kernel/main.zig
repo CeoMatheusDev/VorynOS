@@ -58,6 +58,7 @@ const raster = @import("graphics/raster.zig");
 const compositor = @import("graphics/compositor.zig");
 const damage = @import("graphics/damage.zig");
 const display = @import("graphics/display.zig");
+const framebuffer_bridge = @import("graphics/framebuffer_bridge.zig");
 const ps2 = @import("input/ps2.zig");
 const keyboard_motion = @import("graphics/keyboard_motion.zig");
 const keyboard = @import("voryn_keyboard");
@@ -883,7 +884,7 @@ fn presentGraphicsDemo() void {
     const height: usize = @intCast(framebuffer.height);
     const pitch: usize = @intCast(framebuffer.pitch);
     const ptr: [*]u8 = @ptrFromInt(framebuffer.base);
-    var surface = raster.Surface.init(ptr[0..size], width, height, pitch) catch {
+    var surface = (framebuffer_bridge.Mapping{ .bytes = ptr[0..size], .width = width, .height = height, .pitch = pitch, .bits_per_pixel = framebuffer.bits_per_pixel }).surface() catch {
         serial.printLine("[VNK] graphics: invalid framebuffer geometry", .{});
         return;
     };
@@ -956,7 +957,7 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
     const pitch: usize = @intCast(framebuffer.pitch);
     const size: usize = @intCast(framebuffer.size);
     const ptr: [*]u8 = @ptrFromInt(framebuffer.base);
-    var surface = raster.Surface.init(ptr[0..size], width, height, pitch) catch return;
+    var surface = (framebuffer_bridge.Mapping{ .bytes = ptr[0..size], .width = width, .height = height, .pitch = pitch, .bits_per_pixel = framebuffer.bits_per_pixel }).surface() catch return;
     const masks_absent = framebuffer.red_mask == 0 and framebuffer.green_mask == 0 and framebuffer.blue_mask == 0;
     const is_bgr = if (masks_absent) framebuffer.pixel_format == .bgr32 else framebuffer.red_mask == 0x00ff0000;
     const background: [4]u8 = if (is_bgr) .{ 0x20, 0x17, 0x10, 0 } else .{ 0x10, 0x17, 0x20, 0 };
