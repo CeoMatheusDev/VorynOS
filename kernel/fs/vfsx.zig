@@ -24,6 +24,7 @@ pub const Error = error{
     RootMountRequired,
     MountBusy,
     MountGenerationExhausted,
+    UnsupportedVolume,
 };
 
 pub const Mount = struct {
@@ -32,6 +33,7 @@ pub const Mount = struct {
     backend: Backend = .ramfs,
     active: bool = false,
     generation: u64 = 0,
+    volume_id: u32 = 0,
 
     pub fn name(self: *const Mount) []const u8 {
         return self.path[0..self.length];
@@ -43,6 +45,7 @@ pub const Route = struct {
     backend: Backend,
     relative_path: []const u8,
     generation: u64,
+    volume_id: u32,
 };
 
 pub const Namespace = struct {
@@ -86,7 +89,15 @@ pub const Namespace = struct {
                 path[mount_path.len] == '/');
     }
 
+    /// Legacy mounts alias the root RamFS volume (volume zero).
     pub fn mount(self: *Namespace, path: []const u8, backend: Backend) Error!void {
+        return self.mountVolume(path, backend, 0);
+    }
+
+    /// Registers a volume identity. This is metadata only: storage dispatch
+    /// must not treat nonzero identities as separate RamFS instances yet.
+    pub fn mountVolume(self: *Namespace, path: []const u8, backend: Backend, volume_id: u32) Error!void {
+        if (volume_id != 0) return error.UnsupportedVolume;
         if (!validPath(path)) return error.InvalidMountPoint;
         for (self.mounts) |entry| {
             if (entry.active and std.mem.eql(u8, entry.name(), path)) return error.AlreadyMounted;
@@ -96,6 +107,7 @@ pub const Namespace = struct {
                 if (self.next_generation == 0) return error.MountGenerationExhausted;
                 entry.* = makeMount(path, backend);
                 entry.generation = self.next_generation;
+                entry.volume_id = volume_id;
                 self.next_generation = self.next_generation +% 1;
                 return;
             }
@@ -141,7 +153,7 @@ pub const Namespace = struct {
     pub fn isCurrentRoute(self: *const Namespace, route_info: Route) bool {
         if (route_info.slot >= max_mounts) return false;
         const mount_entry = self.mounts[route_info.slot];
-        return mount_entry.active and mount_entry.generation == route_info.generation and mount_entry.backend == route_info.backend;
+        return mount_entry.active and mount_entry.generation == route_info.generation and mount_entry.backend == route_info.backend and mount_entry.volume_id == route_info.volume_id;
     }
 
     pub fn route(self: *const Namespace, path: []const u8) Error!Route {
@@ -157,7 +169,7 @@ pub const Namespace = struct {
         }
         const index = best orelse return error.NotMounted;
         const relative = if (longest == 1) path else if (path.len == longest) "/" else path[longest..];
-        return .{ .slot = index, .backend = self.mounts[index].backend, .relative_path = relative, .generation = self.mounts[index].generation };
+        return .{ .slot = index, .backend = self.mounts[index].backend, .relative_path = relative, .generation = self.mounts[index].generation, .volume_id = self.mounts[index].volume_id };
     }
 };
 
@@ -312,4 +324,28 @@ test "route identity rejects invalid slots and mismatched backends" {
     invalid = root;
     invalid.generation = 0;
     try testing.expect(!ns.isCurrentRoute(invalid));
+}
+
+test "volume identity remains root alias until independent storage exists" {
+    var ns: Namespace = .{};
+    ns.init();
+    try testing.expectError(error.UnsupportedVolume, ns.mountVolume("/separate", .ramfs, 1));
+    try testing.expectEqual(@as(usize, 1), ns.activeMountCount());
+    try testing.expect(!ns.isMountPoint("/separate"));
+    try ns.mountVolume("/alias", .ramfs, 0);
+    const root = try ns.route("/file");
+    const alias = try ns.route("/alias/file");
+    try testing.expectEqual(@as(u32, 0), root.volume_id);
+    try testing.expectEqual(root.volume_id, alias.volume_id);
+    try testing.expect(ns.isCurrentRoute(alias));
+}
+
+test "route identity includes volume metadata" {
+    var ns: Namespace = .{};
+    ns.init();
+    const root = try ns.route("/file");
+    var altered = root;
+    altered.volume_id = 1;
+    try testing.expect(!ns.isCurrentRoute(altered));
+    try testing.expect(ns.isCurrentRoute(root));
 }
