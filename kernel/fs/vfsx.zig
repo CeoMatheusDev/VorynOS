@@ -25,6 +25,7 @@ pub const Error = error{
     MountBusy,
     MountGenerationExhausted,
     UnsupportedVolume,
+    StaleMount,
 };
 
 pub const Mount = struct {
@@ -127,6 +128,23 @@ pub const Namespace = struct {
         }
         const index = target orelse return error.NotMounted;
         self.mounts[index] = .{};
+    }
+
+    /// Unmount only when the caller holds the current mount generation.
+    /// Prevents a stale administrative request from removing a replacement
+    /// mount that reused the same path and slot.
+    pub fn umountChecked(self: *Namespace, path: []const u8, generation: u64) Error!void {
+        if (!validPath(path)) return error.InvalidMountPoint;
+        var found: ?usize = null;
+        for (self.mounts, 0..) |entry, index| {
+            if (entry.active and std.mem.eql(u8, entry.name(), path)) {
+                found = index;
+                break;
+            }
+        }
+        const index = found orelse return error.NotMounted;
+        if (self.mounts[index].generation != generation) return error.StaleMount;
+        return self.umount(path);
     }
 
     /// Returns whether a path is an exact active mount point.
@@ -348,4 +366,33 @@ test "route identity includes volume metadata" {
     altered.volume_id = 1;
     try testing.expect(!ns.isCurrentRoute(altered));
     try testing.expect(ns.isCurrentRoute(root));
+}
+
+test "checked unmount rejects stale generation after remount" {
+    var ns: Namespace = .{};
+    ns.init();
+    try ns.mount("/data", .ramfs);
+    const original = try ns.route("/data/file");
+    try ns.umountChecked("/data", original.generation);
+    try ns.mount("/data", .ramfs);
+    const replacement = try ns.route("/data/file");
+    try testing.expect(original.generation != replacement.generation);
+    try testing.expectError(error.StaleMount, ns.umountChecked("/data", original.generation));
+    try testing.expect(ns.isCurrentRoute(replacement));
+    try ns.umountChecked("/data", replacement.generation);
+    try testing.expect(!ns.isMountPoint("/data"));
+}
+
+test "checked unmount respects nested mounts and protects root" {
+    var ns: Namespace = .{};
+    ns.init();
+    const root = try ns.route("/");
+    try testing.expectError(error.RootMountRequired, ns.umountChecked("/", root.generation));
+    try ns.mount("/data", .ramfs);
+    const parent = try ns.route("/data");
+    try ns.mount("/data/nested", .ramfs);
+    try testing.expectError(error.MountBusy, ns.umountChecked("/data", parent.generation));
+    try testing.expect(ns.isMountPoint("/data"));
+    try testing.expect(ns.isMountPoint("/data/nested"));
+    try testing.expectError(error.NotMounted, ns.umountChecked("/missing", parent.generation));
 }
