@@ -1028,6 +1028,7 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
         return;
     }
     const render_start = cpu.readTimestamp();
+    const render_tick_start = timer.ticks();
     const pixels = desktop.moveFrontAndPresent(.{
         .bytes = ptr[0..size], .width = width, .height = height,
         .pitch = pitch, .bits_per_pixel = framebuffer.bits_per_pixel,
@@ -1036,6 +1037,7 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
         return;
     };
     const render_done = cpu.readTimestamp();
+    const render_tick_end = timer.ticks();
     // F13: measure the redraw itself, excluding serial logging and input acknowledgement.
     const render_cycles = render_done - render_start;
     const old_area = (@min(current.width, width - @min(current.x, width))) *|
@@ -1067,6 +1069,12 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
     );
     serial.printLine("[VNK] graphics: redraw benchmark cycles={d} pixels={d} baseline={d} saved={d}", .{
         render_cycles, pixels, baseline_writes, saved_writes,
+    });
+    // F15.4: correlate high-latency frames with timer ticks elapsed during
+    // presentation. A tick is evidence of elapsed wall time, not proof of
+    // preemption or of a particular framebuffer cache policy.
+    serial.printLine("[VNK] graphics: redraw timing cycles={d} elapsed_ticks={d}", .{
+        render_cycles, render_tick_end - render_tick_start,
     });
     graphics_front_x = next.x;
     graphics_front_y = next.y;
