@@ -297,6 +297,29 @@ pub fn addDirEntry(parent: u32, name: []const u8, inode_num: u32) Error!void {
     return error.DirectoryFull;
 }
 
+/// Renomeia ou move um arquivo regular sem invalidar seu inode e descritores.
+pub fn renameFile(source_parent: u32, source_name: []const u8, target_parent: u32, target_name: []const u8) Error!void {
+    if (inodeKind(source_parent) != .directory or inodeKind(target_parent) != .directory)
+        return error.NotADirectory;
+    if (!validName(source_name) or !validName(target_name)) return error.InvalidName;
+
+    const source_inode = lookup(source_parent, source_name) orelse return error.EntryNotFound;
+    if (inodeKind(source_inode) != .file) return error.NotAFile;
+    if (source_parent == target_parent and std.mem.eql(u8, source_name, target_name)) return;
+    if (lookup(target_parent, target_name) != null) return error.NameExists;
+
+    for (&dir_entries) |*entry| {
+        if (!entry.used or entry.parent != source_parent or entry.inode != source_inode) continue;
+        if (!std.mem.eql(u8, entry.name[0..entry.name_len], source_name)) continue;
+        entry.parent = target_parent;
+        entry.name_len = @intCast(target_name.len);
+        @memset(entry.name[0..], 0);
+        @memcpy(entry.name[0..target_name.len], target_name);
+        return;
+    }
+    return error.EntryNotFound;
+}
+
 /// Cria um arquivo vazio dentro de um diretório.
 pub fn createFile(parent: u32, name: []const u8) Error!u32 {
     if (inodeKind(parent) != .directory) return error.NotADirectory;
@@ -738,4 +761,21 @@ test "inode exhaustion is reported" {
 
     try testing.expectEqual(@as(usize, 0), freeInodeCount());
     try testing.expectError(error.NoFreeInode, createFile(root_inode, "overflow"));
+}
+
+test "rename regular files preserves inode and rejects collisions and directories" {
+    init();
+    const from = try createDirectory(root_inode, "from");
+    const to = try createDirectory(root_inode, "to");
+    const original = try createFile(from, "item");
+    try writeFile(original, "data");
+    try renameFile(from, "item", to, "renamed");
+    try testing.expectEqual(original, try resolvePath("/to/renamed"));
+    try testing.expectError(error.EntryNotFound, resolvePath("/from/item"));
+    try testing.expectEqual(@as(u64, 4), sizeOf(original).?);
+    try renameFile(to, "renamed", to, "renamed");
+    _ = try createFile(to, "exists");
+    try testing.expectError(error.NameExists, renameFile(to, "renamed", to, "exists"));
+    try testing.expectError(error.NotAFile, renameFile(root_inode, "from", to, "moved"));
+    try testing.expectError(error.InvalidName, renameFile(to, "renamed", to, ".."));
 }
