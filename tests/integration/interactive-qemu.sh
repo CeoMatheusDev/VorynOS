@@ -319,8 +319,22 @@ while time.monotonic() < deadline:
                 sys.exit(f"FAIL: burst acknowledgement {index + 1}: expected {expected}, got {actual}")
         if len(acknowledgements) == len(steps):
             expected_positions = [position for _, position, moved in burst_expected if moved]
-            if [tuple(map(int, item)) for item in positions] != expected_positions:
-                sys.exit("FAIL: burst movement log differs from acknowledgements")
+            actual_positions = [tuple(map(int, item)) for item in positions]
+            if actual_positions != expected_positions:
+                mismatch = next(
+                    (index for index, (actual, expected) in
+                     enumerate(zip(actual_positions, expected_positions))
+                     if actual != expected),
+                    min(len(actual_positions), len(expected_positions)),
+                )
+                sys.exit(
+                    f"FAIL: burst movement log differs from acknowledgements "
+                    f"(expected={len(expected_positions)}, actual={len(actual_positions)}, "
+                    f"first_mismatch={mismatch + 1}, "
+                    f"expected_positions={expected_positions}, "
+                    f"actual_positions={actual_positions}, "
+                    f"acks={acknowledgements})"
+                )
             screenshot(after_path)
             import subprocess
             result = subprocess.run(
