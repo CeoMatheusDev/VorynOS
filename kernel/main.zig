@@ -977,6 +977,7 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
         recordArrowPerf(start, setup_done, motion_done, ack_done, ack_done, ack_done, 0);
         return;
     }
+    const render_start = cpu.readTimestamp();
     const pixels = desktop.moveFrontAndPresent(.{
         .bytes = ptr[0..size], .width = width, .height = height,
         .pitch = pitch, .bits_per_pixel = framebuffer.bits_per_pixel,
@@ -985,6 +986,17 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
         return;
     };
     const render_done = cpu.readTimestamp();
+    // F13: measure the redraw itself, excluding serial logging and input acknowledgement.
+    const render_cycles = render_done - render_start;
+    const old_area = (@min(current.width, width - @min(current.x, width))) *|
+        (@min(current.height, height - @min(current.y, height)));
+    const new_area = (@min(current.width, width - @min(next.x, width))) *|
+        (@min(current.height, height - @min(next.y, height)));
+    const baseline_writes = old_area +| new_area;
+    const saved_writes = baseline_writes -| pixels;
+    serial.printLine("[VNK] graphics: redraw benchmark cycles={d} pixels={d} baseline={d} saved={d}", .{
+        render_cycles, pixels, baseline_writes, saved_writes,
+    });
     graphics_front_x = next.x;
     graphics_front_y = next.y;
     serial.printLine("[VNK] graphics: keyboard move x={d} y={d} redraw={d} pixels", .{ next.x, next.y, pixels });
