@@ -169,6 +169,7 @@ pub const Error = ramfs.Error || vfsx.Error || error{
 const OpenFile = struct {
     used: bool = false,
     inode: u32 = 0,
+    volume_id: u32 = 0,
     offset: usize = 0,
     flags: u16 = 0,
     generation: u32 = 0,
@@ -253,9 +254,10 @@ fn preflightDescriptor(process_id: u64, flags: u16) Error!void {
 }
 
 /// Registra um inode na tabela do processo e devolve o descritor.
-fn installDescriptor(process_id: u64, inode_num: u32, flags: u16) Error!Fd {
+fn installDescriptorFor(process_id: u64, inode_num: u32, flags: u16, volume_id: u32) Error!Fd {
+    const state = if (volume_id == 0) null else extraVolume(volume_id) orelse return error.UnsupportedVolume;
     const table = tableFor(process_id) orelse return error.UnknownProcess;
-    if (ramfs.inodeKind(inode_num) != .file) return error.IsADirectory;
+    if ((if (state) |volume| ramfs.inodeKindFor(volume, inode_num) else ramfs.inodeKind(inode_num)) != .file) return error.IsADirectory;
 
     const access = flags & O_ACCMODE;
     if (access != O_RDONLY and access != O_WRONLY and access != O_RDWR) {
@@ -280,12 +282,12 @@ fn installDescriptor(process_id: u64, inode_num: u32, flags: u16) Error!Fd {
 
     if (flags & O_TRUNC != 0) {
         if (!writable(flags)) return error.NotWritable;
-        try ramfs.truncate(inode_num, 0);
+        if (state) |volume| try ramfs.truncateFor(volume, inode_num, 0) else try ramfs.truncate(inode_num, 0);
     }
 
     var offset: usize = 0;
     if (flags & O_APPEND != 0) {
-        offset = @intCast(ramfs.sizeOf(inode_num) orelse 0);
+        offset = @intCast((if (state) |volume| ramfs.sizeOfFor(volume, inode_num) else ramfs.sizeOf(inode_num)) orelse 0);
     }
 
     const process_index: usize = @intCast(process_id);
@@ -297,10 +299,15 @@ fn installDescriptor(process_id: u64, inode_num: u32, flags: u16) Error!Fd {
         .generation = fd_generations[process_index][index],
         .used = true,
         .inode = inode_num,
+        .volume_id = volume_id,
         .offset = offset,
         .flags = flags,
     };
     return @as(Fd, @intCast(index));
+}
+
+fn installDescriptor(process_id: u64, inode_num: u32, flags: u16) Error!Fd {
+    return installDescriptorFor(process_id, inode_num, flags, 0);
 }
 
 /// Partes de um caminho: o diretório pai e o último componente.
@@ -353,6 +360,20 @@ pub fn mkdir(path: []const u8) Error!u32 {
 /// existe; as demais exigem que o caminho já exista.
 pub fn open(process_id: u64, path: []const u8, flags: u16) Error!Fd {
     try preflightDescriptor(process_id, flags);
+    if (path.len != 0 and path[0] == '/') {
+        const route = try namespace.route(path);
+        if (route.volume_id != 0) {
+            const state = extraVolume(route.volume_id) orelse return error.UnsupportedVolume;
+            const target = ramfs.resolvePathFor(state, route.relative_path) catch |err| {
+                if (err == error.EntryNotFound and flags & O_CREAT != 0) {
+                    const inode_num = try createOnVolume(route.volume_id, route.relative_path);
+                    return installDescriptorFor(process_id, inode_num, flags, route.volume_id);
+                }
+                return err;
+            };
+            return installDescriptorFor(process_id, target, flags, route.volume_id);
+        }
+    }
     const target = ramfs.resolvePath(try backendPath(path)) catch |err| {
         if (err == error.EntryNotFound and flags & O_CREAT != 0) {
             const inode_num = try createInode(path);
@@ -416,7 +437,10 @@ pub fn read(process_id: u64, fd: Fd, buffer: []u8) Error!usize {
     const entry = descriptor(process_id, fd) orelse return error.BadDescriptor;
     if (!readable(entry.flags)) return error.NotReadable;
 
-    const count = try ramfs.readFileAt(entry.inode, entry.offset, buffer);
+    const count = if (entry.volume_id == 0)
+        try ramfs.readFileAt(entry.inode, entry.offset, buffer)
+    else
+        try ramfs.readFileAtFor(extraVolume(entry.volume_id) orelse return error.UnsupportedVolume, entry.inode, entry.offset, buffer);
     entry.offset += count;
     return count;
 }
@@ -432,10 +456,13 @@ pub fn write(process_id: u64, fd: Fd, data: []const u8) Error!usize {
     // do deslocamento inicial da abertura. Outros descritores podem
     // alterar o tamanho do arquivo entre duas escritas.
     const position: usize = if (entry.flags & O_APPEND != 0)
-        @intCast(ramfs.sizeOf(entry.inode) orelse return error.InvalidInode)
+        @intCast((if (entry.volume_id == 0) ramfs.sizeOf(entry.inode) else ramfs.sizeOfFor(extraVolume(entry.volume_id) orelse return error.UnsupportedVolume, entry.inode)) orelse return error.InvalidInode)
     else
         entry.offset;
-    const count = try ramfs.writeFileAt(entry.inode, position, data);
+    const count = if (entry.volume_id == 0)
+        try ramfs.writeFileAt(entry.inode, position, data)
+    else
+        try ramfs.writeFileAtFor(extraVolume(entry.volume_id) orelse return error.UnsupportedVolume, entry.inode, position, data);
     entry.offset = position + count;
     return count;
 }
@@ -445,7 +472,8 @@ pub fn write(process_id: u64, fd: Fd, data: []const u8) Error!usize {
 pub fn truncateFd(process_id: u64, fd: Fd, new_size: usize) Error!void {
     const entry = descriptor(process_id, fd) orelse return error.BadDescriptor;
     if (!writable(entry.flags)) return error.NotWritable;
-    try ramfs.truncate(entry.inode, new_size);
+    if (entry.volume_id == 0) try ramfs.truncate(entry.inode, new_size) else
+        try ramfs.truncateFor(extraVolume(entry.volume_id) orelse return error.UnsupportedVolume, entry.inode, new_size);
 }
 
 /// Encolhe um arquivo pelo caminho, sem consumir um descritor.
@@ -1448,4 +1476,23 @@ test "registered RamFS volume mounts route independent file contents" {
     try std.testing.expectError(error.EntryNotFound, readMountedVolume("/data/entry", &buffer));
     const still_there = try readOnVolume(7, "/entry", &buffer);
     try std.testing.expectEqualStrings("separate", buffer[0..still_there]);
+}
+
+test "mounted RamFS descriptors retain independent volume identity" {
+    init();
+    try registerRamfsVolume(9);
+    try mountRamfsVolume("/secondary", 9);
+    const root_fd = try open(0, "/same", O_CREAT | O_RDWR);
+    const other_fd = try open(0, "/secondary/same", O_CREAT | O_RDWR);
+    try std.testing.expectEqual(@as(usize, 4), try write(0, root_fd, "root"));
+    try std.testing.expectEqual(@as(usize, 5), try write(0, other_fd, "other"));
+    try seek(0, root_fd, 0);
+    try seek(0, other_fd, 0);
+    var buf: [8]u8 = undefined;
+    var count = try read(0, other_fd, &buf);
+    try std.testing.expectEqualStrings("other", buf[0..count]);
+    count = try read(0, root_fd, &buf);
+    try std.testing.expectEqualStrings("root", buf[0..count]);
+    try close(0, other_fd);
+    try close(0, root_fd);
 }
