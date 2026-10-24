@@ -44,8 +44,20 @@ pub const Surface = struct {
         if (x >= self.width or y >= self.height) return;
         const w = @min(width, self.width - x);
         const h = @min(height, self.height - y);
+        // Build a contiguous row using exponentially growing, disjoint
+        // copies. Avoid per-pixel clipping and offset calculations in the
+        // framebuffer hot path (especially expensive under emulated GOP).
+        const row_bytes = w * 4;
         for (0..h) |dy| {
-            for (0..w) |dx| self.pixel(x + dx, y + dy, color);
+            const offset = (y + dy) * self.pitch + x * 4;
+            const row = self.pixels[offset..][0..row_bytes];
+            @memcpy(row[0..4], &color);
+            var filled: usize = 4;
+            while (filled < row_bytes) {
+                const count = @min(filled, row_bytes - filled);
+                @memcpy(row[filled..][0..count], row[0..count]);
+                filled += count;
+            }
         }
     }
 
@@ -76,4 +88,23 @@ test "rectangle clips at right and bottom edges" {
     surface.fillRect(3, 3, 100, 100, .{ 7, 8, 9, 10 });
     try std.testing.expectEqualSlices(u8, &.{ 7, 8, 9, 10 }, data[60..64]);
     try std.testing.expectEqual(@as(u8, 0), data[56]);
+}
+
+test "bulk rectangle fill preserves pitch and clips edges" {
+    var data: [5 * 24]u8 = @splat(0x7e);
+    var surface = try Surface.init(&data, 5, 5, 24);
+    surface.fillRect(1, 1, 3, 3, .{ 1, 2, 3, 4 });
+    for (0..5) |y| {
+        for (0..5) |x| {
+            const offset = y * 24 + x * 4;
+            const expected: [4]u8 = if (x >= 1 and x < 4 and y >= 1 and y < 4)
+                .{ 1, 2, 3, 4 }
+            else
+                .{ 0x7e, 0x7e, 0x7e, 0x7e };
+            try std.testing.expectEqualSlices(u8, &expected, data[offset..][0..4]);
+        }
+        try std.testing.expectEqualSlices(u8, &.{ 0x7e, 0x7e, 0x7e, 0x7e }, data[y * 24 + 20 ..][0..4]);
+    }
+    surface.fillRect(4, 4, std.math.maxInt(usize), std.math.maxInt(usize), .{ 9, 8, 7, 6 });
+    try std.testing.expectEqualSlices(u8, &.{ 9, 8, 7, 6 }, data[4 * 24 + 16 ..][0..4]);
 }
