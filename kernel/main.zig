@@ -2691,6 +2691,15 @@ fn prepareFsLifecycleProbe() void {
 
 fn verifyFsLifecycleProbe() void {
     if (!lifecycle_probe_ready) return;
+
+    // The ring-3 truncate integration probe intentionally creates a persistent
+    // file after the lifecycle baseline. Remove only that known test artifact
+    // after the native task exits, before comparing resource counters.
+    // Unexpected files or leaked descriptors still fail the strict baseline.
+    fs.unlink("/apps/truncate-probe.txt") catch |err| {
+        serial.printLine("[VNK] FATAL: truncate probe cleanup: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
     if (fs.freeBlockCount() != lifecycle_blocks_before or
         fs.freeInodeCount() != lifecycle_inodes_before)
     {
