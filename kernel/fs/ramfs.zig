@@ -162,53 +162,70 @@ pub fn initState(state: *State) void {
 }
 
 /// Verdadeiro quando o bloco está marcado como usado.
-fn blockUsed(block: usize) bool {
+fn blockUsedFor(state: *const State, block: usize) bool {
     const mask = @as(u8, 1) << @intCast(block % 8);
-    return default_state.block_bitmap[block / 8] & mask != 0;
+    return state.block_bitmap[block / 8] & mask != 0;
 }
 
-/// Marca ou desmarca um bloco.
-fn setBlockUsed(block: usize, used: bool) void {
+fn blockUsed(block: usize) bool {
+    return blockUsedFor(&default_state, block);
+}
+
+/// Updates a bitmap bit for one volume.
+fn setBlockUsedFor(state: *State, block: usize, used: bool) void {
     const mask = @as(u8, 1) << @intCast(block % 8);
     if (used) {
-        default_state.block_bitmap[block / 8] |= mask;
+        state.block_bitmap[block / 8] |= mask;
     } else {
-        default_state.block_bitmap[block / 8] &= ~mask;
+        state.block_bitmap[block / 8] &= ~mask;
     }
 }
 
-/// Aloca um bloco e devolve o número dele, ou `null` quando não há bloco
-/// livre. O conteúdo do bloco é zerado.
-pub fn allocateBlock() ?u32 {
-    var index: usize = 1; // o bloco 0 é o superbloco
+fn setBlockUsed(block: usize, used: bool) void {
+    setBlockUsedFor(&default_state, block, used);
+}
+
+/// Allocates and zeroes one data block in a specific initialized volume.
+pub fn allocateBlockFor(state: *State) ?u32 {
+    var index: usize = 1;
     while (index < block_count) : (index += 1) {
-        if (blockUsed(index)) continue;
-        setBlockUsed(index, true);
-        @memset(default_state.memory[index * block_size ..][0..block_size], 0);
-        return @as(u32, @intCast(index));
+        if (blockUsedFor(state, index)) continue;
+        setBlockUsedFor(state, index, true);
+        @memset(state.memory[index * block_size ..][0..block_size], 0);
+        return @intCast(index);
     }
     return null;
 }
 
-/// Libera um bloco. Devolve `false` quando o número é inválido, quando o
-/// bloco é reservado ou quando ele já estava livre.
-pub fn freeBlock(block: u32) bool {
+/// Legacy allocator bound to the default RamFS.
+pub fn allocateBlock() ?u32 {
+    return allocateBlockFor(&default_state);
+}
+
+/// Releases and zeroes an allocated block of a specific volume.
+pub fn freeBlockFor(state: *State, block: u32) bool {
     const index: usize = block;
     if (index == 0 or index >= block_count) return false;
-    if (!blockUsed(index)) return false;
-
-    setBlockUsed(index, false);
-    @memset(default_state.memory[index * block_size ..][0..block_size], 0);
+    if (!blockUsedFor(state, index)) return false;
+    setBlockUsedFor(state, index, false);
+    @memset(state.memory[index * block_size ..][0..block_size], 0);
     return true;
 }
 
-/// Número de blocos livres.
-pub fn freeBlockCount() usize {
+pub fn freeBlock(block: u32) bool {
+    return freeBlockFor(&default_state, block);
+}
+
+pub fn freeBlockCountFor(state: *const State) usize {
     var count: usize = 0;
     for (0..block_count) |index| {
-        if (!blockUsed(index)) count += 1;
+        if (!blockUsedFor(state, index)) count += 1;
     }
     return count;
+}
+
+pub fn freeBlockCount() usize {
+    return freeBlockCountFor(&default_state);
 }
 
 /// Número de inodes livres.
@@ -1461,5 +1478,27 @@ test "independent RamFS state initialization and statistics" {
     try testing.expectEqual(populated.used_blocks, storageStats().used_blocks);
     initState(&other);
     try testing.expectEqual(@as(usize, 1), storageStatsFor(&other).used_blocks);
+    try audit();
+}
+
+test "independent block allocators do not share bitmaps or data" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const first = allocateBlock() orelse unreachable;
+    const second = allocateBlockFor(&other) orelse unreachable;
+    try testing.expectEqual(@as(u32, 1), first);
+    try testing.expectEqual(@as(u32, 1), second);
+    default_state.memory[block_size] = 0xAB;
+    other.memory[block_size] = 0xCD;
+    try testing.expectEqual(@as(u8, 0xAB), default_state.memory[block_size]);
+    try testing.expectEqual(@as(u8, 0xCD), other.memory[block_size]);
+    try testing.expect(freeBlockFor(&other, second));
+    try testing.expectEqual(@as(usize, block_count - 1), freeBlockCountFor(&other));
+    try testing.expectEqual(@as(usize, block_count - 2), freeBlockCount());
+    try testing.expectEqual(@as(u8, 0xAB), default_state.memory[block_size]);
+    try testing.expect(!freeBlockFor(&other, 0));
+    try testing.expect(!freeBlockFor(&other, second));
+    try testing.expect(freeBlock(first));
     try audit();
 }
