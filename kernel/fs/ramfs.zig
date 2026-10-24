@@ -384,11 +384,15 @@ pub fn audit() AuditError!void {
 }
 
 /// Devolve o tipo do inode, ou `null` quando o inode está livre.
-pub fn inodeKind(inode_num: u32) ?inode.InodeType {
+pub fn inodeKindFor(state: *const State, inode_num: u32) ?inode.InodeType {
     if (inode_num >= inode_count) return null;
-    const entry = default_state.inodes[inode_num];
+    const entry = state.inodes[inode_num];
     if (entry.i_links_count == 0) return null;
     return entry.i_type;
+}
+
+pub fn inodeKind(inode_num: u32) ?inode.InodeType {
+    return inodeKindFor(&default_state, inode_num);
 }
 
 /// Aloca um inode do tipo pedido.
@@ -533,29 +537,34 @@ pub fn releaseUnlinked(inode_num: u32) void {
 }
 
 /// Cria um arquivo vazio dentro de um diretório.
-pub fn createFile(parent: u32, name: []const u8) Error!u32 {
-    if (inodeKind(parent) != .directory) return error.NotADirectory;
+/// Creates a regular file in a specified RamFS instance.
+pub fn createFileFor(state: *State, parent: u32, name: []const u8) Error!u32 {
+    if (inodeKindFor(state, parent) != .directory) return error.NotADirectory;
     if (!validName(name)) return error.InvalidName;
-    if (lookup(parent, name) != null) return error.NameExists;
-
-    const inode_num = try allocateInode(.file);
-    errdefer releaseInode(inode_num);
-
-    try addDirEntry(parent, name, inode_num);
+    if (lookupFor(state, parent, name) != null) return error.NameExists;
+    const inode_num = try allocateInodeFor(state, .file);
+    errdefer releaseInodeFor(state, inode_num);
+    try addDirEntryFor(state, parent, name, inode_num);
     return inode_num;
 }
 
-/// Cria um diretório vazio dentro de um diretório.
-pub fn createDirectory(parent: u32, name: []const u8) Error!u32 {
-    if (inodeKind(parent) != .directory) return error.NotADirectory;
+pub fn createFile(parent: u32, name: []const u8) Error!u32 {
+    return createFileFor(&default_state, parent, name);
+}
+
+/// Creates a directory in a specified RamFS instance.
+pub fn createDirectoryFor(state: *State, parent: u32, name: []const u8) Error!u32 {
+    if (inodeKindFor(state, parent) != .directory) return error.NotADirectory;
     if (!validName(name)) return error.InvalidName;
-    if (lookup(parent, name) != null) return error.NameExists;
-
-    const inode_num = try allocateInode(.directory);
-    errdefer releaseInode(inode_num);
-
-    try addDirEntry(parent, name, inode_num);
+    if (lookupFor(state, parent, name) != null) return error.NameExists;
+    const inode_num = try allocateInodeFor(state, .directory);
+    errdefer releaseInodeFor(state, inode_num);
+    try addDirEntryFor(state, parent, name, inode_num);
     return inode_num;
+}
+
+pub fn createDirectory(parent: u32, name: []const u8) Error!u32 {
+    return createDirectoryFor(&default_state, parent, name);
 }
 
 /// Resolve um caminho absoluto (ou relativo à raiz) e devolve o inode.
@@ -1574,4 +1583,30 @@ test "directory entry insertion rejects foreign or invalid inode" {
     try testing.expectError(error.InvalidInode, addDirEntryFor(&other, root_inode, "foreign", foreign));
     try testing.expectError(error.InvalidName, addDirEntryFor(&other, root_inode, "../bad", root_inode));
     try testing.expectEqual(@as(usize, 0), storageStatsFor(&other).used_dir_entries);
+}
+
+test "file and directory creation use independent RamFS namespaces" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const folder = try createDirectoryFor(&other, root_inode, "folder");
+    const file = try createFileFor(&other, folder, "item");
+    try testing.expectEqual(file, try resolvePathFor(&other, "/folder/item"));
+    try testing.expectEqual(inode.InodeType.file, inodeKindFor(&other, file).?);
+    try testing.expectError(error.EntryNotFound, resolvePath("/folder"));
+    try testing.expectEqual(@as(usize, 2), storageStatsFor(&other).used_dir_entries);
+    try testing.expectEqual(@as(usize, 0), storageStats().used_dir_entries);
+    try testing.expectError(error.NameExists, createFileFor(&other, folder, "item"));
+    try audit();
+}
+
+test "file creation rejects invalid parents without leaking inodes" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const file = try createFileFor(&other, root_inode, "file");
+    const before = freeInodeCountFor(&other);
+    try testing.expectError(error.NotADirectory, createFileFor(&other, file, "child"));
+    try testing.expectError(error.InvalidName, createDirectoryFor(&other, root_inode, ".."));
+    try testing.expectEqual(before, freeInodeCountFor(&other));
 }
