@@ -1,0 +1,70 @@
+// VorynOS F9: bounded, allocation-free managed desktop scene.
+// Copyright (C) 2026 VorynOS contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+//! Builds the boot desktop through the same owner-checked window manager
+//! used by input and presentation. No physical memory access occurs here.
+const std = @import("std");
+const frame_mod = @import("frame.zig");
+const bridge = @import("framebuffer_bridge.zig");
+const renderer = @import("window_renderer.zig");
+const wm = @import("window_manager.zig");
+
+pub const system_owner: u64 = 1;
+
+pub const Desktop = struct {
+    frame: frame_mod.Frame,
+    back: wm.Handle,
+    front: wm.Handle,
+
+    pub fn init(width: usize, height: usize, palette: renderer.Palette) !Desktop {
+        if (width == 0 or height == 0) return error.InvalidGeometry;
+        var desktop: Desktop = undefined;
+        desktop.frame = frame_mod.Frame.init(palette);
+        try desktop.frame.session_state.registerClient(system_owner);
+        desktop.back = try desktop.frame.createWindow(system_owner, width / 8, height / 8, @max(@as(usize, 1), width / 2), @max(@as(usize, 1), height / 2));
+        desktop.front = try desktop.frame.createWindow(system_owner, width / 4, height / 4, @max(@as(usize, 1), width / 2), @max(@as(usize, 1), height / 3));
+        return desktop;
+    }
+
+    pub fn present(self: *Desktop, mapping: bridge.Mapping) bridge.Error!bool {
+        return bridge.present(&self.frame, mapping);
+    }
+
+    pub fn moveFront(self: *Desktop, x: usize, y: usize) wm.Error!void {
+        try self.frame.moveWindow(system_owner, self.front, x, y);
+    }
+};
+
+test "managed desktop presents, moves and skips unchanged frames" {
+    const palette: renderer.Palette = .{
+        .background = .{ 0, 0, 0, 0 },
+        .active = .{ 9, 9, 9, 9 },
+        .inactive = .{ 3, 3, 3, 3 },
+    };
+    var desktop = try Desktop.init(8, 8, palette);
+    var pixels: [8 * 8 * 4]u8 = @splat(0xaa);
+    const mapping: bridge.Mapping = .{
+        .bytes = &pixels, .width = 8, .height = 8, .pitch = 32, .bits_per_pixel = 32,
+    };
+    try std.testing.expect(try desktop.present(mapping));
+    try std.testing.expect(!(try desktop.present(mapping)));
+    try desktop.moveFront(0, 0);
+    try std.testing.expect(try desktop.present(mapping));
+    try std.testing.expectEqualSlices(u8, &.{ 9, 9, 9, 9 }, pixels[0..4]);
+    try std.testing.expect(!(try desktop.present(mapping)));
+}
+
+test "desktop rejects empty geometry and retains dirty state on bad mapping" {
+    const palette: renderer.Palette = .{
+        .background = .{ 0, 0, 0, 0 },
+        .active = .{ 9, 9, 9, 9 },
+        .inactive = .{ 3, 3, 3, 3 },
+    };
+    try std.testing.expectError(error.InvalidGeometry, Desktop.init(0, 8, palette));
+    var desktop = try Desktop.init(8, 8, palette);
+    var short: [4]u8 = @splat(0);
+    try std.testing.expectError(error.BufferTooSmall, desktop.present(.{
+        .bytes = &short, .width = 8, .height = 8, .pitch = 32, .bits_per_pixel = 32,
+    }));
+    try std.testing.expect(desktop.frame.dirty);
+}
