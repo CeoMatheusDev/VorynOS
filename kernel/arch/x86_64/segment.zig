@@ -222,7 +222,10 @@ fn taskSegment(base: u64, limit: u16) [2]Entry {
             .low = (@as(u32, limit) & 0xFFFF) | (base_low << 16),
             .high = base_mid | (@as(u32, task_type) << 8) | (@as(u32, @truncate((@as(u64, limit) >> 16) & 0xF)) << 16) | (base_high << 24),
         },
-        .{ .low = 0, .high = 0 },
+        // A 64-bit TSS descriptor stores base[63:32] in the second entry.
+        // Without this half, LTR faults with #GP(selector) when the TSS is
+        // located above 4 GiB; keep the descriptor correct for all bases.
+        .{ .low = @truncate(base >> 32), .high = 0 },
     };
 }
 
@@ -343,4 +346,13 @@ test "the task state segment has the layout of the long mode" {
     // the structure minus one.
     try testing.expectEqual(@as(usize, 104), tss_size);
     try testing.expect(tss_size - 1 >= 103);
+}
+
+test "TSS descriptor encodes the full 64-bit base" {
+    const base: u64 = 0x1234_5678_9abc_def0;
+    const entries = taskSegment(base, 103);
+    try testing.expectEqual(@as(u32, 0x9abc_0067), entries[0].low);
+    try testing.expectEqual(@as(u32, 0x8900_5678), entries[0].high);
+    try testing.expectEqual(@as(u32, 0x1234_5678), entries[1].low);
+    try testing.expectEqual(@as(u32, 0), entries[1].high);
 }
