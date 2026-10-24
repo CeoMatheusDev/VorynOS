@@ -191,10 +191,20 @@ movement_pattern = re.compile(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)"
 ack_pattern = re.compile(r"\[VNK\] graphics: arrow ack scancode=0x([0-9a-f]+) moved=([01]) x=(\d+) y=(\d+)")
 
 def monitor_command(command):
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(2)
-        sock.connect(monitor_path)
-        sock.sendall((command + "\n").encode("ascii"))
+    # Rapid sendkey bursts can exhaust the host-side UNIX monitor socket
+    # buffer. Retry transient EAGAIN without silently dropping a command.
+    retry_deadline = min(deadline, time.monotonic() + 5)
+    while True:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(2)
+                sock.connect(monitor_path)
+                sock.sendall((command + "\n").encode("ascii"))
+            return
+        except BlockingIOError:
+            if time.monotonic() >= retry_deadline:
+                sys.exit("FAIL: QEMU monitor remained unavailable: " + command)
+            time.sleep(0.02)
 
 def screenshot(path):
     if os.path.exists(path):
