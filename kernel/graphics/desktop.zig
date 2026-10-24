@@ -8,6 +8,7 @@ const frame_mod = @import("frame.zig");
 const bridge = @import("framebuffer_bridge.zig");
 const renderer = @import("window_renderer.zig");
 const wm = @import("window_manager.zig");
+const compositor = @import("compositor.zig");
 
 pub const system_owner: u64 = 1;
 
@@ -28,6 +29,31 @@ pub const Desktop = struct {
 
     pub fn present(self: *Desktop, mapping: bridge.Mapping) bridge.Error!bool {
         return bridge.present(&self.frame, mapping);
+    }
+
+    /// Repaint only the old and new front-window footprints. Overlap may be
+    /// painted twice; the returned count is framebuffer pixel writes.
+    /// A pending full invalidation takes precedence over partial updates.
+    pub fn moveFrontAndPresent(self: *Desktop, mapping: bridge.Mapping, x: usize, y: usize) (bridge.Error || wm.Error)!usize {
+        var surface = try mapping.surface();
+        const slot = self.frame.session_state.windows.slots[self.front.slot];
+        if (!slot.occupied or slot.generation != self.front.generation) return error.InvalidHandle;
+        const previous = slot.window;
+        if (previous.x == x and previous.y == y) {
+            return if (self.frame.present(&surface)) surface.width *| surface.height else 0;
+        }
+        const full_redraw = self.frame.dirty;
+        try self.moveFront(x, y);
+        if (full_redraw) {
+            _ = self.frame.present(&surface);
+            return surface.width *| surface.height;
+        }
+        const old_rect: compositor.Rect = .{ .x = previous.x, .y = previous.y, .width = previous.width, .height = previous.height };
+        const new_rect: compositor.Rect = .{ .x = x, .y = y, .width = previous.width, .height = previous.height };
+        const pixels = self.frame.presentDirty(&surface, old_rect) +|
+            self.frame.presentDirty(&surface, new_rect);
+        self.frame.dirty = false;
+        return pixels;
     }
 
     pub fn moveFront(self: *Desktop, x: usize, y: usize) wm.Error!void {
@@ -67,4 +93,42 @@ test "desktop rejects empty geometry and retains dirty state on bad mapping" {
         .bytes = &short, .width = 8, .height = 8, .pitch = 32, .bits_per_pixel = 32,
     }));
     try std.testing.expect(desktop.frame.dirty);
+}
+
+test "incremental desktop movement matches full composition and preserves unrelated pixels" {
+    const palette: renderer.Palette = .{
+        .background = .{ 0, 0, 0, 0 },
+        .active = .{ 9, 9, 9, 9 },
+        .inactive = .{ 3, 3, 3, 3 },
+    };
+    var desktop = try Desktop.init(12, 8, palette);
+    var pixels: [12 * 8 * 4]u8 = @splat(0);
+    const mapping: bridge.Mapping = .{ .bytes = &pixels, .width = 12, .height = 8, .pitch = 48, .bits_per_pixel = 32 };
+    try std.testing.expect(try desktop.present(mapping));
+    const untouched = pixels[0];
+    const positions = [_][2]usize{ .{ 4, 2 }, .{ 0, 0 }, .{ 10, 7 }, .{ 3, 2 } };
+    for (positions) |pos| {
+        const count = try desktop.moveFrontAndPresent(mapping, pos[0], pos[1]);
+        try std.testing.expect(count <= 2 * 6 * 2 + 2 * 6 * 2);
+        var expected: [12 * 8 * 4]u8 = @splat(0);
+        var surface = try @import("raster.zig").Surface.init(&expected, 12, 8, 48);
+        renderer.render(&surface, &desktop.frame.session_state.windows, palette);
+        try std.testing.expectEqualSlices(u8, &expected, &pixels);
+    }
+    _ = untouched;
+}
+
+test "invalid mapping does not move desktop window" {
+    const palette: renderer.Palette = .{
+        .background = .{ 0, 0, 0, 0 },
+        .active = .{ 9, 9, 9, 9 },
+        .inactive = .{ 3, 3, 3, 3 },
+    };
+    var desktop = try Desktop.init(8, 8, palette);
+    var short: [4]u8 = @splat(0);
+    try std.testing.expectError(error.BufferTooSmall, desktop.moveFrontAndPresent(.{
+        .bytes = &short, .width = 8, .height = 8, .pitch = 32, .bits_per_pixel = 32,
+    }, 5, 5));
+    const slot = desktop.frame.session_state.windows.slots[desktop.front.slot];
+    try std.testing.expectEqual(@as(usize, 2), slot.window.x);
 }
