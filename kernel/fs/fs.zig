@@ -100,10 +100,25 @@ const OpenFile = struct {
 var open_files: [max_processes][max_open_files]OpenFile =
     @splat(@splat(OpenFile{}));
 
+/// Inodes removidos do namespace, aguardando o último close.
+var unlinked: [ramfs.inode_count]bool = @splat(false);
+
+fn reclaimIfUnused(inode_num: u32) void {
+    if (!unlinked[inode_num]) return;
+    for (open_files) |table| {
+        for (table) |entry| {
+            if (entry.used and entry.inode == inode_num) return;
+        }
+    }
+    unlinked[inode_num] = false;
+    ramfs.releaseUnlinked(inode_num);
+}
+
 /// Inicializa o RamFS e fecha todos os descritores de todos os processos.
 pub fn init() void {
     ramfs.init();
     namespace.init();
+    @memset(&unlinked, false);
     for (&open_files) |*table| {
         for (table) |*entry| entry.* = .{};
     }
@@ -235,7 +250,9 @@ pub fn open(process_id: u64, path: []const u8, flags: u16) Error!Fd {
 /// Fecha um descritor.
 pub fn close(process_id: u64, fd: Fd) Error!void {
     const entry = descriptor(process_id, fd) orelse return error.BadDescriptor;
+    const inode_num = entry.inode;
     entry.* = .{};
+    reclaimIfUnused(inode_num);
 }
 
 /// Lê do descritor e avança o deslocamento.
@@ -301,6 +318,18 @@ pub fn rename(source: []const u8, target: []const u8) Error!void {
     switch (from_route.backend) {
         .ramfs => try ramfs.renameFile(from.parent, from.name, to.parent, to.name),
     }
+}
+
+/// Remove um nome de arquivo; descritores já abertos permanecem válidos.
+pub fn unlink(path: []const u8) Error!void {
+    if (path.len == 0 or path[0] != '/') return error.InvalidPath;
+    const route = try namespace.route(path);
+    const parts = try splitPath(route.relative_path);
+    const target = switch (route.backend) {
+        .ramfs => try ramfs.unlinkFile(parts.parent, parts.name),
+    };
+    unlinked[target] = true;
+    reclaimIfUnused(target);
 }
 
 /// Metadados básicos de um caminho, sem alterar a ABI das syscalls.
@@ -542,4 +571,30 @@ test "VFSX rename preserves open descriptors and rejects directory moves" {
     try close(0, fd);
     try testing.expectError(error.NotAFile, rename("/source", "/destination/moved"));
     try testing.expectError(error.InvalidPath, rename("/destination/new", "/destination/../bad"));
+}
+
+test "VFSX unlink retains open descriptors until last close" {
+    init();
+    const fd = try create(0, "/removed", 0o644);
+    _ = try write(0, fd, "keep");
+    const other = try open(1, "/removed", O_RDONLY);
+    const old_inode = (try stat("/removed")).inode;
+    const blocks_before = freeBlockCount();
+    try unlink("/removed");
+    try testing.expectError(error.EntryNotFound, stat("/removed"));
+    try testing.expectError(error.EntryNotFound, open(2, "/removed", O_RDONLY));
+    try seek(0, fd, 0);
+    var buf: [8]u8 = undefined;
+    const count = try read(0, fd, &buf);
+    try testing.expectEqualStrings("keep", buf[0..count]);
+    try close(0, fd);
+    try testing.expectEqual(blocks_before, freeBlockCount());
+    try testing.expectEqual(@as(usize, 4), try read(1, other, &buf));
+    try close(1, other);
+    try testing.expectEqual(blocks_before + 1, freeBlockCount());
+    try testing.expect(ramfs.inodeKind(old_inode) == null);
+    try testing.expectError(error.EntryNotFound, unlink("/removed"));
+    _ = try mkdir("/directory");
+    try testing.expectError(error.NotAFile, unlink("/directory"));
+    try testing.expectError(error.InvalidPath, unlink("/../invalid"));
 }
