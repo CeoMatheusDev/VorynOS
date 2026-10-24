@@ -701,7 +701,7 @@ fn fsFailure(err: anyerror) u64 {
         error.EntryNotFound => failure(Error.no_such_file),
         error.NoSpace, error.NoFreeInode, error.DirectoryFull => failure(Error.no_space),
         error.BadDescriptor => failure(Error.bad_descriptor),
-        error.TooManyOpenFiles => failure(Error.too_many_open_files),
+        error.TooManyOpenFiles, error.DescriptorGenerationExhausted => failure(Error.too_many_open_files),
         error.NameExists => failure(Error.name_exists),
         error.InvalidName, error.InvalidPath => failure(Error.invalid_name),
         error.FileTooLarge => failure(Error.file_too_large),
