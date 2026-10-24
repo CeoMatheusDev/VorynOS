@@ -125,10 +125,15 @@ var default_state: State = .{};
 
 /// Inicializa o RamFS e apaga todo o conteúdo anterior.
 pub fn init() void {
-    @memset(default_state.memory[0..], 0);
-    @memset(default_state.block_bitmap[0..], 0);
+    initState(&default_state);
+}
 
-    for (&default_state.inodes) |*entry| {
+/// Initializes an explicitly supplied RamFS state without touching other instances.
+pub fn initState(state: *State) void {
+    @memset(state.memory[0..], 0);
+    @memset(state.block_bitmap[0..], 0);
+
+    for (&state.inodes) |*entry| {
         entry.* = .{
             .i_type = .file,
             .i_permissions = 0o755,
@@ -138,16 +143,16 @@ pub fn init() void {
         };
     }
 
-    for (&default_state.dir_entries) |*entry| {
+    for (&state.dir_entries) |*entry| {
         entry.* = .{};
     }
 
     // O bloco 0 é o superbloco: ele nunca é entregue a um arquivo.
-    setBlockUsed(0, true);
+    state.block_bitmap[0] |= 1;
 
     // O inode 0 é o diretório raiz. O contador de links funciona como
     // marcador de inode ocupado: zero significa livre.
-    default_state.inodes[root_inode] = .{
+    state.inodes[root_inode] = .{
         .i_type = .directory,
         .i_permissions = 0o755,
         .i_links_count = 1,
@@ -232,10 +237,22 @@ pub const StorageStats = struct {
 };
 
 pub fn storageStats() StorageStats {
-    const free_blocks = freeBlockCount();
-    const free_inodes = freeInodeCount();
+    return storageStatsFor(&default_state);
+}
+
+/// Reports occupancy of a specific initialized volume.
+pub fn storageStatsFor(state: *const State) StorageStats {
+    var free_blocks: usize = 0;
+    for (0..block_count) |index| {
+        const mask = @as(u8, 1) << @intCast(index % 8);
+        if (state.block_bitmap[index / 8] & mask == 0) free_blocks += 1;
+    }
+    var free_inodes: usize = 0;
+    for (state.inodes) |entry| {
+        if (entry.i_links_count == 0) free_inodes += 1;
+    }
     var used_entries: usize = 0;
-    for (default_state.dir_entries) |entry| {
+    for (state.dir_entries) |entry| {
         if (entry.used) used_entries += 1;
     }
     return .{
@@ -1418,5 +1435,31 @@ test "default RamFS state retains legacy API behavior" {
     try audit();
     init();
     try testing.expectEqual(@as(usize, 0), storageStats().used_dir_entries);
+    try audit();
+}
+
+test "independent RamFS state initialization and statistics" {
+    init();
+    const original = storageStats();
+    const file = try createFile(root_inode, "legacy");
+    try writeFile(file, "data");
+    const populated = storageStats();
+
+    var other: State = .{};
+    initState(&other);
+    const empty = storageStatsFor(&other);
+    try testing.expectEqual(@as(usize, 1), empty.used_blocks);
+    try testing.expectEqual(@as(usize, 1), empty.used_inodes);
+    try testing.expectEqual(@as(usize, 0), empty.used_dir_entries);
+    try testing.expectEqual(@as(usize, 0), empty.allocated_data_bytes);
+    try testing.expectEqual(original.used_blocks, empty.used_blocks);
+    try testing.expectEqual(populated.used_blocks, storageStats().used_blocks);
+    try testing.expectEqual(populated.used_dir_entries, storageStats().used_dir_entries);
+
+    other.block_bitmap[0] |= 0b10;
+    try testing.expectEqual(@as(usize, 2), storageStatsFor(&other).used_blocks);
+    try testing.expectEqual(populated.used_blocks, storageStats().used_blocks);
+    initState(&other);
+    try testing.expectEqual(@as(usize, 1), storageStatsFor(&other).used_blocks);
     try audit();
 }
