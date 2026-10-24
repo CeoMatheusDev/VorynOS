@@ -876,3 +876,15 @@ Após atualização da branch `main` até `36f58ff`, os comandos executados pelo
 | `zig build` | Concluído sem erros; `zig-out/bin/vorynos.img` com 64 MiB |
 
 Os conjuntos de testes compartilham testes importados e, portanto, as contagens não representam 50 casos distintos. A compilação da imagem **não** constitui validação de execução gráfica no QEMU. Permanecem pendentes a integração do fluxo de eventos físicos do mouse e a renderização na execução real do kernel.
+
+### F7 — Ponte segura para framebuffer mapeado (2026-10-24)
+
+O módulo `kernel/graphics/framebuffer_bridge.zig` valida uma fatia de memória já mapeada e autorizada, com largura, altura, pitch e formato de 32 bits, antes de chamar `Frame.present`. Não converte endereços físicos do firmware em ponteiros. Os testes adicionados cobrem apresentação de janela e rejeição de buffers inválidos sem consumir o estado de atualização pendente.
+
+**Validação pendente:** este novo arquivo ainda não foi compilado com Zig 0.17.0 no Fedora. O último resultado confirmado foi de 28 testes em `pointer_input.zig`, 26 em `frame.zig` e 12 em `session.zig`. A ligação da ponte com o mapeamento real do kernel, a compatibilidade de formatos RGB/BGR e o teste visual no QEMU permanecem pendentes.
+
+```sh
+zig test kernel/graphics/framebuffer_bridge.zig
+zig build test
+zig build
+```
