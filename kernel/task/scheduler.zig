@@ -405,6 +405,19 @@ pub const Scheduler = struct {
         return true;
     }
 
+    /// Releases per-process file descriptors after the final live task
+    /// of an address space terminates. Task IDs are not process IDs.
+    fn releaseProcessFilesIfLast(self: *Scheduler, finished: *Task) void {
+        const space = finished.space orelse return;
+        for (self.tasks[0..self.count]) |candidate| {
+            const other = candidate orelse continue;
+            if (other == finished or other.state == .terminated) continue;
+            if (other.space == space) return;
+        }
+        const fs = @import("../fs/fs.zig");
+        fs.closeAll(space.id) catch {};
+    }
+
     /// Kills the current task.
     ///
     /// The task is marked as terminated, and the scheduler does not choose
@@ -413,8 +426,10 @@ pub const Scheduler = struct {
     /// bring the machine down.
     pub fn killCurrent(self: *Scheduler) void {
         const task = self.current orelse return;
+        if (task.state == .terminated) return;
         task.state = .terminated;
         task.exit_code = 1;
+        self.releaseProcessFilesIfLast(task);
         self.statistics.killed += 1;
     }
 
@@ -435,8 +450,10 @@ pub const Scheduler = struct {
     /// interruption, and the task does not have to know that it ended.
     pub fn terminateCurrent(self: *Scheduler, code: u64) void {
         const current = self.current orelse return;
+        if (current.state == .terminated) return;
         current.state = .terminated;
         current.exit_code = code;
+        self.releaseProcessFilesIfLast(current);
     }
 
     /// The state of the scheduler, with the measurements of the switches.
