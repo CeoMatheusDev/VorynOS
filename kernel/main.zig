@@ -841,7 +841,18 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
     };
     var next = windows[1];
     const bounds: compositor.Rect = .{ .x = 0, .y = 0, .width = width, .height = height };
-    if (!keyboard_motion.move(&next, bounds, event, @max(@as(usize, 1), width / 32))) return;
+    // Acknowledge every pressed arrow, including clamped no-op events.
+    // This is distinct from the movement log, which reports actual redraws.
+    if (!event.pressed or !event.extended) return;
+    switch (event.scancode) {
+        0x4b, 0x4d, 0x48, 0x50 => {},
+        else => return,
+    }
+    const moved = keyboard_motion.move(&next, bounds, event, @max(@as(usize, 1), width / 32));
+    serial.printLine("[VNK] graphics: arrow ack scancode=0x{x} moved={d} x={d} y={d}", .{
+        event.scancode, @intFromBool(moved), next.x, next.y,
+    });
+    if (!moved) return;
     var tracker: damage.Tracker = .{};
     damage.updateWindow(&tracker, bounds, &windows[1], next);
     // Render the updated geometry, not the stale window coordinates.
