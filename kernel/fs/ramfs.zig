@@ -264,6 +264,8 @@ pub const AuditError = error{
     InvalidFileLayout,
     DuplicateDirectoryName,
     InvalidDirectoryName,
+    DirectoryCycle,
+    DirectoryMultipleParents,
 };
 
 pub fn audit() AuditError!void {
@@ -305,6 +307,33 @@ pub fn audit() AuditError!void {
             return error.InvalidDirectoryEntry;
         const name = entry.name[0..entry.name_len];
         if (!validName(name)) return error.InvalidDirectoryName;
+    }
+    // Each directory except the root must have at most one parent.
+    // Follow parent chains with a bounded walk to detect cycles without
+    // recursion or allocation. Unreachable directories are allowed for now.
+    for (dir_entries) |entry| {
+        if (!entry.used or inodes[entry.inode].i_type != .directory) continue;
+        if (entry.inode == root_inode) return error.DirectoryCycle;
+        var parent_links: usize = 0;
+        for (dir_entries) |other| {
+            if (other.used and other.inode == entry.inode) parent_links += 1;
+        }
+        if (parent_links > 1) return error.DirectoryMultipleParents;
+
+        var cursor = entry.parent;
+        var depth: usize = 0;
+        while (cursor != root_inode) : (depth += 1) {
+            if (depth >= inode_count or cursor == entry.inode)
+                return error.DirectoryCycle;
+            var next: ?u32 = null;
+            for (dir_entries) |candidate| {
+                if (candidate.used and candidate.inode == cursor) {
+                    next = candidate.parent;
+                    break;
+                }
+            }
+            cursor = next orelse break;
+        }
     }
     for (dir_entries, 0..) |entry, index| {
         if (!entry.used) continue;
@@ -1337,4 +1366,44 @@ test "audit detects malformed directory entry names" {
     try testing.expectError(error.InvalidDirectoryName, audit());
     dir_entries[index] = saved;
     try audit();
+}
+
+test "audit detects directory self-cycle" {
+    init();
+    const folder = try createDirectory(root_inode, "loop");
+    var slot: ?usize = null;
+    for (dir_entries, 0..) |entry, index| {
+        if (entry.used and entry.inode == folder) slot = index;
+    }
+    const index = slot orelse unreachable;
+    const saved = dir_entries[index].parent;
+    dir_entries[index].parent = folder;
+    try testing.expectError(error.DirectoryCycle, audit());
+    dir_entries[index].parent = saved;
+    try audit();
+}
+
+test "audit detects directory cycle across two nodes" {
+    init();
+    const a = try createDirectory(root_inode, "a");
+    const b = try createDirectory(a, "b");
+    var a_slot: ?usize = null;
+    for (dir_entries, 0..) |entry, index| {
+        if (entry.used and entry.inode == a) a_slot = index;
+    }
+    const index = a_slot orelse unreachable;
+    const saved = dir_entries[index].parent;
+    dir_entries[index].parent = b;
+    try testing.expectError(error.DirectoryCycle, audit());
+    dir_entries[index].parent = saved;
+    try audit();
+}
+
+test "audit rejects directory with multiple parent links" {
+    init();
+    const a = try createDirectory(root_inode, "a");
+    const b = try createDirectory(root_inode, "b");
+    const child = try createDirectory(a, "child");
+    try addDirEntry(b, "alias", child);
+    try testing.expectError(error.DirectoryMultipleParents, audit());
 }
