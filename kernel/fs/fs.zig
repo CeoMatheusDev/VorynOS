@@ -255,6 +255,23 @@ pub fn close(process_id: u64, fd: Fd) Error!void {
     reclaimIfUnused(inode_num);
 }
 
+/// Fecha todos os descritores de um processo e recupera inodes desvinculados
+/// apenas quando nenhuma outra tabela de processo os referencia.
+pub fn closeAll(process_id: u64) Error!void {
+    const table = tableFor(process_id) orelse return error.UnknownProcess;
+    // Primeiro, remove todas as referências do processo; depois recupera.
+    // Assim, inodes compartilhados por vários descritores não são liberados cedo.
+    var candidates: [max_open_files]u32 = undefined;
+    var count: usize = 0;
+    for (table) |*entry| {
+        if (!entry.used) continue;
+        candidates[count] = entry.inode;
+        count += 1;
+        entry.* = .{};
+    }
+    for (candidates[0..count]) |inode_num| reclaimIfUnused(inode_num);
+}
+
 /// Lê do descritor e avança o deslocamento.
 pub fn read(process_id: u64, fd: Fd, buffer: []u8) Error!usize {
     const entry = descriptor(process_id, fd) orelse return error.BadDescriptor;
@@ -597,4 +614,42 @@ test "VFSX unlink retains open descriptors until last close" {
     _ = try mkdir("/directory");
     try testing.expectError(error.NotAFile, unlink("/directory"));
     try testing.expectError(error.InvalidPath, unlink("/../invalid"));
+}
+
+test "closeAll releases unlinked inode only after last process exits" {
+    init();
+    const first = try create(0, "/ephemeral", 0o644);
+    _ = try write(0, first, "payload");
+    const second = try open(0, "/ephemeral", O_RDONLY);
+    const third = try open(1, "/ephemeral", O_RDONLY);
+    const inode_num = (try stat("/ephemeral")).inode;
+    const blocks_before = freeBlockCount();
+    try unlink("/ephemeral");
+    try closeAll(0);
+    try testing.expectEqual(blocks_before, freeBlockCount());
+    try testing.expect(ramfs.inodeKind(inode_num) != null);
+    var buf: [8]u8 = undefined;
+    try testing.expectEqual(@as(usize, 7), try read(1, third, &buf));
+    try testing.expectEqualStrings("payload", buf[0..7]);
+    try testing.expectError(error.BadDescriptor, close(0, first));
+    try testing.expectError(error.BadDescriptor, close(0, second));
+    try closeAll(1);
+    try testing.expectEqual(blocks_before + 1, freeBlockCount());
+    try testing.expect(ramfs.inodeKind(inode_num) == null);
+    try closeAll(1); // idempotente
+    try testing.expectError(error.UnknownProcess, closeAll(max_processes));
+}
+
+test "closeAll keeps linked files and allows descriptor reuse" {
+    init();
+    const fd = try create(2, "/persistent", 0o644);
+    _ = try write(2, fd, "ok");
+    const inode_num = (try stat("/persistent")).inode;
+    try closeAll(2);
+    try testing.expect(ramfs.inodeKind(inode_num) != null);
+    const reopened = try open(2, "/persistent", O_RDONLY);
+    try testing.expectEqual(fd, reopened);
+    var buf: [4]u8 = undefined;
+    try testing.expectEqual(@as(usize, 2), try read(2, reopened, &buf));
+    try closeAll(2);
 }
