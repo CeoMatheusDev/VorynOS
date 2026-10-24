@@ -474,6 +474,11 @@ pub fn auditStorage() ramfs.AuditError!void {
     return ramfs.audit();
 }
 
+/// Snapshot of RamFS capacity and occupancy without dynamic allocation.
+pub fn storageStats() ramfs.StorageStats {
+    return ramfs.storageStats();
+}
+
 /// Inodes livres do RamFS, para diagnóstico e testes de recuperação.
 pub fn freeInodeCount() usize {
     return ramfs.freeInodeCount();
@@ -1334,5 +1339,25 @@ test "storage audit accepts unlinked file retained by open descriptor" {
     const n = try read(0, fd, &buffer);
     try testing.expectEqualStrings("retained", buffer[0..n]);
     try closeAll(0);
+    try auditStorage();
+}
+
+test "FS storage statistics account for open and reclaimed unlinked file" {
+    init();
+    const baseline = storageStats();
+    const fd = try open(0, "/stats-open", O_CREAT | O_RDWR);
+    _ = try write(0, fd, "data");
+    const allocated = storageStats();
+    try testing.expectEqual(baseline.used_inodes + 1, allocated.used_inodes);
+    try testing.expectEqual(baseline.used_blocks + 1, allocated.used_blocks);
+    try testing.expectEqual(baseline.used_dir_entries + 1, allocated.used_dir_entries);
+    try unlink("/stats-open");
+    const unlinked_stats = storageStats();
+    try testing.expectEqual(baseline.used_dir_entries, unlinked_stats.used_dir_entries);
+    try testing.expectEqual(allocated.used_blocks, unlinked_stats.used_blocks);
+    try closeAll(0);
+    const reclaimed = storageStats();
+    try testing.expectEqual(baseline.used_inodes, reclaimed.used_inodes);
+    try testing.expectEqual(baseline.used_blocks, reclaimed.used_blocks);
     try auditStorage();
 }
