@@ -455,21 +455,30 @@ benchmark = re.findall(
     r"baseline=(\d+) saved=(\d+)",
     log,
 )
-if not summary or not window or not benchmark:
-    sys.exit("missing F14 latency or redraw benchmark markers")
-samples, minimum, mean, maximum, total_pixels, total_baseline = map(int, summary[-1])
-count, p50, p95, p99 = map(int, window[-1])
-cycles, pixels, baseline, saved = map(int, benchmark[-1])
-if not (1 <= count <= 32 and samples >= count):
-    sys.exit("invalid sample/window counts")
-if not (0 < minimum <= mean <= maximum and minimum <= p50 <= p95 <= p99 <= maximum):
-    sys.exit("invalid latency ordering")
-if not (cycles > 0 and pixels > 0 and baseline >= pixels and saved == baseline - pixels):
-    sys.exit("invalid redraw pixel accounting")
-if not (total_pixels >= pixels and total_baseline >= baseline):
-    sys.exit("invalid cumulative pixel accounting")
-if samples == 1 and not (count == 1 and minimum == mean == maximum == cycles == p50 == p95 == p99):
-    sys.exit("single-sample statistics disagree")
+if not summary or len(summary) != len(window) or len(summary) != len(benchmark):
+    sys.exit("missing or unmatched F14 latency/redraw records")
+previous_samples = 0
+previous_pixels = 0
+previous_baseline = 0
+for index, (stats, percentiles, redraw) in enumerate(zip(summary, window, benchmark), 1):
+    samples, minimum, mean, maximum, total_pixels, total_baseline = map(int, stats)
+    count, p50, p95, p99 = map(int, percentiles)
+    cycles, pixels, baseline, saved = map(int, redraw)
+    if samples != previous_samples + 1:
+        sys.exit(f"nonconsecutive sample count at record {index}")
+    if count != min(samples, 32):
+        sys.exit(f"incorrect rolling window size at record {index}")
+    if not (0 < minimum <= mean <= maximum and minimum <= p50 <= p95 <= p99 <= maximum):
+        sys.exit(f"invalid latency ordering at record {index}")
+    if not (minimum <= cycles <= maximum):
+        sys.exit(f"current sample outside cumulative range at record {index}")
+    if not (pixels > 0 and baseline >= pixels and saved == baseline - pixels):
+        sys.exit(f"invalid redraw pixel accounting at record {index}")
+    if total_pixels != previous_pixels + pixels or total_baseline != previous_baseline + baseline:
+        sys.exit(f"invalid cumulative pixel accounting at record {index}")
+    if samples == 1 and not (minimum == mean == maximum == cycles == p50 == p95 == p99):
+        sys.exit("single-sample statistics disagree")
+    previous_samples, previous_pixels, previous_baseline = samples, total_pixels, total_baseline
 print(f"ok: F14.2 latency counters samples={samples} window={count} p50={p50} p95={p95} p99={p99}")
 print(f"ok: F14.2 redraw pixel savings {saved}/{baseline}")
 PY
