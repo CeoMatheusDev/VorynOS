@@ -806,16 +806,14 @@ pub fn readFile(inode_num: u32, buffer: []u8) Error!usize {
 }
 
 /// Lista as entradas de um diretório, sem `.` e `..`.
-pub fn listDir(directory: u32, out: []DirEntryInfo) Error!usize {
-    if (inodeKind(directory) != .directory) return error.NotADirectory;
-
+/// Lists directory entries from the specified volume.
+pub fn listDirFor(state: *const State, directory: u32, out: []DirEntryInfo) Error!usize {
+    if (inodeKindFor(state, directory) != .directory) return error.NotADirectory;
     var count: usize = 0;
-    for (&default_state.dir_entries) |*entry| {
-        if (!entry.used) continue;
-        if (entry.parent != directory) continue;
+    for (&state.dir_entries) |*entry| {
+        if (!entry.used or entry.parent != directory) continue;
+        const target = inodeKindFor(state, entry.inode) orelse continue;
         if (count >= out.len) return error.BufferTooSmall;
-
-        const target = inodeKind(entry.inode) orelse continue;
         out[count] = .{
             .inode = entry.inode,
             .kind = target,
@@ -826,11 +824,17 @@ pub fn listDir(directory: u32, out: []DirEntryInfo) Error!usize {
     return count;
 }
 
-/// Tamanho de um arquivo, ou `null` quando o inode não é um arquivo.
+pub fn listDir(directory: u32, out: []DirEntryInfo) Error!usize {
+    return listDirFor(&default_state, directory, out);
+}
+
+pub fn sizeOfFor(state: *const State, inode_num: u32) ?u64 {
+    if (inodeKindFor(state, inode_num) != .file) return null;
+    return state.inodes[inode_num].i_size;
+}
+
 pub fn sizeOf(inode_num: u32) ?u64 {
-    if (inodeKind(inode_num) == null) return null;
-    if (default_state.inodes[inode_num].i_type != .file) return null;
-    return default_state.inodes[inode_num].i_size;
+    return sizeOfFor(&default_state, inode_num);
 }
 
 /// Informações do superbloco do RamFS.
@@ -850,9 +854,13 @@ pub fn getFsInfo() superblock.SuperblockOnDisk {
 }
 
 /// Informações de um inode.
+pub fn getInodeInfoFor(state: *const State, inode_num: u32) Error!inode.InodeOnDisk {
+    if (inodeKindFor(state, inode_num) == null) return error.InvalidInode;
+    return state.inodes[inode_num];
+}
+
 pub fn getInodeInfo(inode_num: u32) Error!inode.InodeOnDisk {
-    if (inodeKind(inode_num) == null) return error.InvalidInode;
-    return default_state.inodes[inode_num];
+    return getInodeInfoFor(&default_state, inode_num);
 }
 
 // ---------------------------------------------------------------------------
@@ -1755,4 +1763,26 @@ test "per-volume rename rejects collisions without mutation" {
     _ = try createFileFor(&other, root_inode, "target");
     try testing.expectError(error.NameExists, renameFileFor(&other, root_inode, "source", root_inode, "target"));
     try testing.expectEqual(source, try resolvePathFor(&other, "/source"));
+}
+
+test "directory listings and metadata remain scoped to each volume" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const left = try createFile(root_inode, "left");
+    const right = try createFileFor(&other, root_inode, "right");
+    try writeFile(left, "a");
+    try writeFileFor(&other, right, "abcd");
+    var entries: [2]DirEntryInfo = undefined;
+    const count = try listDirFor(&other, root_inode, &entries);
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expectEqualStrings("right", entries[0].name);
+    try testing.expectEqual(right, entries[0].inode);
+    try testing.expectEqual(@as(?u64, 4), sizeOfFor(&other, right));
+    try testing.expectEqual(@as(?u64, 1), sizeOf(left));
+    const info = try getInodeInfoFor(&other, right);
+    try testing.expectEqual(@as(u64, 4), info.i_size);
+    try testing.expectError(error.InvalidInode, getInodeInfoFor(&other, inode_count));
+    try testing.expectError(error.BufferTooSmall, listDirFor(&other, root_inode, entries[0..0]));
+    try audit();
 }
