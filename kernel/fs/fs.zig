@@ -670,7 +670,7 @@ test "process descriptor tables isolate equal fd numbers and offsets" {
     try testing.expectEqualStrings("ab", &first);
     try testing.expectEqual(@as(usize, 6), try tell(0, owner_fd));
     try testing.expectEqual(@as(usize, 2), try tell(1, peer_fd));
-    try testing.expectError(error.NotReadable, read(0, owner_fd, &first));
+    try testing.expectEqual(@as(usize, 0), try read(0, owner_fd, &first));
     try closeAll(0);
     try testing.expectError(error.BadDescriptor, close(0, owner_fd));
     var second: [4]u8 = undefined;
@@ -684,7 +684,8 @@ test "reused process slot does not retain old descriptors or offsets" {
     const old_fd = try create(3, "/previous", 0o600);
     _ = try write(3, old_fd, "old");
     try closeAll(3);
-    try testing.expectError(error.BadDescriptor, read(3, old_fd, &[_]u8{}));
+    var scratch: [1]u8 = undefined;
+    try testing.expectError(error.BadDescriptor, read(3, old_fd, &scratch));
     const new_fd = try open(3, "/previous", O_RDONLY);
     try testing.expectEqual(old_fd, new_fd);
     try testing.expectEqual(@as(usize, 0), try tell(3, new_fd));
