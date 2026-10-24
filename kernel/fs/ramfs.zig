@@ -320,6 +320,31 @@ pub fn renameFile(source_parent: u32, source_name: []const u8, target_parent: u3
     return error.EntryNotFound;
 }
 
+/// Desvincula um arquivo regular do diretório sem liberar seu inode.
+/// O chamador deve liberar o inode quando não houver descritores abertos.
+pub fn unlinkFile(parent: u32, name: []const u8) Error!u32 {
+    if (inodeKind(parent) != .directory) return error.NotADirectory;
+    if (!validName(name)) return error.InvalidName;
+    const target = lookup(parent, name) orelse return error.EntryNotFound;
+    if (inodeKind(target) != .file) return error.NotAFile;
+    for (&dir_entries) |*entry| {
+        if (!entry.used or entry.parent != parent or entry.inode != target) continue;
+        if (!std.mem.eql(u8, entry.name[0..entry.name_len], name)) continue;
+        entry.* = .{};
+        return target;
+    }
+    return error.EntryNotFound;
+}
+
+/// Libera inode desvinculado; nunca deve ser chamado com descritores vivos.
+pub fn releaseUnlinked(inode_num: u32) void {
+    if (inode_num == root_inode or inodeKind(inode_num) != .file) return;
+    for (dir_entries) |entry| {
+        if (entry.used and entry.inode == inode_num) return;
+    }
+    releaseInode(inode_num);
+}
+
 /// Cria um arquivo vazio dentro de um diretório.
 pub fn createFile(parent: u32, name: []const u8) Error!u32 {
     if (inodeKind(parent) != .directory) return error.NotADirectory;
@@ -778,4 +803,23 @@ test "rename regular files preserves inode and rejects collisions and directorie
     try testing.expectError(error.NameExists, renameFile(to, "renamed", to, "exists"));
     try testing.expectError(error.NotAFile, renameFile(root_inode, "from", to, "moved"));
     try testing.expectError(error.InvalidName, renameFile(to, "renamed", to, ".."));
+}
+
+test "unlink detaches file and explicit release reclaims inode and blocks" {
+    init();
+    const file = try createFile(root_inode, "temporary");
+    try writeFile(file, "payload");
+    const free_before = freeBlockCount();
+    try testing.expectEqual(file, try unlinkFile(root_inode, "temporary"));
+    try testing.expectError(error.EntryNotFound, resolvePath("/temporary"));
+    var data: [8]u8 = undefined;
+    const count = try readFile(file, &data);
+    try testing.expectEqualStrings("payload", data[0..count]);
+    releaseUnlinked(file);
+    try testing.expectEqual(free_before + 1, freeBlockCount());
+    try testing.expect(inodeKind(file) == null);
+    try testing.expectError(error.EntryNotFound, unlinkFile(root_inode, "temporary"));
+    const directory = try createDirectory(root_inode, "dir");
+    _ = directory;
+    try testing.expectError(error.NotAFile, unlinkFile(root_inode, "dir"));
 }
