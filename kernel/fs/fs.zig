@@ -51,6 +51,7 @@ pub fn registerRamfsVolume(volume_id: u32) Error!void {
         if (slot.* != null) continue;
         try namespace.registerVolume(volume_id);
         ramfs.initState(&extra_ramfs_states[index]);
+        @memset(extra_unlinked[index][0..], false);
         slot.* = volume_id;
         return;
     }
@@ -186,15 +187,32 @@ var fd_generations: [max_processes][max_open_files]u32 =
 /// Inodes removidos do namespace, aguardando o último close.
 var unlinked: [ramfs.inode_count]bool = @splat(false);
 
-fn reclaimIfUnused(inode_num: u32) void {
-    if (!unlinked[inode_num]) return;
+var extra_unlinked: [max_ramfs_volumes - 1][ramfs.inode_count]bool =
+    @splat(@splat(false));
+
+fn unlinkedFor(volume_id: u32) ?*[ramfs.inode_count]bool {
+    if (volume_id == 0) return &unlinked;
+    for (extra_ramfs_ids, 0..) |registered, index| {
+        if (registered != null and registered.? == volume_id) return &extra_unlinked[index];
+    }
+    return null;
+}
+
+fn reclaimIfUnused(volume_id: u32, inode_num: u32) void {
+    if (inode_num >= ramfs.inode_count) return;
+    const marks = unlinkedFor(volume_id) orelse return;
+    if (!marks[inode_num]) return;
     for (open_files) |table| {
         for (table) |entry| {
-            if (entry.used and entry.inode == inode_num) return;
+            if (entry.used and entry.volume_id == volume_id and entry.inode == inode_num) return;
         }
     }
-    unlinked[inode_num] = false;
-    ramfs.releaseUnlinked(inode_num);
+    marks[inode_num] = false;
+    if (volume_id == 0) {
+        ramfs.releaseUnlinked(inode_num);
+    } else if (extraVolume(volume_id)) |state| {
+        ramfs.releaseUnlinkedFor(state, inode_num);
+    }
 }
 
 /// Inicializa o RamFS e fecha todos os descritores de todos os processos.
@@ -202,6 +220,7 @@ pub fn init() void {
     ramfs.init();
     namespace.init();
     @memset(extra_ramfs_ids[0..], null);
+    for (&extra_unlinked) |*marks| @memset(marks[0..], false);
     @memset(unlinked[0..], false);
     for (&open_files) |*table| {
         for (table) |*entry| entry.* = .{};
@@ -411,8 +430,9 @@ pub fn closeChecked(process_id: u64, handle: CheckedFd) Error!void {
 pub fn close(process_id: u64, fd: Fd) Error!void {
     const entry = descriptor(process_id, fd) orelse return error.BadDescriptor;
     const inode_num = entry.inode;
+    const volume_id = entry.volume_id;
     entry.* = .{};
-    reclaimIfUnused(inode_num);
+    reclaimIfUnused(volume_id, inode_num);
 }
 
 /// Fecha todos os descritores de um processo e recupera inodes desvinculados
@@ -421,15 +441,15 @@ pub fn closeAll(process_id: u64) Error!void {
     const table = tableFor(process_id) orelse return error.UnknownProcess;
     // Primeiro, remove todas as referências do processo; depois recupera.
     // Assim, inodes compartilhados por vários descritores não são liberados cedo.
-    var candidates: [max_open_files]u32 = undefined;
+    var candidates: [max_open_files]struct { volume_id: u32, inode_num: u32 } = undefined;
     var count: usize = 0;
     for (table) |*entry| {
         if (!entry.used) continue;
-        candidates[count] = entry.inode;
+        candidates[count] = .{ .volume_id = entry.volume_id, .inode_num = entry.inode };
         count += 1;
         entry.* = .{};
     }
-    for (candidates[0..count]) |inode_num| reclaimIfUnused(inode_num);
+    for (candidates[0..count]) |candidate| reclaimIfUnused(candidate.volume_id, candidate.inode_num);
 }
 
 /// Lê do descritor e avança o deslocamento.
@@ -531,12 +551,19 @@ pub fn rename(source: []const u8, target: []const u8) Error!void {
 pub fn unlink(path: []const u8) Error!void {
     if (path.len == 0 or path[0] != '/') return error.InvalidPath;
     const route = try namespace.route(path);
-    const parts = try splitPath(route.relative_path);
-    const target = switch (route.backend) {
-        .ramfs => try ramfs.unlinkFile(parts.parent, parts.name),
-    };
-    unlinked[target] = true;
-    reclaimIfUnused(target);
+    const state = if (route.volume_id == 0) null else extraVolume(route.volume_id) orelse return error.UnsupportedVolume;
+    const relative = route.relative_path;
+    const slash = std.mem.lastIndexOfScalar(u8, relative, '/') orelse return error.InvalidPath;
+    if (slash + 1 == relative.len) return error.InvalidPath;
+    const parent_path = if (slash == 0) "/" else relative[0..slash];
+    const parent = if (state) |volume| try ramfs.resolvePathFor(volume, parent_path) else try ramfs.resolvePath(parent_path);
+    const target = if (state) |volume|
+        try ramfs.unlinkFileFor(volume, parent, relative[slash + 1 ..])
+    else
+        try ramfs.unlinkFile(parent, relative[slash + 1 ..]);
+    const marks = unlinkedFor(route.volume_id) orelse return error.UnsupportedVolume;
+    marks[target] = true;
+    reclaimIfUnused(route.volume_id, target);
 }
 
 /// Metadados básicos de um caminho, sem alterar a ABI das syscalls.
@@ -1495,4 +1522,25 @@ test "mounted RamFS descriptors retain independent volume identity" {
     try std.testing.expectEqualStrings("root", buf[0..count]);
     try close(0, other_fd);
     try close(0, root_fd);
+}
+
+test "unlinked files reclaim only after final close on their own volume" {
+    init();
+    try registerRamfsVolume(11);
+    try mountRamfsVolume("/other", 11);
+    const root_fd = try open(0, "/same", O_CREAT | O_RDWR);
+    const other_fd = try open(0, "/other/same", O_CREAT | O_RDWR);
+    _ = try write(0, root_fd, "root");
+    _ = try write(0, other_fd, "other");
+    try unlink("/other/same");
+    try std.testing.expectError(error.EntryNotFound, open(0, "/other/same", O_RDONLY));
+    try seek(0, other_fd, 0);
+    var buf: [8]u8 = undefined;
+    const n = try read(0, other_fd, &buf);
+    try std.testing.expectEqualStrings("other", buf[0..n]);
+    try close(0, root_fd);
+    try std.testing.expectEqual(@as(usize, ramfs.inode_count - 2), ramfs.freeInodeCountFor(extraVolume(11).?));
+    try close(0, other_fd);
+    try std.testing.expectEqual(@as(usize, ramfs.inode_count - 1), ramfs.freeInodeCountFor(extraVolume(11).?));
+    try std.testing.expectEqual(@as(u32, 1), try ramfs.resolvePath("/same"));
 }
