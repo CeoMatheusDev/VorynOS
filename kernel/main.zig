@@ -624,6 +624,7 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // owner gives them the capability, and the process that does not hold
     // it is refused.
     installCapabilities();
+    prepareFsLifecycleProbe();
 
     installScheduler();
     installTimer();
@@ -638,6 +639,7 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     reportNativeTask();
     reportToolchainTask();
     reportClientTask();
+    verifyFsLifecycleProbe();
 
     // F6.26: the toolchain application presents a probe rectangle during
     // its test. The diagnostic scene is drawn again after the task has
@@ -2653,6 +2655,49 @@ fn readUserBytes(address: u64) [8]u8 {
     const source: [*]const u8 = @ptrFromInt(address);
     @memcpy(&bytes, source[0..8]);
     return bytes;
+}
+
+/// Baseline for a real exit/fault cleanup probe in QEMU.
+var lifecycle_blocks_before: usize = 0;
+var lifecycle_inodes_before: usize = 0;
+var lifecycle_probe_ready: bool = false;
+
+fn prepareFsLifecycleProbe() void {
+    const normal = native_space orelse return;
+    const fault = client_space orelse return;
+    lifecycle_blocks_before = fs.freeBlockCount();
+    lifecycle_inodes_before = fs.freeInodeCount();
+    const normal_fd = fs.create(normal.id, "/apps/lifecycle-normal.tmp", 0o600) catch |err| {
+        serial.printLine("[VNK] FATAL: lifecycle normal create: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    _ = fs.write(normal.id, normal_fd, "normal") catch |err| {
+        serial.printLine("[VNK] FATAL: lifecycle normal write: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    fs.unlink("/apps/lifecycle-normal.tmp") catch unreachable;
+
+    const fault_fd = fs.create(fault.id, "/apps/lifecycle-fault.tmp", 0o600) catch |err| {
+        serial.printLine("[VNK] FATAL: lifecycle fault create: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    _ = fs.write(fault.id, fault_fd, "fault") catch |err| {
+        serial.printLine("[VNK] FATAL: lifecycle fault write: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    fs.unlink("/apps/lifecycle-fault.tmp") catch unreachable;
+    lifecycle_probe_ready = true;
+}
+
+fn verifyFsLifecycleProbe() void {
+    if (!lifecycle_probe_ready) return;
+    if (fs.freeBlockCount() != lifecycle_blocks_before or
+        fs.freeInodeCount() != lifecycle_inodes_before)
+    {
+        serial.printLine("[VNK] FATAL: fs lifecycle descriptors were not reclaimed", .{});
+        port.haltForever();
+    }
+    serial.printLine("[VNK] fs: lifecycle cleanup normal exit and user fault ok", .{});
 }
 
 /// Reports the state of the scheduler and the cost of the switches.
