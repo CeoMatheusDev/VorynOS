@@ -22,9 +22,13 @@ pub const Mapping = struct {
         if (self.width == 0 or self.height == 0) return error.InvalidGeometry;
         const row_bytes = std.math.mul(usize, self.width, 4) catch return error.InvalidGeometry;
         if (self.pitch < row_bytes) return error.InvalidGeometry;
-        const total = std.math.mul(usize, self.pitch, self.height) catch return error.InvalidGeometry;
-        if (total > self.bytes.len) return error.BufferTooSmall;
-        return raster.Surface.init(self.bytes[0..total], self.width, self.height, self.pitch) catch return error.InvalidGeometry;
+        // Only the visible bytes of the final row must be mapped.
+        // Delegate stride/overflow checks to the canonical raster validator.
+        return raster.Surface.init(self.bytes, self.width, self.height, self.pitch) catch |err| switch (err) {
+            error.BufferTooSmall => error.BufferTooSmall,
+            error.InvalidGeometry => error.InvalidGeometry,
+            error.UnsupportedFormat => error.UnsupportedFormat,
+        };
     }
 };
 
@@ -51,6 +55,30 @@ test "mapped framebuffer presents a window and skips unchanged frames" {
     try std.testing.expectEqualSlices(u8, &.{ 8, 8, 8, 8 }, bytes[0..4]);
     try std.testing.expectEqual(@as(u8, 0xaa), bytes[8]);
     try std.testing.expect(!(try present(&frame, mapping)));
+}
+
+test "last-row padding is optional but visible pixels are mandatory" {
+    const palette: @import("window_renderer.zig").Palette = .{
+        .background = .{ 0, 0, 0, 0 },
+        .active = .{ 7, 7, 7, 7 },
+        .inactive = .{ 2, 2, 2, 2 },
+    };
+    var frame = frame_mod.Frame.init(palette);
+    try frame.session_state.registerClient(1);
+    _ = try frame.createWindow(1, 0, 1, 2, 1);
+    // 2 rows, pitch 12, visible row 8: 12 + 8 = 20 bytes.
+    var pixels: [20]u8 = @splat(0xaa);
+    const mapping: Mapping = .{
+        .bytes = &pixels, .width = 2, .height = 2, .pitch = 12, .bits_per_pixel = 32,
+    };
+    try std.testing.expect(try present(&frame, mapping));
+    try std.testing.expectEqualSlices(u8, &.{ 7, 7, 7, 7 }, pixels[12..16]);
+    try std.testing.expectEqual(@as(u8, 0xaa), pixels[8]);
+    frame.invalidate();
+    try std.testing.expectError(error.BufferTooSmall, present(&frame, .{
+        .bytes = pixels[0..19], .width = 2, .height = 2, .pitch = 12, .bits_per_pixel = 32,
+    }));
+    try std.testing.expect(frame.dirty);
 }
 
 test "invalid framebuffer mapping does not consume a pending frame" {
