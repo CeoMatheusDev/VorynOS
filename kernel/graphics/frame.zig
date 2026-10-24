@@ -9,10 +9,25 @@ const raster = @import("raster.zig");
 const compositor = @import("compositor.zig");
 const wm = @import("window_manager.zig");
 
+pub const Drag = struct {
+    handle: wm.Handle,
+    owner: u64,
+    pointer_x: usize,
+    pointer_y: usize,
+    window_x: usize,
+    window_y: usize,
+};
+
+fn translated(origin: usize, start: usize, current: usize) usize {
+    if (current >= start) return origin +| (current - start);
+    return origin -| (start - current);
+}
+
 pub const Frame = struct {
     session_state: session.Session = .{},
     palette: renderer.Palette,
     dirty: bool = true,
+    drag: ?Drag = null,
 
     pub fn init(palette: renderer.Palette) Frame {
         return .{ .palette = palette };
@@ -22,10 +37,38 @@ pub const Frame = struct {
     pub fn pointerDown(self: *Frame, x: usize, y: usize) session.Error!bool {
         const previous = self.session_state.windows.focused;
         const hit = try self.session_state.pointerDown(x, y);
+        self.drag = null;
+        if (hit) {
+            const handle = self.session_state.windows.focused.?;
+            const window = self.session_state.windows.slots[handle.slot].window;
+            self.drag = .{
+                .handle = handle, .owner = window.owner,
+                .pointer_x = x, .pointer_y = y,
+                .window_x = window.x, .window_y = window.y,
+            };
+        }
         if (hit and (previous == null or !std.meta.eql(previous.?, self.session_state.windows.focused.?))) {
             self.dirty = true;
         }
         return hit;
+    }
+
+    /// Move the captured window while the pointer button is held.
+    /// Capture is cancelled if the window was destroyed or its slot reused.
+    pub fn pointerMove(self: *Frame, x: usize, y: usize) wm.Error!bool {
+        const capture = self.drag orelse return false;
+        const next_x = translated(capture.window_x, capture.pointer_x, x);
+        const next_y = translated(capture.window_y, capture.pointer_y, y);
+        self.moveWindow(capture.owner, capture.handle, next_x, next_y) catch |err| {
+            if (err == error.InvalidHandle) self.drag = null;
+            return err;
+        };
+        return true;
+    }
+
+    /// Release capture; subsequent pointer motion does not move windows.
+    pub fn pointerUp(self: *Frame) void {
+        self.drag = null;
     }
 
     pub fn createWindow(self: *Frame, owner: u64, x: usize, y: usize, width: usize, height: usize) session.Error!wm.Handle {
@@ -36,6 +79,9 @@ pub const Frame = struct {
 
     pub fn destroyWindow(self: *Frame, owner: u64, handle: wm.Handle) wm.Error!void {
         try self.session_state.destroyWindow(owner, handle);
+        if (self.drag) |capture| {
+            if (std.meta.eql(capture.handle, handle)) self.drag = null;
+        }
         self.dirty = true;
     }
 
@@ -139,4 +185,43 @@ test "window movement invalidates old and new pixels and checks ownership" {
     try std.testing.expectError(error.InvalidHandle, frame.moveWindow(1, handle, 1, 1));
     try std.testing.expect(frame.present(&surface));
     try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, pixels[40..44]);
+}
+
+test "drag moves window, clamps negative coordinates and releases capture" {
+    const palette: renderer.Palette = .{
+        .background = .{ 0, 0, 0, 0 },
+        .active = .{ 8, 8, 8, 8 },
+        .inactive = .{ 3, 3, 3, 3 },
+    };
+    var frame = Frame.init(palette);
+    try frame.session_state.registerClient(1);
+    const handle = try frame.createWindow(1, 1, 1, 1, 1);
+    try std.testing.expect(try frame.pointerDown(1, 1));
+    try std.testing.expect(try frame.pointerMove(3, 2));
+    try std.testing.expectEqual(@as(usize, 3), frame.session_state.windows.slots[handle.slot].window.x);
+    try std.testing.expectEqual(@as(usize, 2), frame.session_state.windows.slots[handle.slot].window.y);
+    try std.testing.expect(try frame.pointerMove(0, 0));
+    try std.testing.expectEqual(@as(usize, 0), frame.session_state.windows.slots[handle.slot].window.x);
+    try std.testing.expectEqual(@as(usize, 0), frame.session_state.windows.slots[handle.slot].window.y);
+    frame.pointerUp();
+    try std.testing.expect(!(try frame.pointerMove(3, 3)));
+    try std.testing.expectEqual(@as(usize, 0), frame.session_state.windows.slots[handle.slot].window.x);
+}
+
+test "destroyed window cancels pointer capture" {
+    const palette: renderer.Palette = .{
+        .background = .{ 0, 0, 0, 0 },
+        .active = .{ 8, 8, 8, 8 },
+        .inactive = .{ 3, 3, 3, 3 },
+    };
+    var frame = Frame.init(palette);
+    try frame.session_state.registerClient(1);
+    const handle = try frame.createWindow(1, 0, 0, 2, 2);
+    try std.testing.expect(try frame.pointerDown(0, 0));
+    try frame.destroyWindow(1, handle);
+    try std.testing.expect(!(try frame.pointerMove(5, 5)));
+    const replacement = try frame.createWindow(1, 0, 0, 2, 2);
+    try std.testing.expectEqual(handle.slot, replacement.slot);
+    try std.testing.expect(!(try frame.pointerMove(5, 5)));
+    try std.testing.expectEqual(@as(usize, 0), frame.session_state.windows.slots[replacement.slot].window.x);
 }
