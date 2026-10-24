@@ -768,3 +768,25 @@ F6.15 validated on Fedora with Zig 0.17.0 (`zig build test`, `zig build`, `zig b
 F6.16 validated on Fedora/QEMU: 58 acknowledged movements reached all four visible framebuffer limits, with exact pixel comparisons at each edge. F6.17 (pending Fedora validation) adds `--stress` to `tests/integration/interactive-qemu.sh`: 48 sequential acknowledged arrow movements in three repeated right/down/left/up cycles, with full framebuffer geometry checks after each four-key segment. Run `bash tests/integration/interactive-qemu.sh --image=./zig-out/bin/vorynos.img --timeout=180 --stress` after `zig build`. `--stress` and `--edges` are mutually exclusive; the default six-step test remains unchanged.
 
 F6.17 was validated on Fedora/QEMU: `--stress` completed 48/48 acknowledged movements and exited with code 0. F6.18 (awaiting Fedora validation) adds `--bounds` to `tests/integration/interactive-qemu.sh`. It visits all four framebuffer boundaries, sends three additional arrow presses at each boundary, validates every acknowledged coordinate, and compares P6 framebuffer screenshots to require pixel-identical images for clamped/no-op movements. Run `bash tests/integration/interactive-qemu.sh --image=./zig-out/bin/vorynos.img --timeout=300 --bounds` after `zig build`. `--bounds`, `--edges` and `--stress` are mutually exclusive.
+
+### F6 graphics development checkpoint (2026-10-24)
+
+The `main` branch now includes three independent, allocation-free graphics primitives:
+
+- `kernel/graphics/window_manager.zig`: bounded window registry (32 slots), owner checks, generation-safe handles, z-order, focus, and hit testing.
+- `kernel/graphics/event_queue.zig`: bounded per-process event mailboxes (32 clients, 64 events per mailbox), FIFO delivery, and explicit overflow errors.
+- `kernel/graphics/session.zig`: host-testable pointer-click dispatch to the topmost visible window and its owning process.
+
+**Validation status:** on Fedora, the first two modules each passed three standalone Zig tests, and `zig build test` plus `zig build` completed successfully (user-provided terminal log). The new `session.zig` module has **not yet been compiled or tested**. These primitives are **not yet wired into the kernel syscall path or the live QEMU desktop**. The graphics router is single-threaded; callers must provide synchronization when used concurrently.
+
+To validate this checkpoint after updating the local checkout:
+
+```sh
+zig test kernel/graphics/window_manager.zig
+zig test kernel/graphics/event_queue.zig
+zig test kernel/graphics/session.zig
+zig build test
+zig build
+```
+
+**F4:** VFSX changes were merged into `main` via PR #5; post-merge runtime/persistence testing remains open. **F5:** SDK ABI and external native-application workflow remain under review. **F6:** user-space graphics service and compositor integration remain open. **F7:** hardware driver expansion follows verified F4/F5/F6 dependencies.
