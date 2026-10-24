@@ -59,6 +59,7 @@ const compositor = @import("graphics/compositor.zig");
 const damage = @import("graphics/damage.zig");
 const display = @import("graphics/display.zig");
 const framebuffer_bridge = @import("graphics/framebuffer_bridge.zig");
+const desktop_mod = @import("graphics/desktop.zig");
 const ps2 = @import("input/ps2.zig");
 const keyboard_motion = @import("graphics/keyboard_motion.zig");
 const keyboard = @import("voryn_keyboard");
@@ -917,23 +918,27 @@ fn presentGraphicsDemo() void {
     const background: [4]u8 = if (is_bgr) .{ 0x20, 0x17, 0x10, 0 } else .{ 0x10, 0x17, 0x20, 0 };
     const front: [4]u8 = if (is_bgr) .{ 0xb0, 0x86, 0x30, 0 } else .{ 0x30, 0x86, 0xb0, 0 };
     const back: [4]u8 = if (is_bgr) .{ 0x70, 0x36, 0x1e, 0 } else .{ 0x1e, 0x36, 0x70, 0 };
-    var windows = [_]compositor.Window{
-        .{ .x = width / 8, .y = height / 8, .width = width / 2, .height = height / 2, .color = back },
-        .{ .x = width / 4, .y = height / 4, .width = width / 2, .height = height / 3, .color = front },
+    // F10: the boot scene now uses the managed window session and bridge.
+    // Keep the legacy keyboard redraw path until it is migrated separately.
+    var desktop = desktop_mod.Desktop.init(width, height, .{
+        .background = background,
+        .active = front,
+        .inactive = back,
+    }) catch |err| {
+        serial.printLine("[VNK] graphics: desktop initialization failed: {s}", .{@errorName(err)});
+        return;
     };
-    compositor.compose(&surface, background, &windows);
-    serial.printLine("[VNK] graphics: framebuffer scene presented ({d}x{d})", .{ width, height });
-
-    // F6.5: exercita a atualização incremental sobre o framebuffer real.
-    // O deslocamento é limitado ao tamanho da tela e não depende de entrada.
-    var tracker: damage.Tracker = .{};
-    var moved = windows[1];
-    moved.x = @min(width - 1, moved.x +| @max(@as(usize, 1), width / 16));
-    damage.updateWindow(&tracker, .{ .x = 0, .y = 0, .width = width, .height = height }, &windows[1], moved);
-    const repainted = tracker.redraw(&surface, background, &windows);
-    serial.printLine("[VNK] graphics: incremental redraw {d} pixels", .{repainted});
-    graphics_front_x = windows[1].x;
-    graphics_front_y = windows[1].y;
+    const mapping: framebuffer_bridge.Mapping = .{
+        .bytes = ptr[0..size], .width = width, .height = height,
+        .pitch = pitch, .bits_per_pixel = framebuffer.bits_per_pixel,
+    };
+    _ = desktop.present(mapping) catch |err| {
+        serial.printLine("[VNK] graphics: desktop presentation failed: {s}", .{@errorName(err)});
+        return;
+    };
+    serial.printLine("[VNK] graphics: managed desktop presented ({d}x{d})", .{ width, height });
+    graphics_front_x = width / 4;
+    graphics_front_y = height / 4;
     graphics_ready = true;
 }
 
