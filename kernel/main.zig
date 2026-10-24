@@ -977,21 +977,16 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
         recordArrowPerf(start, setup_done, motion_done, ack_done, ack_done, ack_done, 0);
         return;
     }
-    desktop.moveFront(next.x, next.y) catch |err| {
-        serial.printLine("[VNK] graphics: window move failed: {s}", .{@errorName(err)});
-        return;
-    };
-    const rendered = desktop.present(.{
+    const pixels = desktop.moveFrontAndPresent(.{
         .bytes = ptr[0..size], .width = width, .height = height,
         .pitch = pitch, .bits_per_pixel = framebuffer.bits_per_pixel,
-    }) catch |err| {
-        serial.printLine("[VNK] graphics: redraw failed: {s}", .{@errorName(err)});
+    }, next.x, next.y) catch |err| {
+        serial.printLine("[VNK] graphics: incremental redraw failed: {s}", .{@errorName(err)});
         return;
     };
     const render_done = cpu.readTimestamp();
     graphics_front_x = next.x;
     graphics_front_y = next.y;
-    const pixels: usize = if (rendered) width *| height else 0;
     serial.printLine("[VNK] graphics: keyboard move x={d} y={d} redraw={d} pixels", .{ next.x, next.y, pixels });
     const end = cpu.readTimestamp();
     recordArrowPerf(start, setup_done, motion_done, ack_done, render_done, end, pixels);
