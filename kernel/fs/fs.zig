@@ -998,3 +998,59 @@ test "truncate does not validate stale checked handles as live descriptors" {
     try testing.expectEqual(@as(u64, 2), try sizeOf("/truncate-handle"));
     try closeAll(2);
 }
+
+
+// M0.3.18: rollback de escrita e isolamento entre tabelas de descritores.
+test "failed oversized write preserves offset content and block allocation" {
+    init();
+    const fd = try open(0, "/oversized-rollback", O_CREAT | O_RDWR);
+    _ = try write(0, fd, "stable");
+    const blocks_before = freeBlockCount();
+    const offset_before = try tell(0, fd);
+    try seek(0, fd, ramfs.max_file_size);
+    try testing.expectError(error.FileTooLarge, write(0, fd, "!"));
+    try testing.expectEqual(@as(usize, ramfs.max_file_size), try tell(0, fd));
+    try testing.expectEqual(blocks_before, freeBlockCount());
+    try testing.expectEqual(@as(u64, 6), try sizeOf("/oversized-rollback"));
+    try seek(0, fd, 0);
+    var buffer: [8]u8 = undefined;
+    const count = try read(0, fd, &buffer);
+    try testing.expectEqualStrings("stable", buffer[0..count]);
+    try testing.expectEqual(@as(usize, 6), offset_before);
+    try closeAll(0);
+}
+
+test "failed append write retains descriptor offset after external truncate" {
+    init();
+    const appender = try open(0, "/append-failure", O_CREAT | O_RDWR | O_APPEND);
+    const writer = try open(1, "/append-failure", O_RDWR);
+    _ = try write(1, writer, "abcdef");
+    try seek(0, appender, 1);
+    try truncateFd(1, writer, 2);
+    const before = freeBlockCount();
+    const huge: [ramfs.max_file_size]u8 = @splat(0x78);
+    try testing.expectError(error.FileTooLarge, write(0, appender, &huge));
+    try testing.expectEqual(@as(usize, 1), try tell(0, appender));
+    try testing.expectEqual(@as(u64, 2), try sizeOf("/append-failure"));
+    try testing.expectEqual(before, freeBlockCount());
+    try testing.expectEqual(@as(usize, 1), try write(0, appender, "!"));
+    var buffer: [8]u8 = undefined;
+    const count = try readFile("/append-failure", &buffer);
+    try testing.expectEqualStrings("ab!", buffer[0..count]);
+    try closeAll(0);
+    try closeAll(1);
+}
+
+test "truncate cannot cross process descriptor tables" {
+    init();
+    const owner = try open(0, "/truncate-isolation", O_CREAT | O_RDWR);
+    _ = try write(0, owner, "private");
+    try testing.expectError(error.BadDescriptor, truncateFd(1, owner, 0));
+    try testing.expectEqual(@as(u64, 7), try sizeOf("/truncate-isolation"));
+    const other = try open(1, "/truncate-isolation", O_RDONLY);
+    try testing.expectError(error.NotWritable, truncateFd(1, other, 0));
+    try testing.expectError(error.BadDescriptor, truncateFd(max_processes, owner, 0));
+    try testing.expectEqual(@as(u64, 7), try sizeOf("/truncate-isolation"));
+    try closeAll(0);
+    try closeAll(1);
+}
