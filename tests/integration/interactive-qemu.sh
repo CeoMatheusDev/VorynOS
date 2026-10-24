@@ -196,8 +196,16 @@ stage_origin = None
 before_path = os.path.join(work_dir, "before.ppm")
 after_path = os.path.join(work_dir, "after.ppm")
 # Require a line terminator: serial file reads can end halfway through a number.
-movement_pattern = re.compile(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)\r?\n")
+# The movement line continues with the redraw count, so the suffix is part of
+# the match; anchoring the terminator right after y= never matched a real line.
+movement_pattern = re.compile(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+) redraw=\d+ pixels\r?\n")
 ack_pattern = re.compile(r"\[VNK\] graphics: arrow ack scancode=0x([0-9a-f]+) moved=([01]) x=(\d+) y=(\d+)\r?\n")
+# F6.23: the kernel publishes one aggregated line per timing window.
+kernel_perf_pattern = re.compile(
+    r"\[VNK\] perf: (\d+) arrows total=(\d+)us setup=(\d+)us motion=(\d+)us "
+    r"ack=(\d+)us render=(\d+)us log=(\d+)us pixels=(\d+) "
+    r"irq_interrupts=(\d+) irq_bytes=(\d+) irq=(\d+)us\r?\n"
+)
 
 # Reuse one HMP connection and consume the prompt after every command.
 # Closing a fresh socket for each sendkey previously caused monitor backlog.
@@ -332,6 +340,7 @@ while time.monotonic() < deadline:
             print(f"ok: stress route has {len(steps)} acknowledged movements", flush=True)
         baseline = len(movement_pattern.findall(log))
         ack_baseline = len(ack_pattern.findall(log))
+        perf_baseline = len(kernel_perf_pattern.findall(log))
         if burst:
             steps = ["right", "down", "left", "up"] * (burst_count // 4)
             burst_started = time.monotonic()
@@ -437,6 +446,26 @@ while time.monotonic() < deadline:
                 print(f"ok: burst monitor command round trips {burst_send_seconds:.3f}s total; "
                       f"{len(burst_window_timings)} ACK windows, "
                       f"mean {avg_window:.3f}s, max {max(burst_window_timings):.3f}s", flush=True)
+            # F6.23: kernel-owned timing. Re-read the log because the last
+            # perf line follows the movement line that ended the polling loop.
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as stream:
+                    final_log = stream.read()
+            except FileNotFoundError:
+                final_log = log
+            perf_windows = kernel_perf_pattern.findall(final_log)[perf_baseline:]
+            if perf_windows:
+                columns = [sum(int(row[index]) for row in perf_windows) for index in range(1, 11)]
+                total, setup, motion, ack_us, render, log_us, pixels, irq_interrupts, irq_bytes, irq_us = columns
+                arrows = sum(int(row[0]) for row in perf_windows)
+                print(f"ok: kernel perf {arrows} arrows in {len(perf_windows)} windows: "
+                      f"total={total}us setup={setup}us motion={motion}us ack={ack_us}us "
+                      f"render={render}us log={log_us}us pixels={pixels} "
+                      f"irq_interrupts={irq_interrupts} irq_bytes={irq_bytes} irq={irq_us}us", flush=True)
+                if arrows:
+                    print(f"ok: kernel perf mean per arrow: total={total // arrows}us "
+                          f"render={render // arrows}us motion={motion // arrows}us "
+                          f"ack={ack_us // arrows}us pixels={pixels // arrows}", flush=True)
             sys.exit(0)
     elif state == "movement":
         positions = movement_pattern.findall(log)

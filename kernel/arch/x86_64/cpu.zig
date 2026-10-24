@@ -18,6 +18,23 @@
 
 const std = @import("std");
 
+/// Reads the time stamp counter.
+///
+/// The counter is monotonic on the reference machines, and the kernel uses it
+/// only for relative measurements: the difference between two reads. It is
+/// not a wall clock and is not used to schedule tasks.
+pub fn readTimestamp() u64 {
+    var low: u32 = undefined;
+    var high: u32 = undefined;
+
+    asm volatile ("rdtsc"
+        : [low] "={eax}" (low),
+          [high] "={edx}" (high),
+    );
+
+    return (@as(u64, high) << 32) | low;
+}
+
 /// Reads the `CR0` control register.
 pub fn readCr0() u64 {
     var value: u64 = undefined;

@@ -23,6 +23,55 @@ def read_ppm(path):
         return width, height, pixels
 
 
+def paint_row(row, width, y, rect, color):
+    """Paints the visible part of one row of an opaque rectangle."""
+    x, rect_y, rect_width, rect_height = rect
+    if not (rect_y <= y < rect_y + rect_height):
+        return
+    left = max(0, x)
+    right = min(width, x + rect_width)
+    if right > left:
+        row[left * 3:right * 3] = color * (right - left)
+
+
+def expected_row(width, y, background_row, back, back_rect, front, front_rect):
+    row = bytearray(background_row)
+    paint_row(row, width, y, back_rect, back)
+    paint_row(row, width, y, front_rect, front)
+    return row
+
+
+def first_difference(actual, expected, width, y):
+    for index, (left, right) in enumerate(zip(actual, expected)):
+        if left != right:
+            return index // 3, y, actual[index:index + 3], expected[index:index + 3]
+    return 0, y, b"", b""
+
+
+def clipped_area(rect, width, height):
+    x, y, rect_width, rect_height = rect
+    left = max(0, x)
+    right = min(width, x + rect_width)
+    top = max(0, y)
+    bottom = min(height, y + rect_height)
+    if right <= left or bottom <= top:
+        return 0
+    return (right - left) * (bottom - top)
+
+
+def intersection_area(first, second, width, height):
+    ax, ay, aw, ah = first
+    bx, by, bw, bh = second
+    left = max(ax, bx)
+    right = min(ax + aw, bx + bw)
+    top = max(ay, by)
+    bottom = min(ay + ah, by + bh)
+    if right <= left or bottom <= top:
+        return 0
+    return (max(0, min(width, right) - max(0, left)) *
+            max(0, min(height, bottom) - max(0, top)))
+
+
 def compare(before, after, old_x, old_y, new_x, new_y):
     width, height, original = read_ppm(before)
     new_width, new_height, updated = read_ppm(after)
@@ -32,8 +81,8 @@ def compare(before, after, old_x, old_y, new_x, new_y):
             and 0 <= old_y < height and 0 <= new_y < height):
         raise ValueError("window position outside framebuffer")
 
-    # A clamped movement must not alter any pixel. At (0, 0), the front
-    # window covers the usual background sample, so skip scene sampling.
+    # A clamped movement must not alter any pixel. The comparison is a
+    # single bytes comparison, not a per-pixel loop.
     if (old_x, old_y) == (new_x, new_y):
         if original != updated:
             first = next(i for i, (a, b) in enumerate(zip(original, updated)) if a != b)
@@ -45,10 +94,6 @@ def compare(before, after, old_x, old_y, new_x, new_y):
     back_rect = (width // 8, height // 8, width // 2, height // 2)
     front_before = (old_x, old_y, front_width, front_height)
     front_after = (new_x, new_y, front_width, front_height)
-
-    def contains(rect, x, y):
-        rx, ry, rw, rh = rect
-        return rx <= x < rx + rw and ry <= y < ry + rh
 
     def pixel(data, x, y):
         index = (y * width + x) * 3
@@ -62,42 +107,46 @@ def compare(before, after, old_x, old_y, new_x, new_y):
     if len({background, back, front}) != 3:
         raise ValueError("scene colors are not distinguishable")
 
-    def expected(x, y, front_rect):
-        if contains(front_rect, x, y):
-            return front
-        if contains(back_rect, x, y):
-            return back
-        return background
-
-    changed = 0
+    # Validate every pixel by constructing each expected row as bytes. The
+    # old implementation visited every pixel in Python, which took seconds
+    # for a 2048x2048 framebuffer and distorted the measured throughput.
+    background_row = background * width
+    row_bytes = width * 3
     mismatch_before = 0
     mismatch_after = 0
     first_error = None
+
     for y in range(height):
-        for x in range(width):
-            previous = pixel(original, x, y)
-            current = pixel(updated, x, y)
-            want_before = expected(x, y, front_before)
-            want_after = expected(x, y, front_after)
-            if previous != want_before:
-                mismatch_before += 1
-                if first_error is None:
-                    first_error = ("before", x, y, previous, want_before)
-            if current != want_after:
-                mismatch_after += 1
-                if first_error is None:
-                    first_error = ("after", x, y, current, want_after)
-            if previous != current:
-                changed += 1
+        offset = y * row_bytes
+        before_row = expected_row(width, y, background_row, back, back_rect, front, front_before)
+        after_row = expected_row(width, y, background_row, back, back_rect, front, front_after)
+        previous = original[offset:offset + row_bytes]
+        current = updated[offset:offset + row_bytes]
+        if previous != before_row:
+            mismatch_before += 1
+            if first_error is None:
+                x, row, actual, expected = first_difference(previous, before_row, width, y)
+                first_error = ("before", x, row, actual, expected)
+        if current != after_row:
+            mismatch_after += 1
+            if first_error is None:
+                x, row, actual, expected = first_difference(current, after_row, width, y)
+                first_error = ("after", x, row, actual, expected)
+
     if mismatch_before or mismatch_after:
         raise ValueError(
-            f"geometry mismatch: before={mismatch_before} after={mismatch_after}, "
-            f"first={first_error}"
+            f"geometry mismatch: before={mismatch_before} rows, "
+            f"after={mismatch_after} rows, first={first_error}"
         )
-    if changed == 0 and (old_x, old_y) != (new_x, new_y):
+
+    # The scene is made of opaque solid layers. Pixels in the intersection
+    # of the two front-window positions are unchanged, so the changed area
+    # is the symmetric difference, computed geometrically.
+    changed = (clipped_area(front_before, width, height)
+               + clipped_area(front_after, width, height)
+               - 2 * intersection_area(front_before, front_after, width, height))
+    if changed == 0:
         raise ValueError("no visible pixels changed after arrow key")
-    if changed != 0 and (old_x, old_y) == (new_x, new_y):
-        raise ValueError("framebuffer changed despite clamped keyboard movement")
     print(
         f"ok: QEMU framebuffer geometry exact, {changed} changed pixels, "
         f"front ({old_x},{old_y})->({new_x},{new_y}), "

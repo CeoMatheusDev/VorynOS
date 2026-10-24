@@ -8,7 +8,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! F6.4: rastreamento de danos por janela, sem heap e sem acesso a MMIO.
-//! Cada mutação invalida o retângulo antigo e o novo separadamente.
+//! Uma janela opaca que apenas se desloca invalida somente as faixas
+//! expostas; mudanças de cor, tamanho ou visibilidade invalidam as duas
+//! geometrias completas.
 
 const std = @import("std");
 const compositor = @import("compositor.zig");
@@ -24,18 +26,42 @@ pub const Tracker = struct {
     full: bool = false,
 
     pub fn invalidate(self: *Tracker, bounds: Rect, rect: Rect) void {
-        if (self.full or rect.width == 0 or rect.height == 0) return;
-        if (rect.x >= bounds.width or rect.y >= bounds.height) return;
-        const width = @min(rect.width, bounds.width - rect.x);
-        const height = @min(rect.height, bounds.height - rect.y);
-        if (width == 0 or height == 0) return;
+        if (self.full) return;
+        const clipped = clipRect(bounds, rect) orelse return;
         if (self.count == capacity) {
             self.full = true;
             self.count = 0;
             return;
         }
-        self.rects[self.count] = .{ .x = rect.x, .y = rect.y, .width = width, .height = height };
+        self.rects[self.count] = clipped;
         self.count += 1;
+    }
+
+    /// Invalida a parte de `rect` que não está coberta por `covered`.
+    ///
+    /// Os dois retângulos são recortados aos limites da tela antes da
+    /// aritmética, portanto as somas não podem transbordar. A diferença é
+    /// decomposta em até quatro retângulos disjuntos, sem sobreposição.
+    fn invalidateDifference(self: *Tracker, bounds: Rect, rect: Rect, covered: Rect) void {
+        const clipped = clipRect(bounds, rect) orelse return;
+        const cover = clipRect(bounds, covered) orelse {
+            self.invalidate(bounds, clipped);
+            return;
+        };
+        const left = @max(clipped.x, cover.x);
+        const top = @max(clipped.y, cover.y);
+        const right = @min(clipped.x + clipped.width, cover.x + cover.width);
+        const bottom = @min(clipped.y + clipped.height, cover.y + cover.height);
+        if (right <= left or bottom <= top) {
+            self.invalidate(bounds, clipped);
+            return;
+        }
+        const clipped_right = clipped.x + clipped.width;
+        const clipped_bottom = clipped.y + clipped.height;
+        self.invalidate(bounds, .{ .x = clipped.x, .y = clipped.y, .width = clipped.width, .height = top - clipped.y });
+        self.invalidate(bounds, .{ .x = clipped.x, .y = bottom, .width = clipped.width, .height = clipped_bottom - bottom });
+        self.invalidate(bounds, .{ .x = clipped.x, .y = top, .width = left - clipped.x, .height = bottom - top });
+        self.invalidate(bounds, .{ .x = right, .y = top, .width = clipped_right - right, .height = bottom - top });
     }
 
     pub fn redraw(self: *Tracker, surface: *raster.Surface, background: [4]u8, windows: []const Window) usize {
@@ -58,15 +84,44 @@ pub const Tracker = struct {
     }
 };
 
+/// Recorta um retângulo aos limites da tela.
+/// Retorna null quando não sobra área visível.
+fn clipRect(bounds: Rect, rect: Rect) ?Rect {
+    if (rect.width == 0 or rect.height == 0) return null;
+    if (rect.x >= bounds.width or rect.y >= bounds.height) return null;
+    const width = @min(rect.width, bounds.width - rect.x);
+    const height = @min(rect.height, bounds.height - rect.y);
+    if (width == 0 or height == 0) return null;
+    return .{ .x = rect.x, .y = rect.y, .width = width, .height = height };
+}
+
 pub fn boundsOf(window: Window) Rect {
     return .{ .x = window.x, .y = window.y, .width = if (window.visible) window.width else 0, .height = if (window.visible) window.height else 0 };
 }
 
 /// Substitui uma janela e invalida a geometria anterior e a posterior.
+///
+/// Uma janela opaca que só mudou de posição mantém intacta a interseção das
+/// duas geometrias; repintá-la seria trabalho sem efeito visível. As faixas
+/// expostas são suficientes e, para um deslocamento pequeno, são uma fração
+/// da área da janela. Se a aparência mudou, nada pode ser preservado e as
+/// duas geometrias completas são invalidadas.
 pub fn updateWindow(tracker: *Tracker, bounds: Rect, window: *Window, next: Window) void {
-    tracker.invalidate(bounds, boundsOf(window.*));
+    const previous = window.*;
     window.* = next;
-    tracker.invalidate(bounds, boundsOf(next));
+    const same_appearance = previous.visible == next.visible and
+        previous.width == next.width and
+        previous.height == next.height and
+        std.mem.eql(u8, &previous.color, &next.color);
+    if (!same_appearance) {
+        tracker.invalidate(bounds, boundsOf(previous));
+        tracker.invalidate(bounds, boundsOf(next));
+        return;
+    }
+    const previous_bounds = boundsOf(previous);
+    const next_bounds = boundsOf(next);
+    tracker.invalidateDifference(bounds, previous_bounds, next_bounds);
+    tracker.invalidateDifference(bounds, next_bounds, previous_bounds);
 }
 
 test "moving a window restores its previous location without touching unrelated pixels" {
@@ -178,4 +233,31 @@ test "F6.15 clipping restores pixels when window moves partially offscreen" {
         compositor.compose(&reference, background, &windows);
         try std.testing.expectEqualSlices(u8, &expected_pixels, &pixels);
     }
+}
+
+test "F6.24 an opaque move invalidates only the exposed strips" {
+    const background: [4]u8 = .{ 0, 0, 0, 0 };
+    const back: [4]u8 = .{ 1, 1, 1, 1 };
+    const front: [4]u8 = .{ 2, 2, 2, 2 };
+    var pixels: [8 * 6 * 4]u8 = @splat(0xaa);
+    var surface = try raster.Surface.init(&pixels, 8, 6, 32);
+    var windows = [_]Window{
+        .{ .x = 1, .y = 1, .width = 5, .height = 3, .color = back },
+        .{ .x = 2, .y = 2, .width = 3, .height = 2, .color = front },
+    };
+    const bounds: Rect = .{ .x = 0, .y = 0, .width = 8, .height = 6 };
+    compositor.compose(&surface, background, &windows);
+
+    var next = windows[1];
+    next.x = 4;
+    var tracker: Tracker = .{};
+    updateWindow(&tracker, bounds, &windows[1], next);
+    // The old geometry covers x=2..4 and the new one x=4..6, for two rows.
+    // Only x=2,3 and x=5,6 are exposed: 2*2 + 2*2 = 8 pixels, not 12.
+    try std.testing.expectEqual(@as(usize, 8), tracker.redraw(&surface, background, &windows));
+
+    var reference_pixels: [8 * 6 * 4]u8 = @splat(0xaa);
+    var reference = try raster.Surface.init(&reference_pixels, 8, 6, 32);
+    compositor.compose(&reference, background, &windows);
+    try std.testing.expectEqualSlices(u8, &reference_pixels, &pixels);
 }

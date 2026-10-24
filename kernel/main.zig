@@ -65,6 +65,78 @@ var graphics_ready: bool = false;
 // F6.11: tecla I (Set 1, 0x17) seleciona o modo interativo durante o boot.
 var interactive_requested: bool = false;
 
+/// F6.23: janela de medição do caminho de uma seta.
+///
+/// O relógio do processador mede apenas intervalos; a calibração contra o
+/// PIT converte os ciclos em microssegundos. O custo do próprio relatório
+/// não entra no total, e a escrita serial de cada fase é contabilizada
+/// separadamente para não ser confundida com a composição.
+const perf_window_events = 8;
+
+const PerfWindow = struct {
+    events: usize = 0,
+    setup_cycles: u64 = 0,
+    motion_cycles: u64 = 0,
+    ack_cycles: u64 = 0,
+    render_cycles: u64 = 0,
+    log_cycles: u64 = 0,
+    total_cycles: u64 = 0,
+    pixels: u64 = 0,
+};
+
+var perf_tsc_hz: u64 = 0;
+var perf_window: PerfWindow = .{};
+
+fn cyclesToMicroseconds(cycles: u64) u64 {
+    if (perf_tsc_hz == 0) return 0;
+    return @intCast(@as(u128, cycles) * 1_000_000 / perf_tsc_hz);
+}
+
+/// Registra uma seta confirmada e publica o resumo a cada janela.
+/// O chamador executa com interrupções habilitadas; o snapshot do custo da
+/// IRQ1 é feito com elas desabilitadas, porque o produtor é a própria IRQ1.
+fn recordArrowPerf(
+    start: u64,
+    setup_done: u64,
+    motion_done: u64,
+    ack_done: u64,
+    render_done: u64,
+    end: u64,
+    pixels: usize,
+) void {
+    perf_window.events += 1;
+    perf_window.setup_cycles +|= setup_done - start;
+    perf_window.motion_cycles +|= motion_done - setup_done;
+    perf_window.ack_cycles +|= ack_done - motion_done;
+    perf_window.render_cycles +|= render_done - ack_done;
+    perf_window.log_cycles +|= end - render_done;
+    perf_window.total_cycles +|= end - start;
+    perf_window.pixels +|= pixels;
+    if (perf_window.events < perf_window_events) return;
+
+    cpu.disableInterrupts();
+    const irq = ps2.takeIrqStatsIrqsDisabled();
+    cpu.enableInterrupts();
+
+    serial.printLine(
+        "[VNK] perf: {d} arrows total={d}us setup={d}us motion={d}us ack={d}us render={d}us log={d}us pixels={d} irq_interrupts={d} irq_bytes={d} irq={d}us",
+        .{
+            perf_window.events,
+            cyclesToMicroseconds(perf_window.total_cycles),
+            cyclesToMicroseconds(perf_window.setup_cycles),
+            cyclesToMicroseconds(perf_window.motion_cycles),
+            cyclesToMicroseconds(perf_window.ack_cycles),
+            cyclesToMicroseconds(perf_window.render_cycles),
+            cyclesToMicroseconds(perf_window.log_cycles),
+            perf_window.pixels,
+            irq.interrupts,
+            irq.bytes,
+            cyclesToMicroseconds(irq.cycles),
+        },
+    );
+    perf_window = .{};
+}
+
 /// Version of the kernel, reported on the console.
 const kernel_version = "0.1.0-dev.1";
 
@@ -823,6 +895,17 @@ fn presentGraphicsDemo() void {
 
 fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
     if (!graphics_ready) return;
+    // Acknowledge every pressed arrow, including clamped no-op events.
+    // This is distinct from the movement log, which reports actual redraws.
+    // The filter runs before the setup so a key release does not rebuild the
+    // surface and the window list for nothing.
+    if (!event.pressed or !event.extended) return;
+    switch (event.scancode) {
+        0x4b, 0x4d, 0x48, 0x50 => {},
+        else => return,
+    }
+
+    const start = cpu.readTimestamp();
     const framebuffer = boot_info.framebuffer;
     const width: usize = @intCast(framebuffer.width);
     const height: usize = @intCast(framebuffer.height);
@@ -841,26 +924,29 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
     };
     var next = windows[1];
     const bounds: compositor.Rect = .{ .x = 0, .y = 0, .width = width, .height = height };
-    // Acknowledge every pressed arrow, including clamped no-op events.
-    // This is distinct from the movement log, which reports actual redraws.
-    if (!event.pressed or !event.extended) return;
-    switch (event.scancode) {
-        0x4b, 0x4d, 0x48, 0x50 => {},
-        else => return,
-    }
+    const setup_done = cpu.readTimestamp();
+
     const moved = keyboard_motion.move(&next, bounds, event, @max(@as(usize, 1), width / 32));
+    const motion_done = cpu.readTimestamp();
     serial.printLine("[VNK] graphics: arrow ack scancode=0x{x} moved={d} x={d} y={d}", .{
         event.scancode, @intFromBool(moved), next.x, next.y,
     });
-    if (!moved) return;
+    const ack_done = cpu.readTimestamp();
+    if (!moved) {
+        recordArrowPerf(start, setup_done, motion_done, ack_done, ack_done, ack_done, 0);
+        return;
+    }
     var tracker: damage.Tracker = .{};
     damage.updateWindow(&tracker, bounds, &windows[1], next);
     // Render the updated geometry, not the stale window coordinates.
     windows[1] = next;
     const pixels = tracker.redraw(&surface, background, &windows);
+    const render_done = cpu.readTimestamp();
     graphics_front_x = next.x;
     graphics_front_y = next.y;
     serial.printLine("[VNK] graphics: keyboard move x={d} y={d} redraw={d} pixels", .{ next.x, next.y, pixels });
+    const end = cpu.readTimestamp();
+    recordArrowPerf(start, setup_done, motion_done, ack_done, render_done, end, pixels);
 }
 
 /// Prepares the heap of the kernel and verifies that it works.
@@ -899,12 +985,23 @@ fn installTimer() void {
     // The kernel waits for a few ticks, which proves that the timer and the
     // interrupt controllers work.
     const start = timer.ticks();
+    const tsc_start = cpu.readTimestamp();
     var attempts: u64 = 0;
     while (timer.ticks() - start < 5 and attempts < 100_000_000) : (attempts += 1) {
         cpu.halt();
     }
 
+    // F6.23: calibra o contador de carimbo de tempo contra o PIT. O
+    // intervalo de cinco ticks é curto o bastante para não atrasar o boot e
+    // longo o bastante para que o erro de leitura seja desprezível.
+    const elapsed_ticks = timer.ticks() - start;
+    if (elapsed_ticks != 0) {
+        const elapsed_tsc = cpu.readTimestamp() - tsc_start;
+        perf_tsc_hz = @intCast(@as(u128, elapsed_tsc) * timer.ticksPerSecond() / elapsed_ticks);
+    }
+
     serial.printLine("[VNK] timer: {d} Hz, {d} ticks", .{ timer.ticksPerSecond(), timer.ticks() });
+    serial.printLine("[VNK] perf: timestamp counter {d} Hz", .{perf_tsc_hz});
 
     // F6.9: event pump por 50 ticks, em vez de consumir toda a fila
     // apenas no final. O trabalho de composição ocorre com IRQs habilitadas.
