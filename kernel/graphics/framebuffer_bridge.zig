@@ -60,7 +60,8 @@ test "invalid framebuffer mapping does not consume a pending frame" {
         .inactive = .{ 2, 2, 2, 2 },
     };
     var frame = frame_mod.Frame.init(palette);
-    var bytes: [16]u8 = @splat(0xaa);
+    // Two rows with an 8-byte pitch require 16 bytes; provide one less.
+    var bytes: [15]u8 = @splat(0xaa);
     const mapping: Mapping = .{
         .bytes = &bytes, .width = 2, .height = 2, .pitch = 8, .bits_per_pixel = 32,
     };
