@@ -404,11 +404,24 @@ fn blocksFor(length: usize) Error!usize {
 fn ensureBlocks(inode_num: u32, required: usize) Error!void {
     if (required > direct_blocks) return error.FileTooLarge;
 
+    // Preserve existing blocks if allocation fails partway through extension.
+    var new_indices: [direct_blocks]usize = undefined;
+    var new_count: usize = 0;
+    errdefer {
+        for (new_indices[0..new_count]) |index| {
+            const block = inodes[inode_num].i_block[index];
+            _ = freeBlock(@as(u32, @intCast(block)));
+            inodes[inode_num].i_block[index] = 0;
+        }
+    }
+
     var count: usize = 0;
     while (count < required) : (count += 1) {
         if (inodes[inode_num].i_block[count] != 0) continue;
         const block = allocateBlock() orelse return error.NoSpace;
         inodes[inode_num].i_block[count] = block;
+        new_indices[new_count] = count;
+        new_count += 1;
     }
 }
 
@@ -856,4 +869,34 @@ test "full directory rolls back newly allocated directory inode" {
     try testing.expect(lookup(root_inode, "overflow-dir") == null);
     try testing.expectEqual(before_inodes, freeInodeCount());
     try testing.expectEqual(before_blocks, freeBlockCount());
+}
+
+test "writeFileAt NoSpace rolls back partial block allocation" {
+    init();
+    const target = try createFile(root_inode, "target");
+    _ = try writeFileAt(target, 0, "preserved");
+    const original_size = sizeOf(target).?;
+    const original_block = inodes[target].i_block[0];
+
+    // Leave exactly one free block: extending to three blocks must fail
+    // after allocating the first new block.
+    var held: [block_count - 1]u32 = undefined;
+    var held_count: usize = 0;
+    while (freeBlockCount() > 1) {
+        held[held_count] = allocateBlock() orelse return error.TestUnexpectedResult;
+        held_count += 1;
+    }
+    const before_free = freeBlockCount();
+    var payload: [block_size * 2 + 1]u8 = @splat(0x5a);
+    try testing.expectError(error.NoSpace, writeFileAt(target, 0, &payload));
+    try testing.expectEqual(original_size, sizeOf(target).?);
+    try testing.expectEqual(original_block, inodes[target].i_block[0]);
+    try testing.expectEqual(@as(u32, 0), inodes[target].i_block[1]);
+    try testing.expectEqual(@as(u32, 0), inodes[target].i_block[2]);
+    try testing.expectEqual(before_free, freeBlockCount());
+    var result: [9]u8 = undefined;
+    const read_count = try readFileAt(target, 0, &result);
+    try testing.expectEqual(@as(usize, 9), read_count);
+    try testing.expectEqualStrings("preserved", &result);
+    for (held[0..held_count]) |block| try testing.expect(freeBlock(block));
 }
