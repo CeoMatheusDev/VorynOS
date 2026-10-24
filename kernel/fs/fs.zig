@@ -1054,3 +1054,80 @@ test "truncate cannot cross process descriptor tables" {
     try closeAll(0);
     try closeAll(1);
 }
+
+
+// M0.3.19: pressure de blocos, rollback e recuperação após unlink.
+test "NoSpace during multi-block extension preserves inode and allows retry" {
+    init();
+    const payload: [ramfs.max_file_size]u8 = @splat(0x5a);
+    // Twenty full files occupy 240 blocks. A further 11-block file
+    // leaves fewer than five free blocks for the attempted extension.
+    for (0..20) |index| {
+        var name: [32]u8 = undefined;
+        const path = try std.fmt.bufPrint(&name, "/pressure-{d}", .{index});
+        const fd = try create(0, path, 0o600);
+        _ = try write(0, fd, &payload);
+        try close(0, fd);
+    }
+    const reserve = try create(0, "/reserve", 0o600);
+    const eleven_blocks: [ramfs.block_size * 11]u8 = @splat(0x33);
+    try testing.expectEqual(eleven_blocks.len, try write(0, reserve, &eleven_blocks));
+    try close(0, reserve);
+
+    const target = try open(0, "/target", O_CREAT | O_RDWR);
+    try testing.expectEqual(@as(usize, 4), try write(0, target, "safe"));
+    const before_blocks = freeBlockCount();
+    const before_offset = try tell(0, target);
+    const extension: [ramfs.block_size * 5]u8 = @splat(0x7e);
+    try testing.expectError(error.NoSpace, write(0, target, &extension));
+    try testing.expectEqual(before_blocks, freeBlockCount());
+    try testing.expectEqual(before_offset, try tell(0, target));
+    try testing.expectEqual(@as(u64, 4), try sizeOf("/target"));
+    var result: [8]u8 = undefined;
+    try testing.expectEqual(@as(usize, 4), try readFile("/target", &result));
+    try testing.expectEqualStrings("safe", result[0..4]);
+
+    try truncateFile("/reserve", 0);
+    try testing.expectEqual(@as(usize, extension.len), try write(0, target, &extension));
+    try testing.expectEqual(@as(u64, 4 + extension.len), try sizeOf("/target"));
+    try closeAll(0);
+}
+
+test "unlinked open file holds blocks until final process closes" {
+    init();
+    const initial_blocks = freeBlockCount();
+    const initial_inodes = freeInodeCount();
+    const owner = try open(0, "/reclaim-pressure", O_CREAT | O_RDWR);
+    const payload: [ramfs.block_size * 3]u8 = @splat(0x71);
+    _ = try write(0, owner, &payload);
+    const observer = try open(1, "/reclaim-pressure", O_RDONLY);
+    try unlink("/reclaim-pressure");
+    try testing.expectError(error.EntryNotFound, open(2, "/reclaim-pressure", O_RDONLY));
+    try closeAll(0);
+    try testing.expectEqual(initial_blocks - 3, freeBlockCount());
+    try testing.expectEqual(initial_inodes - 1, freeInodeCount());
+    var buffer: [4]u8 = undefined;
+    try testing.expectEqual(@as(usize, 4), try read(1, observer, &buffer));
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x71, 0x71, 0x71, 0x71 }, &buffer);
+    try closeAll(1);
+    try testing.expectEqual(initial_blocks, freeBlockCount());
+    try testing.expectEqual(initial_inodes, freeInodeCount());
+}
+
+test "truncate and rewrite repeatedly reuse released blocks" {
+    init();
+    const before_blocks = freeBlockCount();
+    const fd = try open(0, "/cycle", O_CREAT | O_RDWR);
+    const payload: [ramfs.block_size * 4]u8 = @splat(0x4c);
+    for (0..5) |_| {
+        try seek(0, fd, 0);
+        try testing.expectEqual(payload.len, try write(0, fd, &payload));
+        try testing.expectEqual(before_blocks - 4, freeBlockCount());
+        try truncateFd(0, fd, 0);
+        try testing.expectEqual(before_blocks, freeBlockCount());
+        try testing.expectEqual(@as(u64, 0), try sizeOf("/cycle"));
+    }
+    try closeAll(0);
+    try unlink("/cycle");
+    try testing.expectEqual(before_blocks, freeBlockCount());
+}
