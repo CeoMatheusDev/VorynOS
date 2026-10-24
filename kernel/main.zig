@@ -65,7 +65,7 @@ const keyboard = @import("voryn_keyboard");
 var graphics_front_x: usize = 0;
 var graphics_front_y: usize = 0;
 var graphics_ready: bool = false;
-var graphics_desktop: ?desktop_mod.Desktop = null;
+var graphics_desktop: desktop_mod.Desktop = undefined;
 // F6.11: tecla I (Set 1, 0x17) seleciona o modo interativo durante o boot.
 var interactive_requested: bool = false;
 
@@ -914,7 +914,7 @@ fn presentGraphicsDemo() void {
     const back: [4]u8 = if (is_bgr) .{ 0x70, 0x36, 0x1e, 0 } else .{ 0x1e, 0x36, 0x70, 0 };
     // F10: the boot scene now uses the managed window session and bridge.
     // Keep the legacy keyboard redraw path until it is migrated separately.
-    graphics_desktop = desktop_mod.Desktop.init(width, height, .{
+    graphics_desktop.initInPlace(width, height, .{
         .background = background,
         .active = front,
         .inactive = back,
@@ -926,7 +926,7 @@ fn presentGraphicsDemo() void {
         .bytes = ptr[0..size], .width = width, .height = height,
         .pitch = pitch, .bits_per_pixel = framebuffer.bits_per_pixel,
     };
-    _ = graphics_desktop.?.present(mapping) catch |err| {
+    _ = graphics_desktop.present(mapping) catch |err| {
         serial.printLine("[VNK] graphics: desktop presentation failed: {s}", .{@errorName(err)});
         return;
     };
@@ -956,7 +956,7 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
     const pitch: usize = @intCast(framebuffer.pitch);
     const size: usize = @intCast(framebuffer.size);
     const ptr: [*]u8 = @ptrFromInt(framebuffer.base);
-    const desktop = if (graphics_desktop) |*value| value else return;
+    const desktop = &graphics_desktop;
     const slot = desktop.frame.session_state.windows.slots[desktop.front.slot];
     if (!slot.occupied or slot.generation != desktop.front.generation) return;
     const current = slot.window;
