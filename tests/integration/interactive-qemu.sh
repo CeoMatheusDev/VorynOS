@@ -319,6 +319,12 @@ while time.monotonic() < deadline:
                 sys.exit(f"FAIL: burst acknowledgement {index + 1}: expected {expected}, got {actual}")
         if len(acknowledgements) == len(steps):
             expected_positions = [position for _, position, moved in burst_expected if moved]
+            # The kernel emits the acknowledgement before the movement log.
+            # Do not compare until both streams have reached their expected
+            # lengths; the next polling iteration will read the pending line.
+            if len(positions) < len(expected_positions):
+                time.sleep(0.02)
+                continue
             actual_positions = [tuple(map(int, item)) for item in positions]
             if actual_positions != expected_positions:
                 mismatch = next(
