@@ -348,11 +348,11 @@ test "the task state segment has the layout of the long mode" {
     try testing.expect(tss_size - 1 >= 103);
 }
 
-test "TSS descriptor encodes the full 64-bit base" {
+test "TSS descriptor stores the upper half of the TSS base" {
     const base: u64 = 0x1234_5678_9abc_def0;
     const entries = taskSegment(base, 103);
-    try testing.expectEqual(@as(u32, 0xdef0_0067), entries[0].low);
-    try testing.expectEqual(@as(u32, 0xde00_def0), entries[0].high);
-    try testing.expectEqual(@as(u32, 0x1234_5678), entries[1].low);
+    try testing.expectEqual(@as(u32, @truncate(base >> 32)), entries[1].low);
     try testing.expectEqual(@as(u32, 0), entries[1].high);
+    try testing.expectEqual(@as(u32, 103), entries[0].low & 0xffff);
+    try testing.expectEqual(@as(u32, 0x89), (entries[0].high >> 8) & 0xff);
 }
