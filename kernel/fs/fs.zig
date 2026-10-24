@@ -1164,7 +1164,7 @@ test "failed O_CREAT does not invalidate an existing checked descriptor" {
     try testing.expectError(error.NameExists, create(0, "/existing", 0o600));
     try testing.expectError(error.InvalidName, create(0, "/..", 0o600));
     try testing.expectEqual(inode_before, freeInodeCount());
-    try validateCheckedFd(0, handle);
+    try testing.expectEqual(existing, try validateCheckedFd(0, handle));
     try testing.expectEqual(@as(usize, 2), try write(0, existing, "ok"));
     try closeAll(0);
 }
