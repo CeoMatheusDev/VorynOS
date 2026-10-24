@@ -335,7 +335,9 @@ while time.monotonic() < deadline:
         if burst:
             steps = ["right", "down", "left", "up"] * (burst_count // 4)
             burst_started = time.monotonic()
-            burst_ack_started = None
+            burst_window_timings = []
+            burst_send_seconds = 0.0
+            burst_last_window_start = None
             burst_first_ack = None
             burst_last_ack = None
             burst_origin = old_position
@@ -350,8 +352,11 @@ while time.monotonic() < deadline:
             burst_window = 8
             burst_sent = 0
             print(f"ok: burst route sends {len(steps)} ordered arrows (window={burst_window})", flush=True)
+            burst_last_window_start = time.monotonic()
             for key in steps[:burst_window]:
+                send_start = time.monotonic()
                 monitor_command("sendkey " + key + " 50")
+                burst_send_seconds += time.monotonic() - send_start
                 burst_sent += 1
             state = "burst"
             continue
@@ -376,10 +381,16 @@ while time.monotonic() < deadline:
             burst_last_ack = time.monotonic()
         # Refill only after all events from the preceding window were ACKed.
         # This tests sustained traffic without overflowing the host injector.
+        if len(acknowledgements) == burst_sent and burst_last_window_start is not None:
+            burst_window_timings.append(time.monotonic() - burst_last_window_start)
+            burst_last_window_start = None
         if len(acknowledgements) == burst_sent and burst_sent < len(steps):
             next_sent = min(burst_sent + burst_window, len(steps))
+            burst_last_window_start = time.monotonic()
             for key in steps[burst_sent:next_sent]:
+                send_start = time.monotonic()
                 monitor_command("sendkey " + key + " 50")
+                burst_send_seconds += time.monotonic() - send_start
             burst_sent = next_sent
         if len(acknowledgements) == len(steps):
             expected_positions = [position for _, position, moved in burst_expected if moved]
@@ -421,6 +432,11 @@ while time.monotonic() < deadline:
             if burst_first_ack is not None and burst_last_ack is not None:
                 ack_span = burst_last_ack - burst_first_ack
                 print(f"ok: burst ACK observation span {ack_span:.3f}s (includes polling and QEMU scheduling)", flush=True)
+            if burst_window_timings:
+                avg_window = sum(burst_window_timings) / len(burst_window_timings)
+                print(f"ok: burst monitor command round trips {burst_send_seconds:.3f}s total; "
+                      f"{len(burst_window_timings)} ACK windows, "
+                      f"mean {avg_window:.3f}s, max {max(burst_window_timings):.3f}s", flush=True)
             sys.exit(0)
     elif state == "movement":
         positions = movement_pattern.findall(log)
