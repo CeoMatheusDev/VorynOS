@@ -213,7 +213,7 @@ pub fn create(process_id: u64, path: []const u8, mode: u16) Error!Fd {
 
 /// Cria um diretório e devolve o inode dele.
 pub fn mkdir(path: []const u8) Error!u32 {
-    const parts = try splitPath(path);
+    const parts = try splitPath(try backendPath(path));
     return ramfs.createDirectory(parts.parent, parts.name);
 }
 
