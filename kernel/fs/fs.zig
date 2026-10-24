@@ -35,6 +35,7 @@ fn backendPath(path: []const u8) Error![]const u8 {
     if (path.len == 0) return error.InvalidPath;
     if (path[0] != '/') return path;
     const route = try namespace.route(path);
+    if (route.volume_id != 0) return error.UnsupportedVolume;
     return switch (route.backend) {
         .ramfs => route.relative_path,
     };
