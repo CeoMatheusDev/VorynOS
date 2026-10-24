@@ -461,7 +461,7 @@ benchmark = re.findall(
     r"baseline=(\d+) saved=(\d+)",
     log,
 )
-if not summary or len(summary) != len(window) or len(summary) != len(benchmark):
+timing = re.findall(\n    r"\\[VNK\\] graphics: redraw timing cycles=(\\d+) elapsed_ticks=(\\d+)",\n    log,\n)\nif len(timing) != len(benchmark):\n    sys.exit("missing or unmatched F15.4 redraw timing records")\nif not summary or len(summary) != len(window) or len(summary) != len(benchmark):
     sys.exit("missing or unmatched F14 latency/redraw records")
 if len(summary) < 16:
     sys.exit(f"F15.3 requires at least 16 measured redraws, got {len(summary)}")
@@ -477,6 +477,9 @@ for index, (stats, percentiles, redraw) in enumerate(zip(summary, window, benchm
     samples, minimum, mean, maximum, total_pixels, total_baseline = map(int, stats)
     count, p50, p95, p99 = map(int, percentiles)
     cycles, pixels, baseline, saved = map(int, redraw)
+    timing_cycles, elapsed_ticks = map(int, timing[index - 1])
+    if timing_cycles != cycles or elapsed_ticks > 200:
+        sys.exit(f"invalid F15.4 redraw timing at record {index}")
     if samples != previous_samples + 1:
         sys.exit(f"nonconsecutive sample count at record {index}")
     if count != min(samples, 32):
@@ -504,6 +507,7 @@ for index, (stats, percentiles, redraw) in enumerate(zip(summary, window, benchm
     previous_samples, previous_pixels, previous_baseline = samples, total_pixels, total_baseline
 print(f"ok: F14.2 latency counters samples={samples} window={count} p50={p50} p95={p95} p99={p99}")
 print(f"ok: F14.2 redraw pixel savings {saved}/{baseline}")
+print(f"ok: F15.4 redraw tick instrumentation verified for {samples} samples")
 PY
 then
     :
