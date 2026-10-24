@@ -229,12 +229,16 @@ pub fn freeBlockCount() usize {
 }
 
 /// Número de inodes livres.
-pub fn freeInodeCount() usize {
+pub fn freeInodeCountFor(state: *const State) usize {
     var count: usize = 0;
-    for (default_state.inodes) |entry| {
+    for (state.inodes) |entry| {
         if (entry.i_links_count == 0) count += 1;
     }
     return count;
+}
+
+pub fn freeInodeCount() usize {
+    return freeInodeCountFor(&default_state);
 }
 
 /// Fixed-size snapshot of allocator and namespace occupancy.
@@ -388,8 +392,9 @@ pub fn inodeKind(inode_num: u32) ?inode.InodeType {
 }
 
 /// Aloca um inode do tipo pedido.
-fn allocateInode(kind: inode.InodeType) Error!u32 {
-    for (&default_state.inodes, 0..) |*entry, index| {
+/// Allocates one inode in an explicitly supplied volume.
+pub fn allocateInodeFor(state: *State, kind: inode.InodeType) Error!u32 {
+    for (&state.inodes, 0..) |*entry, index| {
         if (entry.i_links_count != 0) continue;
         entry.* = .{
             .i_type = kind,
@@ -398,17 +403,22 @@ fn allocateInode(kind: inode.InodeType) Error!u32 {
             .i_size = 0,
             .i_block = @splat(0),
         };
-        return @as(u32, @intCast(index));
+        return @intCast(index);
     }
     return error.NoFreeInode;
 }
 
-/// Libera um inode e todos os blocos dele.
-fn releaseInode(inode_num: u32) void {
-    if (inode_num >= inode_count) return;
-    const entry = &default_state.inodes[inode_num];
+fn allocateInode(kind: inode.InodeType) Error!u32 {
+    return allocateInodeFor(&default_state, kind);
+}
+
+/// Releases an inode and its data blocks in the specified volume.
+pub fn releaseInodeFor(state: *State, inode_num: u32) void {
+    if (inode_num == root_inode or inode_num >= inode_count) return;
+    const entry = &state.inodes[inode_num];
+    if (entry.i_links_count == 0) return;
     for (entry.i_block) |block| {
-        if (block != 0) _ = freeBlock(@as(u32, @intCast(block)));
+        if (block != 0) _ = freeBlockFor(state, @intCast(block));
     }
     entry.* = .{
         .i_type = .file,
@@ -417,6 +427,10 @@ fn releaseInode(inode_num: u32) void {
         .i_size = 0,
         .i_block = @splat(0),
     };
+}
+
+fn releaseInode(inode_num: u32) void {
+    releaseInodeFor(&default_state, inode_num);
 }
 
 /// Verdadeiro quando o nome pode ser usado como componente de caminho.
@@ -1500,5 +1514,28 @@ test "independent block allocators do not share bitmaps or data" {
     try testing.expect(!freeBlockFor(&other, 0));
     try testing.expect(!freeBlockFor(&other, second));
     try testing.expect(freeBlock(first));
+    try audit();
+}
+
+test "independent inode allocators preserve per-volume state" {
+    init();
+    var other: State = .{};
+    initState(&other);
+    const first = try allocateInodeFor(&default_state, .file);
+    const second = try allocateInodeFor(&other, .file);
+    try testing.expectEqual(first, second);
+    try testing.expectEqual(@as(usize, inode_count - 2), freeInodeCount());
+    try testing.expectEqual(@as(usize, inode_count - 2), freeInodeCountFor(&other));
+
+    const block = allocateBlockFor(&other) orelse unreachable;
+    other.inodes[second].i_block[0] = block;
+    other.inodes[second].i_size = 1;
+    releaseInodeFor(&other, second);
+    try testing.expectEqual(@as(usize, inode_count - 1), freeInodeCountFor(&other));
+    try testing.expectEqual(@as(usize, block_count - 1), freeBlockCountFor(&other));
+    try testing.expectEqual(@as(usize, inode_count - 2), freeInodeCount());
+    releaseInodeFor(&other, root_inode);
+    try testing.expectEqual(@as(usize, 1), other.inodes[root_inode].i_links_count);
+    releaseInodeFor(&default_state, first);
     try audit();
 }
