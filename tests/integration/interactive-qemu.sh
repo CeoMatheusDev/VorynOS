@@ -195,8 +195,9 @@ old_position = None
 stage_origin = None
 before_path = os.path.join(work_dir, "before.ppm")
 after_path = os.path.join(work_dir, "after.ppm")
-movement_pattern = re.compile(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)")
-ack_pattern = re.compile(r"\[VNK\] graphics: arrow ack scancode=0x([0-9a-f]+) moved=([01]) x=(\d+) y=(\d+)")
+# Require a line terminator: serial file reads can end halfway through a number.
+movement_pattern = re.compile(r"\[VNK\] graphics: keyboard move x=(\d+) y=(\d+)\r?\n")
+ack_pattern = re.compile(r"\[VNK\] graphics: arrow ack scancode=0x([0-9a-f]+) moved=([01]) x=(\d+) y=(\d+)\r?\n")
 
 # Reuse one HMP connection and consume the prompt after every command.
 # Closing a fresh socket for each sendkey previously caused monitor backlog.
