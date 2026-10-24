@@ -118,7 +118,7 @@ fn reclaimIfUnused(inode_num: u32) void {
 pub fn init() void {
     ramfs.init();
     namespace.init();
-    @memset(&unlinked, false);
+    @memset(unlinked[0..], false);
     for (&open_files) |*table| {
         for (table) |*entry| entry.* = .{};
     }
