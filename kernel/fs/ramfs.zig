@@ -1002,3 +1002,39 @@ test "empty writes leave inode and block allocation unchanged" {
     try testing.expectEqual(@as(usize, 4), try readFileAt(file, 0, &result));
     try testing.expectEqualStrings("data", &result);
 }
+
+test "writeFileAt maximum direct block capacity and overflow rejection" {
+    init();
+    const file = try createFile(root_inode, "maximum");
+    const payload: [max_file_size]u8 = @splat(0x63);
+    try testing.expectEqual(max_file_size, try writeFileAt(file, 0, &payload));
+    const before = freeBlockCount();
+    try testing.expectEqual(@as(u64, max_file_size), sizeOf(file).?);
+    try testing.expectError(error.FileTooLarge, writeFileAt(file, max_file_size, "x"));
+    try testing.expectEqual(before, freeBlockCount());
+    var last: [1]u8 = undefined;
+    try testing.expectEqual(@as(usize, 1), try readFileAt(file, max_file_size - 1, &last));
+    try testing.expectEqual(@as(u8, 0x63), last[0]);
+}
+
+test "failed extension can be retried after blocks become available" {
+    init();
+    const file = try createFile(root_inode, "retry");
+    try writeFile(file, "stable");
+    var held: [block_count - 1]u32 = undefined;
+    var held_count: usize = 0;
+    while (freeBlockCount() > 1) {
+        held[held_count] = allocateBlock() orelse return error.TestUnexpectedResult;
+        held_count += 1;
+    }
+    try testing.expectError(error.NoSpace, writeFileAt(file, block_size * 2, "done"));
+    try testing.expectEqual(@as(u64, 6), sizeOf(file).?);
+    for (held[0..held_count]) |block| try testing.expect(freeBlock(block));
+    try testing.expectEqual(@as(usize, 4), try writeFileAt(file, block_size * 2, "done"));
+    var result: [4]u8 = undefined;
+    try testing.expectEqual(@as(usize, 4), try readFileAt(file, block_size * 2, &result));
+    try testing.expectEqualStrings("done", &result);
+    var old: [6]u8 = undefined;
+    try testing.expectEqual(@as(usize, 6), try readFileAt(file, 0, &old));
+    try testing.expectEqualStrings("stable", &old);
+}
