@@ -823,3 +823,37 @@ test "unlink detaches file and explicit release reclaims inode and blocks" {
     _ = directory;
     try testing.expectError(error.NotAFile, unlinkFile(root_inode, "dir"));
 }
+
+test "full directory rolls back newly allocated file inode" {
+    init();
+    const shared = try createFile(root_inode, "shared");
+    var index: usize = 1;
+    while (index < dir_entry_count) : (index += 1) {
+        var buffer: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&buffer, "alias-{d}", .{index});
+        try addDirEntry(root_inode, name, shared);
+    }
+    const before_inodes = freeInodeCount();
+    const before_blocks = freeBlockCount();
+    try testing.expectError(error.DirectoryFull, createFile(root_inode, "overflow-file"));
+    try testing.expect(lookup(root_inode, "overflow-file") == null);
+    try testing.expectEqual(before_inodes, freeInodeCount());
+    try testing.expectEqual(before_blocks, freeBlockCount());
+}
+
+test "full directory rolls back newly allocated directory inode" {
+    init();
+    const shared = try createFile(root_inode, "shared");
+    var index: usize = 1;
+    while (index < dir_entry_count) : (index += 1) {
+        var buffer: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&buffer, "alias-{d}", .{index});
+        try addDirEntry(root_inode, name, shared);
+    }
+    const before_inodes = freeInodeCount();
+    const before_blocks = freeBlockCount();
+    try testing.expectError(error.DirectoryFull, createDirectory(root_inode, "overflow-dir"));
+    try testing.expect(lookup(root_inode, "overflow-dir") == null);
+    try testing.expectEqual(before_inodes, freeInodeCount());
+    try testing.expectEqual(before_blocks, freeBlockCount());
+}
