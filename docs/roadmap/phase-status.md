@@ -302,7 +302,7 @@ Objectives: VEX, VLIB, VPK, runtime, SDK and native applications.
 | Native user application | COMPLETED | `/apps/hello.elf`, an ET_DYN image with two PT_LOAD segments and one R_X86_64_RELATIVE, runs as the fourth process and exits with code 0 |
 | Host tests | COMPLETED | 26 tests in `fs-loader-tests` (RamFS, planner, native image and per-process descriptors); 90 host tests in total |
 | Per-process descriptors | COMPLETED | `fs.zig` keeps one table per process, with independent offsets and unknown-process rejection |
-| VEX, VLIB, VPK and SDK | IN DEVELOPMENT | the freestanding SDK, syscall wrappers, display/input/compositor contracts and native ELF applications are present; the VPK container (`formats/vpk.zig`) is implemented with host tests and a boot self-test (pack → RamFS → VNV persistence → recovery → unpack), the VEX native-executable format is specified in `docs/specs/vpk.md` as the payload kind of VPK but its loader integration remains pending, and VLIB (libraries) remains absent |
+| VEX, VLIB, VPK and SDK | IN DEVELOPMENT | the freestanding SDK, syscall wrappers, display/input/compositor contracts and native ELF applications are present; the VPK container (`formats/vpk.zig`) is implemented with host tests and a boot self-test (pack → RamFS → VNV persistence → recovery → unpack); the VEX executable container (`formats/vex.zig`, spec in `docs/specs/vex.md`) wraps the SDK-built toolchain ELF with a capability manifest, and `planFromRamFs` unwraps, validates (magic, geometry, CRC, manifest) and plans the inner ELF during the boot; VLIB (libraries) remains absent |
 
 The planner is deliberately pure: it does not allocate, map or spawn. The
 materializer consumes the `LoadPlan` and owns the hardware-dependent work.
@@ -368,7 +368,7 @@ Known limitations of the verified F6 core:
 | Milestone | Content | State |
 |-------|----------|--------|
 | F4 | Block drivers, VNV, initial VFSX, persistence, recovery | IN PROGRESS — RamFS/VFSX, per-process descriptors, single indirect blocks, file/directory rename with cycle rejection and the block-device commit/wipe/recovery cycle are verified (ramdisk backend); a physical driver and automatic boot mounting are pending |
-| F5 | VEX, VLIB, VPK, runtime, SDK, native applications | IN PROGRESS — SDK, native ELF, compositor client and the VPK container are verified (pack/persist/recover/unpack in the boot test); VEX loader integration and VLIB are pending |
+| F5 | VEX, VLIB, VPK, runtime, SDK, native applications | IN PROGRESS — SDK, native ELF, compositor client, the VPK container and the VEX executable container (wrap/validate/unwrap + loader integration verified in the boot test) are done; VLIB is pending |
 | F6 | Input, rasterizer, compositor, windows, VSH | IN DEVELOPMENT — framebuffer, input, damage, capabilities, user-space composition, screenshot validation and the F6.29 client→compositor frame handshake are verified; focus, cursor, surface sharing and the desktop shell are pending |
 | F7 | Virtio, network, audio, physical hardware, GPU | PROPOSED |
 | F8 | ELF, Linux ABI, PE, Win32, external formats | PROPOSED |

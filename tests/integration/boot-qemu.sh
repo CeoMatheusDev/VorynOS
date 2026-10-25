@@ -372,9 +372,13 @@ require_marker "[VNK] native: the ELF task wrote 0x464c456e79726f56 in its data 
 require_marker "[VNK] native: the relative relocation holds the load bias"
 require_marker "[VNK] native: the ELF task terminated with code 0"
 require_marker "[VNK] native: /apps/hello.elf ran from the RamFS"
-require_marker "[VNK] toolchain: /apps/toolchain.elf ran from the toolchain"
+require_marker "[VNK] toolchain: /apps/toolchain.vex ran from the toolchain"
 require_marker "native ELF"
 require_marker "toolchain ELF"
+# F5: o executável da toolchain é um container VEX com manifest validado.
+require_marker "[VNK] fs: /apps/toolchain.vex installed"
+require_pattern '\[VNK\] vex: manifest declares display\(0x[0-9a-f]+\) and input\(0x[0-9a-f]+\)' 'the VEX capability manifest'
+require_marker "[VNK] vex: unwrapped and planned from the VEX image"
 require_pattern '\[VNK\] syscall 19 from user display_info result 0x28' 'the display metadata call from the user mode'
 require_marker "display metadata"
 require_pattern '\[VNK\] capabilities: the display belongs to the process [0-9]+' 'the display capability'

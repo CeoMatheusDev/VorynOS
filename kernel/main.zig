@@ -55,6 +55,7 @@ const vnv_volume = @import("fs/vnv_volume.zig");
 const block_dev = @import("storage/block.zig");
 const ramdisk = @import("storage/ramdisk.zig");
 const vpk = @import("voryn_vpk");
+const vex = @import("voryn_vex");
 const elf_loader = @import("elf_loader.zig");
 const elf_materializer = @import("elf_materializer.zig");
 const native_image = @import("native_image.zig");
@@ -327,7 +328,11 @@ var native_task_stack: [task_stack_size]u8 align(16) = undefined;
 var native_image_buffer: [native_image.max_image_size]u8 = undefined;
 
 /// The buffer that receives the toolchain image read from the RamFS.
-var toolchain_image_buffer: [toolchain_app.bytes.len]u8 = undefined;
+///
+/// The file on disk is a VEX container (`toolchain_app.bytes` + the 64
+/// byte header); `planFromRamFs` unwraps the payload to the start of the
+/// buffer, so the materializer slice uses the plain ELF length.
+var toolchain_image_buffer: [toolchain_app.bytes.len + vex.header_size + vex.max_manifest_entries * 8]u8 = undefined;
 
 /// The buffer that receives the client image read from the RamFS.
 var client_image_buffer: [client_app.bytes.len]u8 = undefined;
@@ -360,6 +365,10 @@ var persistence_sequence: u64 = 0;
 const vpk_pack_buffer_size: usize = 512;
 var vpk_pack_buffer: [vpk_pack_buffer_size]u8 align(16) = undefined;
 var vpk_packed_length: usize = 0;
+
+/// Tamanho do arquivo `/apps/toolchain.vex` instalado no RamFS (cabeçalho
+/// VEX + ELF + manifest). Usado pela verificação de persistência.
+var toolchain_vex_length: usize = 0;
 
 // ----------------------------------------------------------------------
 // F4: arquivo grande (> 48 KiB) para exercitar a tabela indireta.
@@ -1409,24 +1418,45 @@ fn installFs() void {
 
     // The application produced by the toolchain. Its bytes come from the
     // module generated during the build, and the file goes through the same
-    // RamFS as the bootstrap image.
-    const toolchain_descriptor = fs.create(0, "/apps/toolchain.elf", 0o755) catch |err| {
-        serial.printLine("[VNK] FATAL: the file /apps/toolchain.elf could not be created: {s}", .{@errorName(err)});
+    // RamFS as the bootstrap image. The ELF is wrapped in a VEX container
+    // (F5): the header declares the capability manifest that the kernel
+    // grants to the process, and the loader unwraps and plans the inner
+    // ELF during the boot.
+    const toolchain_manifest = [_]vex.Capability{
+        .{ .kind = .display, .rights = @intCast(capability.Rights.write | capability.Rights.delegate) },
+        .{ .kind = .input, .rights = @intCast(capability.Rights.read | capability.Rights.delegate) },
+    };
+    var toolchain_vex_buffer: [toolchain_app.bytes.len + vex.header_size + vex.max_manifest_entries * 8]u8 align(16) = undefined;
+    const toolchain_wrapped = vex.wrap(
+        toolchain_app.bytes[0..],
+        &toolchain_manifest,
+        &toolchain_vex_buffer,
+    ) catch |err| {
+        serial.printLine("[VNK] FATAL: the toolchain VEX could not be wrapped: {s}", .{@errorName(err)});
         port.haltForever();
     };
-    const toolchain_written = fs.write(0, toolchain_descriptor, toolchain_app.bytes[0..]) catch |err| {
-        serial.printLine("[VNK] FATAL: the file /apps/toolchain.elf could not be written: {s}", .{@errorName(err)});
+    const toolchain_descriptor = fs.create(0, "/apps/toolchain.vex", 0o755) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/toolchain.vex could not be created: {s}", .{@errorName(err)});
         port.haltForever();
     };
-    if (toolchain_written != toolchain_app.bytes.len) {
-        serial.printLine("[VNK] FATAL: the file /apps/toolchain.elf accepted {d} bytes", .{toolchain_written});
+    const toolchain_written = fs.write(0, toolchain_descriptor, toolchain_vex_buffer[0..toolchain_wrapped]) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/toolchain.vex could not be written: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (toolchain_written != toolchain_wrapped) {
+        serial.printLine("[VNK] FATAL: the file /apps/toolchain.vex accepted {d} bytes", .{toolchain_written});
         port.haltForever();
     }
     fs.close(0, toolchain_descriptor) catch |err| {
-        serial.printLine("[VNK] FATAL: the file /apps/toolchain.elf could not be closed: {s}", .{@errorName(err)});
+        serial.printLine("[VNK] FATAL: the file /apps/toolchain.vex could not be closed: {s}", .{@errorName(err)});
         port.haltForever();
     };
-    serial.printLine("[VNK] fs: /apps/toolchain.elf installed ({d} bytes)", .{toolchain_app.bytes.len});
+    toolchain_vex_length = toolchain_wrapped;
+    serial.printLine("[VNK] fs: /apps/toolchain.vex installed ({d} bytes)", .{toolchain_wrapped});
+    serial.printLine("[VNK] vex: manifest declares display(0x{x}) and input(0x{x})", .{
+        toolchain_manifest[0].rights,
+        toolchain_manifest[1].rights,
+    });
 
     const client_descriptor = fs.create(0, "/apps/client.elf", 0o755) catch |err| {
         serial.printLine("[VNK] FATAL: the file /apps/client.elf could not be created: {s}", .{@errorName(err)});
@@ -1754,12 +1784,15 @@ fn installNativeProcess() void {
 }
 
 /// Creates the process that runs the ELF produced by the toolchain.
+///
+/// The file is a VEX container: `planFromRamFs` validates the header, the
+/// CRC and the capability manifest, unwraps the ELF and plans it.
 fn installToolchainProcess() void {
     if (!enable_user_task) return;
 
     const window = user_window_base;
     const plan = elf_loader.planFromRamFs(
-        "/apps/toolchain.elf",
+        "/apps/toolchain.vex",
         &toolchain_image_buffer,
         window,
         window,
@@ -1793,13 +1826,14 @@ fn installToolchainProcess() void {
     toolchain_space = space;
     toolchain_entry = plan.entry;
 
-    serial.printLine("[VNK] toolchain: /apps/toolchain.elf entry=0x{x} base=0x{x} end=0x{x}, {d} segments, {d} relocation(s)", .{
+    serial.printLine("[VNK] toolchain: /apps/toolchain.vex entry=0x{x} base=0x{x} end=0x{x}, {d} segments, {d} relocation(s)", .{
         plan.entry,
         plan.base,
         plan.end,
         plan.segment_count,
         plan.relocation_count,
     });
+    serial.printLine("[VNK] vex: unwrapped and planned from the VEX image", .{});
 
     const surface = mapCompositorSurface(space);
     serial.printLine("[VNK] compositor: surface page at 0x{x} R+W+NX, {d}x{d}, process {d}", .{
@@ -2847,7 +2881,7 @@ fn reportToolchainTask() void {
     } else if (task.exit_code != 0) {
         serial.printLine("[VNK] toolchain: the task terminated with code 0x{x}", .{task.exit_code});
     } else {
-        serial.printLine("[VNK] toolchain: /apps/toolchain.elf ran from the toolchain", .{});
+        serial.printLine("[VNK] toolchain: /apps/toolchain.vex ran from the toolchain", .{});
     }
 }
 
@@ -3046,7 +3080,7 @@ fn verifyFsPersistence() void {
         port.haltForever();
     }
     verifyRecoveredSize("/apps/hello.elf", native_image_length);
-    verifyRecoveredSize("/apps/toolchain.elf", toolchain_app.bytes.len);
+    verifyRecoveredSize("/apps/toolchain.vex", toolchain_vex_length);
     verifyRecoveredSize("/apps/client.elf", client_app.bytes.len);
     verifyRecoveredSize("/apps/sample.vpk", vpk_packed_length);
     verifyRecoveredSize("/apps/large.bin", large_file_size);

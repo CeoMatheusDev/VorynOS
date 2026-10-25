@@ -42,6 +42,7 @@ const std = @import("std");
 const voryn = @import("voryn_shared");
 const elf64 = voryn.elf64;
 const fs = @import("fs/fs.zig");
+const vex = @import("voryn_vex");
 
 /// Tamanho de uma página, em bytes.
 pub const page_size: u64 = 4096;
@@ -86,7 +87,7 @@ pub const LoadError = error{
 pub const PlanError = elf64.ParseError || LoadError;
 
 /// Erro do planejamento a partir do RamFS.
-pub const Error = fs.Error || PlanError;
+pub const Error = fs.Error || PlanError || vex.Error;
 
 /// Segmento já posicionado no espaço de endereços virtual.
 pub const PlannedSegment = struct {
@@ -322,6 +323,13 @@ pub fn plan(
 /// O buffer tem de comportar o arquivo inteiro, porque o tamanho é
 /// consultado antes da leitura: um buffer menor recusa o plano em vez de
 /// analisar uma imagem truncada.
+///
+/// O arquivo pode ser um ELF64 puro ou um container VEX (`formats/vex.zig`):
+/// o magic decide. Para um VEX, o cabeçalho e o manifest são validados, o
+/// CRC do payload é conferido e a imagem ELF é deslocada para o início do
+/// buffer, para que o materializador leia os bytes a partir do offset
+/// zero. O manifest declarado é metadado validado; a concessão das
+/// capacidades continua sendo decisão do kernel.
 pub fn planFromRamFs(
     path: []const u8,
     buffer: []u8,
@@ -335,7 +343,15 @@ pub fn planFromRamFs(
     const count = try fs.readFile(path, buffer);
     if (@as(u64, count) != file_size) return error.BufferTooSmall;
 
-    return plan(buffer[0..count], load_bias, window_base, window_size);
+    const image = vex.unwrap(buffer[0..count]) catch |err| {
+        if (err == error.NotVex) return plan(buffer[0..count], load_bias, window_base, window_size);
+        return err;
+    };
+    // Container VEX: move o payload para o início do buffer.
+    if (image.len != count) {
+        std.mem.copyForwards(u8, buffer[0..image.len], image);
+    }
+    return plan(buffer[0..image.len], load_bias, window_base, window_size);
 }
 
 // ---------------------------------------------------------------------------
@@ -585,5 +601,42 @@ test "planFromRamFs reads the image and refuses a small buffer" {
     try testing.expectError(
         error.EntryNotFound,
         planFromRamFs("/missing.elf", &scratch, 0, 0x400000, 0x2000),
+    );
+}
+
+test "planFromRamFs unwraps a VEX container and plans the inner ELF" {
+    fs.init();
+
+    var image_buffer: [0x3000]u8 = undefined;
+    const segments = [_]TestSegment{ rx_segment, rw_segment };
+    const bytes = try buildTestImage(&image_buffer, 0x400080, &segments);
+
+    // Empacota o ELF em um VEX com manifest de capacidades.
+    var vex_buffer: [0x3000 + vex.header_size]u8 = undefined;
+    const manifest = [_]vex.Capability{
+        .{ .kind = .display, .rights = 8 },
+        .{ .kind = .input, .rights = 16 },
+    };
+    const wrapped = try vex.wrap(bytes, &manifest, &vex_buffer);
+
+    const fd = try fs.create(0, "/app.vex", 0o755);
+    _ = try fs.write(0, fd, vex_buffer[0..wrapped]);
+    try fs.close(0, fd);
+
+    var scratch: [0x3000 + vex.header_size]u8 = undefined;
+    const load_plan = try planFromRamFs("/app.vex", &scratch, 0, 0x400000, 0x2000);
+    try testing.expectEqual(@as(u64, 0x400080), load_plan.entry);
+    try testing.expectEqual(@as(usize, 2), load_plan.segment_count);
+
+    // Um VEX com payload corrompido é recusado antes do planejamento.
+    var corrupted: [0x3000 + vex.header_size]u8 = undefined;
+    @memcpy(corrupted[0..wrapped], vex_buffer[0..wrapped]);
+    corrupted[vex.header_size + 4] ^= 0xFF;
+    const bad_fd = try fs.create(0, "/bad.vex", 0o755);
+    _ = try fs.write(0, bad_fd, corrupted[0..wrapped]);
+    try fs.close(0, bad_fd);
+    try testing.expectError(
+        error.ChecksumMismatch,
+        planFromRamFs("/bad.vex", &scratch, 0, 0x400000, 0x2000),
     );
 }

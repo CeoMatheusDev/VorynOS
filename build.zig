@@ -192,6 +192,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     kernel_module.addImport("voryn_vpk", vpk_kernel_module);
+    // The VEX executable container is imported by the ELF loader; both the
+    // kernel and the host test root compile their own instance.
+    const vex_kernel_module = b.createModule(.{
+        .root_source_file = b.path("formats/vex.zig"),
+        .target = kernel_target,
+        .optimize = optimize,
+    });
+    kernel_module.addImport("voryn_vex", vex_kernel_module);
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/entry.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/cpu.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/segment.s"));
@@ -303,6 +311,18 @@ pub fn build(b: *std.Build) void {
         .root_module = vpk_test_module,
     });
     unit_test_step.dependOn(&b.addRunArtifact(vpk_tests).step);
+
+    // F5: container VEX (executável nativo), codec puro testado no host.
+    const vex_test_module = b.createModule(.{
+        .root_source_file = b.path("formats/vex.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const vex_tests = b.addTest(.{
+        .name = "vex-tests",
+        .root_module = vex_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(vex_tests).step);
 
     // F6: rasterizador puro, testado sem hardware de vídeo.
     const raster_test_module = b.createModule(.{
@@ -462,6 +482,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     host_test_module.addImport("voryn_shared", shared);
+    const vex_host_module = b.createModule(.{
+        .root_source_file = b.path("formats/vex.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    host_test_module.addImport("voryn_vex", vex_host_module);
     const host_tests = b.addTest(.{
         .name = "fs-loader-tests",
         .root_module = host_test_module,
