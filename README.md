@@ -105,7 +105,7 @@ Development is organized into incremental milestones, each with technical accept
 | F6 | Graphics subsystem and desktop environment | 🚧 Experimental — F6.30 `input_wait` (syscall 23, ABI v13) verified |
 | F7 | Virtio drivers / PCI / block / net (`virtio.zig`, `virtio_blk.zig`, `virtio_net.zig`, `pci.zig`) | 🟢 Base completo (`f7adcf5` + loader P0 `7fc34e3`) — F7 base + PCI + blk + net verificado |
 | F8 | Compatibility with external formats and APIs | ✅ F8 concluído — `vex.zig` funcional + `elf_compat.zig` + ABI v13 (`12ac3a2`) |
-| F9 | Artificial intelligence infrastructure | 🟢 Iniciado — `kernel/ai/tensor.zig` (`matMul` + `relu`), `model.zig` (formato binário + CRC32), `docs/reports/f9/f9-infra.md` (`798fbf3` → `7437369`) |
+| F9 | Artificial intelligence infrastructure | 🟢 Concluído — `tensor.zig` + `model.zig` (infer real, CRC alinhado) + `security.zig` (overflow verificado) + F9.4 audit (`fe34196`) |
 | F10 | Installation, security, recovery, and production readiness | 📋 Proposed |
 
 **Important:** These milestone statuses describe the active `feat/native-sdk` development branch where indicated; they do not imply that the same functionality has been merged into `main` or released.
