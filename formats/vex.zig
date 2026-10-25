@@ -111,8 +111,7 @@ fn get64(input: []const u8, offset: usize) u64 {
 pub fn packedSize(payload_len: usize, manifest_count: usize) Error!usize {
     if (manifest_count > max_manifest_entries) return error.InvalidManifest;
     const manifest_bytes = @as(usize, manifest_count) * 8;
-    const total = std.math.add(usize, header_size +| payload_len, manifest_bytes) catch
-        return error.Overflow;
+    const total = std.math.add(usize, std.math.add(usize, header_size, payload_len) catch return error.Overflow, manifest_bytes) catch return error.Overflow;
     if (total > std.math.maxInt(usize)) return error.Overflow;
     return total;
 }
