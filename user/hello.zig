@@ -280,8 +280,7 @@ fn receiveClientFrame(surface: *const composition.Surface, address: u64, pixel_f
 
     const geometry = sdk.compositor.unpackWindow(placement.value);
     // Verifica se a geometria cabe na superfície antes de continuar.
-    if (geometry.width == 0 or geometry.height == 0 or
-        geometry.x >= composition_width or geometry.y >= composition_height)
+    if (!sdk.compositor.validWindow(geometry, composition_width, composition_height))
     {
         _ = sdk.write("window geometry invalid\n");
         return false;
@@ -306,6 +305,15 @@ fn receiveClientFrame(surface: *const composition.Surface, address: u64, pixel_f
         return false;
     }
 
+    // The client sends the hash of its declared rectangle. Verify the
+    // actual pixels received through copy_to before trusting FRAME1.
+    const received_hash = surface.checksumRegion(
+        geometry.x, geometry.y, geometry.width, geometry.height,
+    ) orelse return false;
+    if (received_hash != result.value) {
+        _ = sdk.write("client frame checksum mismatch\\n");
+        return false;
+    }
     if (!presentSurface(surface, address, pixel_format)) return false;
     const hash = surface.checksum();
     writeCompositionMarker(hash);
