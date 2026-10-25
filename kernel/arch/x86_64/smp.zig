@@ -90,6 +90,9 @@ var cpus: [max_cpus]Cpu = blk: {
 /// Numero de CPUs online atualmente.
 var online_cpu_count: u8 = 1;
 
+/// True depois que o BSP configurou o GS com a estrutura da CPU zero.
+var gs_ready: bool = false;
+
 /// Processadores habilitados que a MADT descreveu.
 var madt_processors: [max_cpus]acpi.Processor = @splat(.{});
 
@@ -121,10 +124,28 @@ var ap_stacks: [max_cpus - 1][16 * 1024]u8 align(16) = undefined;
 
 /// Retorna o numero da CPU atual.
 ///
-/// Implementacao provisoria: retorna 0 (apenas o BSP executa tarefas).
-/// A leitura por CPU exige a area por processador acessivel por GS.
+/// Le o identificador no inicio da estrutura da CPU corrente, que fica
+/// acessivel por GS. Antes de o BSP configurar o GS, retorna zero, de
+/// modo que as chamadas do boot e os testes no host nao dependam do
+/// registro.
 pub fn cpuId() u8 {
-    return 0;
+    if (!gs_ready) return 0;
+    var id: u8 = 0;
+    asm volatile ("movb %%gs:0, %[out]"
+        : [out] "=r" (id)
+        :
+        : .{ .memory = true });
+    return id;
+}
+
+/// Configura o GS da CPU atual para apontar para a estrutura da CPU.
+///
+/// Apenas o BSP chama esta funcao durante o boot; cada AP configura o
+/// proprio GS no ponto de entrada.
+pub fn setGsBase(id: u8) void {
+    if (id >= max_cpus) return;
+    x86_cpu.writeMsr(x86_cpu.msr_gs_base, @intFromPtr(&cpus[id]));
+    if (id == 0) gs_ready = true;
 }
 
 /// Retorna o ponteiro para a estrutura da CPU atual.
@@ -490,6 +511,7 @@ pub fn install(map: []const voryn.handoff.MemoryDescriptor) void {
 
     // A CPU zero e o BSP, que ja esta executando este codigo.
     _ = registerCpu(0, bsp_apic_id);
+    setGsBase(0);
 
     var logical: u8 = 1;
     var processor_index: usize = 0;
@@ -594,7 +616,9 @@ pub fn install(map: []const voryn.handoff.MemoryDescriptor) void {
 /// atualizada pelo BSP quando ele observa a flag.
 pub export fn voryn_ap_entry(cpu_id: u32) callconv(.c) noreturn {
     if (cpu_id < max_cpus) {
-        @atomicStore(u8, &ap_online[@intCast(cpu_id)], 1, .release);
+        const id: u8 = @intCast(cpu_id);
+        x86_cpu.writeMsr(x86_cpu.msr_gs_base, @intFromPtr(&cpus[id]));
+        @atomicStore(u8, &ap_online[id], 1, .release);
     }
 
     // Sem trabalho por enquanto: o escalonador multiprocessador ainda nao

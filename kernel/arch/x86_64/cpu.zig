@@ -160,8 +160,12 @@ pub fn writeMsr(msr: u32, value: u64) void {
         : .{ .memory = true });
 }
 
-/// The model specific register of the extended features of the processor.
 pub const msr_efer: u32 = 0xC000_0080;
+
+/// Model specific register that holds the base address of the GS segment
+/// in 64-bit mode. The kernel stores the address of the structure of the
+/// current CPU there, so that `cpuId` can read it without a call.
+pub const msr_gs_base: u32 = 0xC000_0101;
 
 /// The bit of `EFER` that enables the no-execute bit of the page tables.
 pub const efer_nxe: u64 = 1 << 11;
