@@ -311,7 +311,7 @@ fn receiveClientFrame(surface: *const composition.Surface, address: u64, pixel_f
         geometry.x, geometry.y, geometry.width, geometry.height,
     ) orelse return false;
     if (received_hash != result.value) {
-        _ = sdk.write("client frame checksum mismatch\\n");
+        _ = sdk.write("client frame checksum mismatch\n");
         return false;
     }
     if (!presentSurface(surface, address, pixel_format)) return false;
