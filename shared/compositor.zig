@@ -136,6 +136,55 @@ pub const Contract = extern struct {
     frame_ready_kind: u64,
 };
 
+/// Validate the read-only client contract before any cross-process copy.
+/// Bounds are checked with subtraction to avoid address arithmetic overflow.
+pub fn validContract(contract: Contract) bool {
+    if (contract.version != contract_version or
+        contract.channel_id != channel_id or
+        contract.frame_ready_kind != frame_ready_kind or
+        contract.surface_width != surface_width or
+        contract.surface_height != surface_height or
+        contract.surface_stride != surface_stride or
+        contract.surface_bytes != surface_size or
+        contract.surface_address == 0 or
+        contract.compositor_process == 0)
+    {
+        return false;
+    }
+    // A surface must fit inside its own mapped page, including the last byte.
+    if (contract.surface_address % 0x1000 != 0) return false;
+    if (contract.surface_bytes > 0x1000) return false;
+    return contract.surface_address <= ~@as(u64, 0) - contract.surface_bytes;
+}
+
+test "client contract rejects inconsistent and overflowing surface metadata" {
+    const std = @import("std");
+    const good: Contract = .{
+        .version = contract_version,
+        .compositor_process = 4,
+        .channel_id = channel_id,
+        .surface_address = 0x17f8000,
+        .surface_width = surface_width,
+        .surface_height = surface_height,
+        .surface_stride = surface_stride,
+        .surface_bytes = surface_size,
+        .frame_ready_kind = frame_ready_kind,
+    };
+    try std.testing.expect(validContract(good));
+    var bad = good;
+    bad.surface_address = 0;
+    try std.testing.expect(!validContract(bad));
+    bad = good;
+    bad.surface_address = 0xfffffffffffff000;
+    try std.testing.expect(!validContract(bad));
+    bad = good;
+    bad.surface_stride += 1;
+    try std.testing.expect(!validContract(bad));
+    bad = good;
+    bad.compositor_process = 0;
+    try std.testing.expect(!validContract(bad));
+}
+
 test "contract layout is stable and fits one page" {
     const std = @import("std");
     try std.testing.expectEqual(@as(usize, 9 * 8), @sizeOf(Contract));
