@@ -96,7 +96,7 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     ) orelse sdk.exit(7);
 
     // Record the computed hash before the IPC handoff for diagnostics.
-    _ = sdk.write("client frame prepared\n");
+    _ = sdk.write("client checksum computed\n");
 
     // Posiciona a janela no compositor antes de avisar que o quadro está pronto.
     const placement = sdk.compositor.packWindow(
