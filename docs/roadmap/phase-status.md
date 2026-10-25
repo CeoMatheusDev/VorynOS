@@ -371,8 +371,8 @@ Known limitations of the verified F6 core:
 | F5 | VEX, VLIB, VPK, runtime, SDK, native applications | IN PROGRESS — SDK, native ELF, compositor client, the VPK container and the VEX executable container (wrap/validate/unwrap + loader integration verified in the boot test) are done; VLIB is pending |
 | F6 | Input, rasterizer, compositor, windows, VSH | IN DEVELOPMENT — framebuffer, input, damage, capabilities, user-space composition, blocking input wait (F6.30, syscall 23, ABI v13), screenshot validation and the F6.29 client→compositor frame handshake are verified; focus, cursor, surface sharing and the desktop shell are pending |
 | F7 | Virtio, network, audio, physical hardware, GPU | IN DEVELOPMENT — `virtio.zig` (`VRing` + `PciVirtioInfo`), `pci.zig` (0xCF8/0xCFC scan), `virtio_blk.zig` (`BlockDevice` stub), `virtio_net.zig` (`NetworkDevice` stub); `detectVirtioDevice()` com scan PCI real; testes `zig build test` passam; `f7adcf5` publicado |
-| F8 | ELF, Linux ABI, PE, Win32, external formats | PROPOSED |
-| F9 | VAI, backends, permissions, API, local execution | PROPOSED |
+| F8 | ELF, Linux ABI, PE, Win32, external formats | CONCLUÍDO — `vex.zig` (wrap/validate/unwrap + manifest), `elf_compat.zig`, ABI v13 (`syscall.zig`), loader P0 `AllocatePages` (`591bde4`) |
+| F9 | AI, tensor, model, security, inference | CONCLUÍDO — `tensor.zig` (`matMul` + `relu`), `model.zig` (infer real + CRC + validação), `security.zig` (overflow verificado), F9.4 audit (`591bde4`/`7167434`/`3418766`) |
 | F10 | Installation, update, recovery, hardening, benchmarks, other architectures | PROPOSED |
 
 ## Open risks
