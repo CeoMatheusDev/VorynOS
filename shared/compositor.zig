@@ -40,15 +40,20 @@ pub const channel_id: u64 = 2;
 /// Lado do canal que pertence ao compositor. O cliente envia para este lado
 /// e o compositor recebe deste lado.
 pub const compositor_side: u64 = 0;
+/// Lado que pertence ao cliente para receber o ACK do compositor.
+pub const client_side: u64 = 1;
 
 /// Tipo da mensagem de quadro pronto.
 pub const frame_ready_kind: u64 = 0x4652_414D_4531; // "FRAME1"
 
+/// Tipo de mensagem que libera o cliente após a primeira composição.
+pub const compositor_ready_kind: u64 = 0x434F_4D50_524459; // "COMPRDY"
+
 /// Tipo da mensagem de posicionamento de janela.
 ///
-/// O cliente envia esta mensagem antes de copiar os pixels da janela para a
-/// superfície do compositor. O valor é a geometria empacotada (x, y,
-/// largura, altura como u16).
+/// O cliente envia esta mensagem antes de aguardar o ACK e copiar os pixels
+/// da janela para a superfície do compositor. O valor é a geometria empacotada
+/// (x, y, largura, altura como u16).
 pub const window_place_kind: u64 = 0x574E_4450_4C41_4345; // "WNDPLACE"
 
 /// Empacota a geometria de uma janela no valor da mensagem de posicionamento.

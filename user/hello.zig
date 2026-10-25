@@ -233,6 +233,17 @@ fn presentComposition(window_base: u64, pixel_format: u32) bool {
     windows.compose(&surface, composition_background);
     if (!presentSurface(&surface, surface_address, pixel_format)) return false;
 
+    // Libera o cliente somente depois que a composição inicial foi publicada;
+    // sem esse ACK, o cliente poderia copiar a janela enquanto esta primeira
+    // apresentação ainda estivesse pendente.
+    const ready = sdk.send(
+        sdk.compositor.channel_id,
+        sdk.compositor.client_side,
+        sdk.compositor.compositor_ready_kind,
+        0,
+    );
+    if (sdk.syscall.isError(ready) or ready != 0) return false;
+
     if (!receiveClientFrame(&surface, surface_address, pixel_format)) return false;
 
     const hash = surface.checksum();

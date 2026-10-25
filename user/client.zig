@@ -79,20 +79,18 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     );
     if (sdk.syscall.isError(placed) or placed != 0) sdk.exit(7);
 
-    // Copia cada linha da janela (16 rows x 64 bytes) da região (8,8) do
-    // quadro local para a superfície do compositor na posição (8,8).
-    var row: u32 = 0;
-    while (row < 16) : (row += 1) {
-        const source_row = (@as(u64, sdk.compositor.client_y + row) * sdk.compositor.surface_stride + sdk.compositor.client_x);
-        const destination = contract.surface_address +
-            (@as(u64, sdk.compositor.client_y + row) * contract.surface_stride +
-                sdk.compositor.client_x) * 4;
-        const source = std.mem.sliceAsBytes(
-            full_frame[source_row .. source_row + sdk.compositor.client_width],
-        );
-        const status = sdk.copyTo(contract.compositor_process, destination, source);
-        if (sdk.syscall.isError(status) or status != source.len) sdk.exit(6);
-    }
+    // Aguarda a composição inicial antes de escrever na superfície remota.
+    const ready = sdk.receiveBlocking(
+        contract.channel_id,
+        sdk.compositor.client_side,
+    );
+    if (sdk.syscall.isError(ready.status) or ready.status != sdk.compositor.compositor_ready_kind) sdk.exit(6);
+
+    // Copia o quadro completo para a superfície do compositor em uma única
+    // operação validada.
+    const source = std.mem.sliceAsBytes(&full_frame);
+    const status = sdk.copyTo(contract.compositor_process, contract.surface_address, source);
+    if (sdk.syscall.isError(status) or status != source.len) sdk.exit(6);
 
     // Calcula o checksum da região da janela (x=8, y=8, 16x16) sobre o
     // quadro completo e o envia como valor do aviso de quadro pronto. O

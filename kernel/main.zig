@@ -1519,11 +1519,11 @@ fn installCapabilities() void {
         serial.printLine("[VNK] FATAL: the table of capabilities is full", .{});
         port.haltForever();
     };
-    if (!capability.give(client.id, frame_channel, capability.Rights.send)) {
+    if (!capability.give(client.id, frame_channel, capability.Rights.send | capability.Rights.receive)) {
         serial.printLine("[VNK] FATAL: the capability of the frame channel could not be given to the client", .{});
         port.haltForever();
     }
-    if (!capability.give(presenter.id, frame_channel, capability.Rights.receive)) {
+    if (!capability.give(presenter.id, frame_channel, capability.Rights.send | capability.Rights.receive)) {
         serial.printLine("[VNK] FATAL: the capability of the frame channel could not be given to the compositor", .{});
         port.haltForever();
     }
@@ -2826,6 +2826,10 @@ fn prepareFsLifecycleProbe() void {
         serial.printLine("[VNK] FATAL: lifecycle normal write: {s}", .{@errorName(err)});
         port.haltForever();
     };
+    fs.close(normal.id, normal_fd) catch |err| {
+        serial.printLine("[VNK] FATAL: lifecycle normal close: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
     fs.unlink("/apps/lifecycle-normal.tmp") catch unreachable;
 
     const fault_fd = fs.create(fault.id, "/apps/lifecycle-fault.tmp", 0o600) catch |err| {
@@ -2834,6 +2838,10 @@ fn prepareFsLifecycleProbe() void {
     };
     _ = fs.write(fault.id, fault_fd, "fault") catch |err| {
         serial.printLine("[VNK] FATAL: lifecycle fault write: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    fs.close(fault.id, fault_fd) catch |err| {
+        serial.printLine("[VNK] FATAL: lifecycle fault close: {s}", .{@errorName(err)});
         port.haltForever();
     };
     fs.unlink("/apps/lifecycle-fault.tmp") catch unreachable;
