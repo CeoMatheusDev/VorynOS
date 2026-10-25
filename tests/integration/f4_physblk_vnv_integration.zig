@@ -6,10 +6,10 @@
 
 //! Integration test: PhysBlock (F4 driver) -> block.Device -> VNV commit/\n//! recover. Verifies that a physical driver interface can substitute the\n//! ramdisk without altering the volume or filesystem.\n
 const std = @import("std");
-const block = @import("kernel/storage/block.zig");
-const phys_blk = @import("kernel/storage/phys_blk.zig");
-const ramfs = @import("kernel/fs/ramfs.zig");
-const vnv_volume = @import("kernel/fs/vnv_volume.zig");
+const block = @import("../../kernel/storage/block.zig");
+const phys_blk = @import("../../kernel/storage/phys_blk.zig");
+const ramfs = @import("../../kernel/fs/ramfs.zig");
+const vnv_volume = @import("../../kernel/fs/vnv_volume.zig");
 
 const backing_size = 4096 * 512; // 2 MiB
 
