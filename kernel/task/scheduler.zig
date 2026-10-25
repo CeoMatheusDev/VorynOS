@@ -293,6 +293,8 @@ pub const Scheduler = struct {
         }
         task.vruntime = if (has_ready) min_vruntime else 0;
         const quantum_vtime: i64 = @divTrunc(@as(i64, task.slice) * 1024, @as(i64, @intCast(task.weight)));
+        // Performance note: this division occurs once per new-task setup,
+        // not every tick; the deadline is incremented by cached quantum.
         task.deadline = task.vruntime + @max(@as(i64, 1), quantum_vtime);
 
         return task;
