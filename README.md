@@ -780,8 +780,9 @@ F6.17 was validated on Fedora/QEMU: `--stress` completed 48/48 acknowledged move
 A full-repository audit was performed on the current `main` working tree (Zig 0.17.0, Fedora 44 reference). Key findings:
 
 - **Fixed:** `kernel/ai/model.zig` — test `modelBinaryFormatValidatesAndRejectsCorrupt` had an incorrect `magic_bytes` array (`{ 0x59, 'R', 'O', 'V' }` vs. the expected `MAGIC = 0x564F5259`). The bytes were corrected to match the little-endian contract (`VORY LE`). All `zig test` and `zig build` pass.
-- **Verified:** No silent corruption in `kernel/graphics/compositor.zig`, `kernel/memory/heap.zig`, `boot/uefi/vnb/loader.zig`, or `kernel/ai/security.zig`.
-- **Status:** Only the corrected `model.zig` change is staged; `zig build test` passes locally. No untracked files contain secret material.
+- **Fixed:** `kernel/ai/security.zig` — test `securityLimitsRejectOversize` expected `DimensionOverflow` with default `.Limits`, which is impossible because `max_tensor_elements` (1 M) prevents overflow; corrected with `big_limits` (`max_tensor_elements = 10_000_000_000`) to validate overflow detection.
+- **Verified:** No silent corruption in `kernel/graphics/compositor.zig`, `kernel/memory/heap.zig`, `boot/uefi/vnb/loader.zig`, `kernel/task/scheduler.zig`, or syscall paths.
+- **Status:** `zig build test` passes (exit 0); `zig test kernel/ai/model.zig`, `security.zig`, `compositor.zig` all pass. Commit `1472848` published.
 
 ---
 
