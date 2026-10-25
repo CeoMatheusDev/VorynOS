@@ -315,6 +315,15 @@ test "pointer press focuses registered window" {
     try std.testing.expectEqual(@as(?u64, 7), stack.keyboardTarget());
 }
 
+test "pointer release preserves focused window" {
+    var stack: WindowStack(1) = .{};
+    try stack.addOwned(7, 11, .{ .x = 0, .y = 0, .width = 2, .height = 2, .color = 1 });
+    try stack.setKeyboardFocus(11);
+    const release: input.PointerEvent = .{ .kind = input.pointer_kind_button, .button = input.pointer_button_primary };
+    try std.testing.expectEqual(@as(?u64, null), try stack.focusPointerEvent(&release, 4, 4));
+    try std.testing.expectEqual(@as(?u64, 11), stack.keyboardFocus());
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
