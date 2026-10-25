@@ -740,9 +740,9 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     installTimer();
 
     // M0.5: inicializa as fundacoes de SMP: APIC local, timer local por CPU
-    // e pilhas dos APs. O boot de APs via SIPI e o escalonador multi-CPU sao
-    // incrementos futuros desta fase.
+    // e pilhas dos APs. Inicia os APs via SIPI.
     installSmp();
+    smp.startAps();
 
     // The main task waits until the workers have been scheduled a few
     // times, which proves that the scheduler works.
