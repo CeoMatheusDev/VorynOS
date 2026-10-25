@@ -133,6 +133,12 @@ pub fn WindowStack(comptime capacity: usize) type {
             return self.keyboard_focus;
         }
 
+        pub fn keyboardTarget(self: *const Self) ?u64 {
+            const id = self.keyboard_focus orelse return null;
+            const index = self.indexOf(id) orelse return null;
+            return self.entries[index].owner;
+        }
+
         pub fn compose(self: *const Self, surface: *Surface, background: u32) void {
             surface.fillBackground(background);
             for (self.entries[0..self.len]) |entry| surface.paint(entry.window);
