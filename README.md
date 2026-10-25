@@ -783,7 +783,7 @@ A full-repository audit was performed on the current `main` working tree (Zig 0.
 - **Fixed:** `kernel/ai/security.zig` — `DimensionOverflow` test required `Limits` with elevated `max_tensor_elements`; corrected.
 - **Verified:** `loader.zig` (P0 audit TODO only — no functional error); `scheduler.zig`, `window_manager.zig`, `compositor.zig`, `session.zig` pass all tests; `syscall.zig` paths validated; no untracked secrets.
 - **Fixed:** `kernel/arch/x86_64/virtio_blk.zig` / `virtio_net.zig` — métodos entre campos corrigidos; `detectVirtioDevice(0)` e `submitDescriptor` corrigidos; build passa.
-- **Status:** `zig build` OK; `main` publicado (`557f0ef`); desenvolvimento permitido; proposta F4 (`docs/adr/ADR-F04-block-driver-proposta.md`) documentada.
+- **Status:** `zig build` OK; `main` publicado (`d648ebf`); desenvolvimento permitido; proposta F4 (`ADR-F04`) iniciada (`phys_blk.zig`); bugs corrigidos documentados (`Bug Analysis & Fix Log`).
 
 ---
 
