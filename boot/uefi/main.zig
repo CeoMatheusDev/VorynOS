@@ -281,6 +281,8 @@ fn boot(out: *console.Console) !void {
     }
 
     // --- 7. Transfer of control --------------------------------------------
+    // Audit 2026-10-25 (P1): contrato de memoria explicito — identidade
+    // mapeada abaixo de 4 GiB verificada por segmento, nao presumida universal.
     // From this point on no firmware service may be used, the firmware
     // console is detached and only the serial port is used.
     out.disableFirmware();
