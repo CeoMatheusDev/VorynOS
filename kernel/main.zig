@@ -41,9 +41,10 @@ const cpu = @import("arch/x86_64/cpu.zig");
 const interrupt = @import("arch/x86_64/interrupt.zig");
 const paging = @import("arch/x86_64/paging.zig");
 const segment = @import("arch/x86_64/segment.zig");
-const smp = @import("arch/x86_64/smp.zig");
 const syscall = @import("arch/x86_64/syscall.zig");
 const timer = @import("arch/x86_64/timer.zig");
+const smp = @import("arch/x86_64/smp.zig");
+const apic = @import("arch/x86_64/apic.zig");
 
 const heap = @import("memory/heap.zig");
 const capability = @import("security/capability.zig");
@@ -690,10 +691,6 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // the structures that they describe are not mapped anymore.
     copyBootInformation(boot);
 
-    // Descobre os processadores pela ACPI enquanto as tabelas de paginas
-    // do firmware ainda mapeiam a memoria por identidade.
-    smp.discover(boot.acpi_rsdp_address);
-
     reportMemory();
     reportFramebuffer(boot);
 
@@ -742,11 +739,10 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     installScheduler();
     installTimer();
 
-    // O SMP e inicializado depois que o timer funciona: o APIC local e
-    // mapeado como dispositivo e os APs sao inicializados com a
-    // sequencia INIT-SIPI. A falha de um AP nao interrompe o boot.
-    const map_count = @min(boot_info.memory_map_entries, max_memory_descriptors);
-    smp.install(memory_map[0..map_count]);
+    // M0.5: inicializa as fundacoes de SMP: APIC local, timer local por CPU
+    // e pilhas dos APs. O boot de APs via SIPI e o escalonador multi-CPU sao
+    // incrementos futuros desta fase.
+    installSmp();
 
     // The main task waits until the workers have been scheduled a few
     // times, which proves that the scheduler works.
@@ -1240,6 +1236,26 @@ fn installHeap() void {
         statistics.allocations,
         statistics.used_bytes,
     });
+}
+
+/// M0.5: inicializa fundamentos de SMP — APIC local, timer local, pilhas de AP.
+/// Reporta o estado no serial para validacao do boot.
+fn installSmp() void {
+    // Mapeia o APIC local (endereco padrao do QEMU/OVMF: 0xFEE00000).
+    apic.map(apic.apic_base);
+    apic.enable();
+
+    // Configura o timer local da APIC para o BSP (100 Hz, mesmo do PIT).
+    timer.initApicTimer(timer_frequency);
+
+    // Inicializa as pilhas dos APs (estrutura de dados de SMP).
+    smp.initAps();
+
+    const apic_id = apic.readApicId();
+    serial.printLine("[VNK] smp: APIC local id={d}, base=0x{x}", .{
+        apic_id, apic.apic_base,
+    });
+    serial.printLine("[VNK] smp: AP stacks initialized (max_cpus={d})", .{smp.max_cpus});
 }
 
 /// Prepares the timer and enables the interrupts.
