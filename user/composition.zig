@@ -387,6 +387,16 @@ test "recipient resolution returns null without a target" {
     try std.testing.expect(stack.keyboardRecipient() == null);
 }
 
+test "validated pointer event resolves topmost recipient" {
+    var stack: WindowStack(2) = .{};
+    try stack.addOwned(7, 11, .{ .x = 0, .y = 0, .width = 2, .height = 2, .color = 1 });
+    try stack.addOwned(8, 22, .{ .x = 1, .y = 0, .width = 2, .height = 2, .color = 2 });
+    const event: input.PointerEvent = .{ .x = 1, .y = 0 };
+    const recipient = (try stack.pointerEventRecipient(&event, 4, 4)).?;
+    try std.testing.expectEqual(@as(u64, 22), recipient.window_id);
+    try std.testing.expectEqual(@as(u64, 8), recipient.owner_id);
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
