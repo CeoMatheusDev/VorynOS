@@ -24,7 +24,7 @@
 //! do contrato atual.
 
 const std = @import("std");
-const input = @import("../shared/input.zig");
+const input = @import("voryn_input");
 
 const fnv_offset_basis: u64 = 0xcbf29ce484222325;
 const fnv_prime: u64 = 0x100000001b3;
