@@ -137,6 +137,21 @@ test "window stack maintains z order and stable IDs" {
     try std.testing.expectError(error.NotFound, stack.raise(200));
 }
 
+test "window owner prevents cross-client modification" {
+    var stack: WindowStack(2) = .{};
+    const window: Window = .{ .x = 0, .y = 0, .width = 2, .height = 2, .color = 0x44 };
+    try stack.addOwned(4, 10, window);
+    try stack.addOwned(5, 20, window);
+    try std.testing.expectError(error.Unauthorized, stack.moveOwned(5, 10, 1, 1));
+    try std.testing.expectError(error.Unauthorized, stack.raiseOwned(5, 10));
+    try std.testing.expectError(error.Unauthorized, stack.removeOwned(5, 10));
+    try std.testing.expectError(error.NotFound, stack.removeOwned(4, 99));
+    try stack.moveOwned(4, 10, 1, 1);
+    try stack.raiseOwned(4, 10);
+    try stack.removeOwned(4, 10);
+    try std.testing.expectEqual(@as(usize, 1), stack.len);
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
