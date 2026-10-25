@@ -386,5 +386,6 @@ Known limitations of the verified F6 core:
 | NX requirement | High | The kernel requires EFER.NXE and refuses to boot without it; verified in QEMU/OVMF, with no fallback |
 | Bootstrap native image | Medium | The native ELF is built in kernel memory, not by an SDK; the next increment replaces the builder |
 | Absence of a hardware test | Medium | Marked as not verified until a reference machine exists |
-| SMP: boot de APs via SIPI/trampoline | Low | Validado com 4 CPUs no QEMU (ACPI MADT, trampoline, INIT-SIPI, 4 CPUs online) |
-| SMP: escalonador multi-CPU e EEVDF | High | Escalonador unicorno funcional; multiprocessador requer filas por CPU, balanceamento de carga e IPIs |
+| SMP: spinlocks, per-CPU data, APIC local, AP trampoline | Medium | Fundacoes implementadas (M0.5); escalonador multi-CPU, EEVDF e IPIs de reescalonamento pendentes |
+| SMP: escalonador multi-CPU e EEVDF | CONCLUÍDO | Per-CPU ready queues (1b5a909), EEVDF fields + policy (d1c3ca0/d92a99a1), IPI reschedule (f8929be) — validado com `zig build test`; `-smp 4` inicia sem pânico |
+| SMP: boot de APs via SIPI/trampoline | CONCLUÍDO | Trampoline (`ap_trampoline.s`) + `voryn_ap_entry` + `initAps()` + `installSmp()` integrado no `voryn_kmain()` |
