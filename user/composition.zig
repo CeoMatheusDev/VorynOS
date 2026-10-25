@@ -200,6 +200,23 @@ test "hit testing prioritizes topmost window" {
     try std.testing.expectEqual(@as(?u64, 1), stack.hitTest(0, 0));
 }
 
+test "keyboard focus survives z order changes and clears on removal" {
+    var stack: WindowStack(2) = .{};
+    const w: Window = .{ .x = 0, .y = 0, .width = 1, .height = 1, .color = 1 };
+    try stack.add(10, w);
+    try stack.add(20, w);
+    try std.testing.expectError(error.NotFound, stack.setKeyboardFocus(99));
+    try stack.setKeyboardFocus(10);
+    try std.testing.expectEqual(@as(?u64, 10), stack.keyboardFocus());
+    try std.testing.expectEqual(@as(?u64, 20), stack.focused());
+    try stack.raise(10);
+    try std.testing.expectEqual(@as(?u64, 10), stack.keyboardFocus());
+    try stack.remove(20);
+    try std.testing.expectEqual(@as(?u64, 10), stack.keyboardFocus());
+    try stack.remove(10);
+    try std.testing.expectEqual(@as(?u64, null), stack.keyboardFocus());
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
