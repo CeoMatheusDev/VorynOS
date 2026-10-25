@@ -142,6 +142,9 @@ pub const IcrBits = struct {
 /// Vetor da interrupcao do timer local do APIC.
 pub const timer_vector: u8 = timer.first_hardware_vector + timer.hardware_interrupt_count;
 
+/// Vetor da IPI de reescalonamento.
+pub const reschedule_vector: u8 = 64;
+
 /// Ponteiro para a pagina mapeada do APIC local.
 ///
 /// `null` enquanto o APIC nao foi mapeado. O acesso e volatil: os
@@ -310,6 +313,11 @@ pub fn takeError() u32 {
 /// Envia uma IPI de modo fixo para uma CPU de destino fisico.
 pub fn sendFixed(apic_id: u32, vector: u8) void {
     send(apic_id, @intFromEnum(IcrDeliveryMode.fixed), vector);
+}
+
+/// Envia uma IPI de reescalonamento para uma CPU.
+pub fn sendReschedule(apic_id: u32) void {
+    sendFixed(apic_id, reschedule_vector);
 }
 
 /// Envia uma IPI INIT para uma CPU.
