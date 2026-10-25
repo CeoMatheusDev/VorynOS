@@ -155,6 +155,14 @@ pub fn pointerInBounds(event: *const PointerEvent, width: u32, height: u32) bool
     return event.x < width and event.y < height;
 }
 
+test "pointer bounds use exclusive surface edges" {
+    const event: PointerEvent = .{ .x = 31, .y = 23 };
+    try std.testing.expect(pointerInBounds(&event, 32, 24));
+    try std.testing.expect(!pointerInBounds(&event, 31, 24));
+    try std.testing.expect(!pointerInBounds(&event, 32, 23));
+    try std.testing.expect(!pointerInBounds(&event, 0, 24));
+}
+
 test "input event layout is stable" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(InputEvent));
     try std.testing.expectEqual(@as(usize, 0), @offsetOf(InputEvent, "version"));
