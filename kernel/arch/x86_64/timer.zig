@@ -145,9 +145,8 @@ pub fn initApicTimer(ticks_per_second: u32) void {
     const bus_freq: u32 = 10_000_000;
     const divisor: u32 = bus_freq / ticks_per_second;
 
-    // Para o timer, seleciona o divisor de 16 e arma o modo periodico.
-    apic.timerStop();
-    apic.timerDivide(0b0011);
+    // Configura o divisor e arma o modo periodico diretamente.
+    // timerPeriodic() ja define periodico + vetor; nao precisa de timerStop/timerDivide separados.
     apic.timerPeriodic(divisor);
 
     frequency = ticks_per_second;
