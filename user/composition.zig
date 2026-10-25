@@ -397,6 +397,15 @@ test "validated pointer event resolves topmost recipient" {
     try std.testing.expectEqual(@as(u64, 8), recipient.owner_id);
 }
 
+test "invalid pointer event never resolves a recipient" {
+    var stack: WindowStack(1) = .{};
+    try stack.addOwned(7, 11, .{ .x = 0, .y = 0, .width = 2, .height = 2, .color = 1 });
+    const invalid: input.PointerEvent = .{ .kind = 99 };
+    try std.testing.expectError(error.InvalidKind, stack.pointerEventRecipient(&invalid, 4, 4));
+    const outside: input.PointerEvent = .{ .x = 4 };
+    try std.testing.expectError(error.OutOfBounds, stack.pointerEventRecipient(&outside, 4, 4));
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
