@@ -98,6 +98,21 @@ pub fn WindowStack(comptime capacity: usize) type {
             self.entries[index].window.y = y;
         }
 
+        pub fn hitTest(self: *const Self, x: u32, y: u32) ?u64 {
+            var i = self.len;
+            while (i > 0) {
+                i -= 1;
+                const entry = self.entries[i];
+                const w = entry.window;
+                if (w.width == 0 or w.height == 0) continue;
+                if (x < w.x or y < w.y) continue;
+                if (@as(u64, x) - w.x >= w.width) continue;
+                if (@as(u64, y) - w.y >= w.height) continue;
+                return entry.id;
+            }
+            return null;
+        }
+
         pub fn focused(self: *const Self) ?u64 {
             if (self.len == 0) return null;
             return self.entries[self.len - 1].id;
