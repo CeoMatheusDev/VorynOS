@@ -166,6 +166,7 @@ QEMU_PID=$!
 # not run until the timeout when the kernel is already at the end.
 DEADLINE=$(( SECONDS + TIMEOUT ))
 KEY_SENT=0
+WAIT_KEY_SENT=0
 SCREENSHOT_TAKEN=0
 
 while (( SECONDS < DEADLINE )); do
@@ -181,14 +182,34 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
     monitor.connect(sys.argv[1])
     monitor.sendall(b"sendkey a 50\n")
     # Each press must include a release before the next make event.
-    # Alternate directions so the window never reaches the screen edge.
+    # Only left and up are sent here: the right arrow is reserved for the
+    # blocking input probe, which the test sends after the kernel reports
+    # that the task is blocked.
     for index in range(16):
-        key = b"right" if index % 2 == 0 else b"left"
+        key = b"left" if index % 2 == 0 else b"up"
         monitor.sendall(b"sendkey " + key + b" 30\n")
         time.sleep(0.085)
 PY
         then
             KEY_SENT=1
+        fi
+    fi
+
+    # F6.30: the kernel reports the registration of the blocking wait. Send
+    # the dedicated right arrow only after that marker, so the event is
+    # delivered to a task that is already blocked and not taken by the
+    # immediate path of the call.
+    if [[ "$WAIT_KEY_SENT" -eq 0 ]] && grep -qF "[VNK] input_wait: task " "$SERIAL_LOG" 2>/dev/null; then
+        if python3 - "$WORK_DIRECTORY/monitor.sock" <<'PY'
+import socket
+import sys
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
+    monitor.settimeout(2)
+    monitor.connect(sys.argv[1])
+    monitor.sendall(b"sendkey right 50\n")
+PY
+        then
+            WAIT_KEY_SENT=1
         fi
     fi
 
@@ -272,8 +293,16 @@ PY
     fi
 
     if grep -q "VORYN-KERNEL-READY" "$SERIAL_LOG" 2>/dev/null; then
-        # The self test of the kernel runs after the marker, and the
-        # console needs a moment to write the rest of the report.
+        # The kernel marker is independent of the user task holding the
+        # composition. Under TCG the input waiter may need extra scheduler
+        # ticks after QEMU accepts sendkey q; wait for the causal release
+        # marker before stopping the emulator instead of racing the task.
+        for _ in {1..200}; do
+            grep -qF "composition released" "$SERIAL_LOG" 2>/dev/null && break
+            sleep 0.1
+        done
+        # Keep the original post-marker settling window for the kernel's
+        # remaining exception/self-test diagnostics.
         sleep 1
         break
     fi
@@ -388,7 +417,12 @@ require_pattern '\[VNK\] syscall 20 from user present result 0x0' 'the presentat
 require_marker "display present"
 require_pattern '\[VNK\] capabilities: the input belongs to the process [0-9]+' 'the input capability'
 require_marker "input probe ready"
-require_pattern '\[VNK\] syscall 21 from user input_poll result 0x1' 'the input call from the user mode'
+require_pattern '\[VNK\] syscall 23 from user input_wait result 0x0' 'the blocked input call from the user mode'
+require_pattern '\[VNK\] input_wait: task [0-9]+ blocked, timeout 50 ticks' 'the registration of the blocking input wait'
+require_pattern '\[VNK\] input_wait: task [0-9]+ resumed with scancode=0x[0-9a-f]+ pressed=[01] extended=[01]' 'the event delivered to the blocked task'
+require_marker "input wait resumed"
+require_pattern '\[VNK\] input_wait: task [0-9]+ expired' 'the expiry of the blocking input wait'
+require_marker "input wait timeout ok"
 require_marker "input event scancode=0x4d pressed=1 extended=1"
 require_pattern '\[VNK\] display: present 16x16 at 16,0 first=0xff' 'the input-driven presentation'
 require_marker "input present x=16 y=0"

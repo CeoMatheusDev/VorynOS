@@ -396,11 +396,15 @@ export fn voryn_interrupt_handler(vector: u64, frame: *const Registers) callconv
         if (vector == first_hardware_vector) {
             timer.onTick();
 
+            // A espera bloqueante de entrada pendente recebe o evento ou
+            // expira antes de o escalonador escolher a próxima tarefa.
+            const syscall = @import("syscall.zig");
+            syscall.inputWaitTick();
+
             // The waits whose deadline has passed expire before the
             // scheduler chooses the next task, so that a task that timed
             // out is ready in this tick. The result of the expired call is
             // the error of the timeout of the contract of the calls.
-            const syscall = @import("syscall.zig");
             const scheduler = @import("../../task/scheduler.zig");
             const must_switch = scheduler.scheduler.tick(syscall.failure(syscall.Error.timeout));
             timer.acknowledge(@intCast(vector));

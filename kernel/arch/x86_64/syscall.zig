@@ -73,6 +73,8 @@ const ps2 = @import("../../input/ps2.zig");
 const cpu = @import("cpu.zig");
 const paging = @import("paging.zig");
 const segment = @import("segment.zig");
+const timer = @import("timer.zig");
+const scheduler = @import("../../task/scheduler.zig");
 
 /// The register of the extended features of the processor.
 const msr_efer: u32 = 0xC000_0080;
@@ -249,6 +251,14 @@ pub const Number = struct {
     /// reading. The result is 1 when an event was written, 0 when the
     /// queue is empty, or a negative error.
     pub const input_poll: u64 = 21;
+    /// Block until an input event is available or a timeout expires.
+    ///
+    /// Same validation as `input_poll`; when the queue is empty, the task
+    /// blocks and the timer delivers the event (or the timeout error) in
+    /// the saved context of the task. The timeout is in timer ticks; zero
+    /// means the wait does not expire. The result is 1 when an event was
+    /// written, or a negative error (timeout = 13).
+    pub const input_wait: u64 = 23;
 };
 
 /// The result that the kernel answers to the call of the probe.
@@ -644,6 +654,17 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
                 });
             }
         },
+        Number.input_wait => {
+            frame.rax = inputWait(frame.rdi, frame.rsi, frame.rdx, privilege);
+            // Quando a fila está vazia, a chamada bloqueia e o resultado
+            // chega depois no contexto salvo da tarefa; o log registra o
+            // retorno imediato da chamada.
+            serial.printLine("[VNK] syscall {d} from {s} input_wait result 0x{x}", .{
+                number,
+                caller,
+                frame.rax,
+            });
+        },
         Number.grant => {
             frame.rax = grant(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
             const kind = capability.kindFromWire(frame.rsi);
@@ -950,6 +971,135 @@ fn inputPoll(address: u64, length: u64, privilege: u64) u64 {
     return 1;
 }
 
+/// Uma espera bloqueante por um evento de entrada.
+///
+/// O produtor é a interrupção PS/2, que enche a fila de usuário; o timer
+/// entrega o evento ou expira a espera a cada tick. Há uma fila de usuário
+/// única, e portanto um único waiter: uma segunda espera concorrente é
+/// recusada com `wait_impossible`.
+const InputWait = struct {
+    task: *scheduler.Task,
+    /// Endereço validado no espaço do waiter, onde o evento é escrito.
+    dest: u64,
+    /// Tick do timer em que a espera expira; zero = sem timeout.
+    deadline: u64,
+};
+
+var input_waiter: ?InputWait = null;
+
+/// Blocks the caller until an input event is available or the timeout
+/// expires.
+///
+/// The capability is checked before the output is touched, the output is
+/// validated before the queue is consulted, and only then the call either
+/// delivers an event at once or registers the wait. When the queue is
+/// empty, the task blocks and the result arrives later, in the saved
+/// context of the task: 1 with the event written in the buffer, or the
+/// negative error of the timeout.
+fn inputWait(address: u64, length: u64, timeout: u64, privilege: u64) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+    if (!capability.holdsSubject(process, .input, 0, capability.Rights.read)) {
+        return failure(Error.not_authorized);
+    }
+
+    const event_size: usize = @sizeOf(voryn.input.InputEvent);
+    const wire_size: u64 = @intCast(event_size);
+    if (length < wire_size) return failure(Error.invalid_length);
+    if (!paging.isUserRange(address, wire_size, true)) return failure(Error.invalid_address);
+
+    if (ps2.userQueueReady()) {
+        if (ps2.popUserIrqsDisabled()) |maybe_event| {
+            const task = scheduler.scheduler.current orelse return failure(Error.wait_impossible);
+            const temporary = InputWait{ .task = task, .dest = address, .deadline = 0 };
+            deliverInputEvent(&temporary, maybe_event);
+            return 1;
+        }
+    }
+
+    // The queue is empty or the input device has not been initialized yet:
+    // register the wait and block. The gate of the
+    // call has the local interrupts disabled, therefore the slot cannot be
+    // taken between the check and the registration.
+    if (input_waiter != null) return failure(Error.wait_impossible);
+    const task = scheduler.scheduler.current orelse return failure(Error.wait_impossible);
+    const deadline = if (timeout == 0) 0 else timer.ticks() +| timeout;
+    input_waiter = .{ .task = task, .dest = address, .deadline = deadline };
+    if (!scheduler.scheduler.blockCurrentForInput()) {
+        input_waiter = null;
+        return failure(Error.wait_impossible);
+    }
+    serial.printLine("[VNK] input_wait: task {d} blocked, timeout {d} ticks", .{
+        task.id,
+        timeout,
+    });
+    // The task is now waiting: the result arrives later, in the context
+    // saved of the task, and the return value is irrelevant.
+    return 0;
+}
+
+/// Writes an event into the user buffer of the waiter.
+///
+/// The write runs with the address space of the waiter active: the kernel
+/// image is mapped in every space, therefore the current stack and code
+/// stay reachable during the switch, and the space is restored afterwards.
+fn deliverInputEvent(waiter: *const InputWait, record: anytype) void {
+    const event = voryn.input.keyEvent(record.scancode, record.extended, record.pressed);
+    const saved_cr3 = cpu.readCr3();
+    const saved_space = paging.activeSpace();
+    if (waiter.task.space) |space| paging.activateSpace(space);
+    const destination: [*]u8 = @ptrFromInt(@as(usize, @intCast(waiter.dest)));
+    @memcpy(destination[0..@sizeOf(voryn.input.InputEvent)], std.mem.asBytes(&event)[0..]);
+    cpu.writeCr3(saved_cr3);
+    paging.setActiveSpace(saved_space);
+}
+
+/// Delivers or expires the pending input wait, on every timer tick.
+///
+/// Called by the timer handler with the local interrupts disabled: the pop
+/// of the SPSC queue is safe, and the write into the waiter space is
+/// atomic with respect to IRQ1. The delivery wakes the task with the event
+/// in its buffer; the expiry wakes it with the timeout error.
+pub fn inputWaitTick() void {
+    const waiter = input_waiter orelse return;
+
+    // The registration is only valid while the task is blocked on it. A task
+    // that left the wait through another path, or that terminated with the
+    // wait registered, must not receive the event in a space that no longer
+    // belongs to it; the stale slot is discarded instead of consuming the
+    // event or overwriting the saved result of another wait.
+    if (waiter.task.state != .blocked) {
+        input_waiter = null;
+        return;
+    }
+
+    if (ps2.userQueueReady()) {
+        if (ps2.popUserIrqsDisabled()) |record| {
+            const task = waiter.task;
+            input_waiter = null;
+            deliverInputEvent(&waiter, record);
+            task.context.rax = 1;
+            scheduler.Scheduler.wakeTask(task);
+            serial.printLine("[VNK] input_wait: task {d} resumed with scancode=0x{x} pressed={d} extended={d}", .{
+                task.id,
+                record.scancode,
+                @intFromBool(record.pressed),
+                @intFromBool(record.extended),
+            });
+            return;
+        }
+    }
+
+    if (waiter.deadline != 0 and timer.ticks() >= waiter.deadline) {
+        const task = waiter.task;
+        input_waiter = null;
+        task.context.rax = failure(Error.timeout);
+        scheduler.Scheduler.wakeTask(task);
+        serial.printLine("[VNK] input_wait: task {d} expired", .{task.id});
+    }
+}
+
 /// Writes a buffer of the user mode in the console.
 ///
 /// The buffer belongs to the user, and the kernel may not trust the
@@ -1043,7 +1193,6 @@ fn send(channel_id: u64, side: u64, kind: u64, value: u64, privilege: u64) u64 {
 /// made them. The capability of a process belongs to the process, and not
 /// to the task: two tasks of the same process share the same capability.
 fn callerProcess() ?u64 {
-    const scheduler = @import("../../task/scheduler.zig");
     const task = scheduler.scheduler.current orelse return null;
     const space = task.space orelse return null;
     return space.id;
@@ -1152,7 +1301,6 @@ fn waitForMessage(
 
     // The queue is empty: the task waits for the message. The deadline
     // zero means that the wait does not expire.
-    const scheduler = @import("../../task/scheduler.zig");
     if (!scheduler.scheduler.blockCurrent(channel, side, timeout)) {
         return failure(Error.wait_impossible);
     }
@@ -1170,7 +1318,6 @@ fn waitForMessage(
 fn exitTask(code: u64, privilege: u64) void {
     if (privilege != Privilege.user) return;
 
-    const scheduler = @import("../../task/scheduler.zig");
     scheduler.scheduler.terminateCurrent(code);
 }
 

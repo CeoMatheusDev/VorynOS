@@ -294,7 +294,14 @@ pub const Scheduler = struct {
         // Decrement the quantum of the current task, and preempt it if it
         // has expired. A quantum of zero means the task is not subject to
         // time-slicing.
-        if (current.quantum != 0) {
+        //
+        // Only a task that is still running may be returned to the ready
+        // queue here. The blocking paths mark the task as blocked **before**
+        // they call this function; without the guard, a quantum that expired
+        // in the same tick would turn the blocked task ready again and it
+        // would resume with the neutral result of the call before the event
+        // or the message arrives.
+        if (context.quantumPreempts(current.state == .running, current.quantum)) {
             current.quantum -= 1;
             if (current.quantum == 0) {
                 // The current task has exhausted its quantum: return it to
@@ -437,10 +444,34 @@ pub const Scheduler = struct {
     ///
     /// The task becomes ready, and the scheduler chooses it on the next
     /// tick.
-    fn wakeTask(task: *anyopaque) void {
+    pub fn wakeTask(task: *anyopaque) void {
         const value: *Task = @ptrCast(@alignCast(task));
         if (value.state == .terminated) return;
         value.state = .ready;
+    }
+
+    /// Blocks the current task waiting for an input event.
+    ///
+    /// The wait is registered by the caller (the syscall of the input
+    /// wait), not in a channel queue: the producer is the PS/2 interrupt
+    /// filling the user queue, and the timer tick delivers the event or
+    /// expires the wait. This function marks the task as blocked and
+    /// prepares the switch, exactly like the channel wait.
+    pub fn blockCurrentForInput(self: *Scheduler) bool {
+        const task = self.current orelse return false;
+        task.state = .blocked;
+        self.statistics.blocks += 1;
+
+        if (!self.prepareNext()) {
+            task.state = .running;
+            return false;
+        }
+
+        // The entry of the call knows that the task cannot go back to the
+        // user mode, and hands the control to the scheduler.
+        voryn_syscall_blocked = 1;
+
+        return true;
     }
 
     /// Ends the task that is running.

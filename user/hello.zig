@@ -14,11 +14,20 @@
 const sdk = @import("voryn_sdk");
 const composition = @import("composition.zig");
 
-/// Number of polls of the non-blocking input probe. The automated input
-/// test sends the key after the `input probe ready` marker; the limit is
-/// long enough for the monitor round trip and short enough for the boot
-/// test, which sends no key.
-const input_poll_attempts: u32 = 200_000;
+/// Número de expirações consecutivas toleradas pelo probe de entrada. Cada
+/// espera expira em `input_wait_ticks`, portanto um boot manual sem tecla
+/// continua depois de um intervalo limitado em vez de esperar para sempre.
+/// Eventos já enfileirados são drenados sem consumir este orçamento.
+const input_wait_timeouts: u32 = 4;
+
+/// Timeout de cada espera bloqueante do probe de entrada, em ticks do
+/// timer. O teste automatizado envia a seta depois do marcador de bloqueio;
+/// um tick é 10 ms, e cada espera expira em 0,5 s se nenhuma tecla chegar.
+const input_wait_ticks: u64 = 50;
+
+/// Timeout curto do probe de expiração. O teste não envia tecla nessa
+/// janela, e o curto prazo mantém o boot rápido.
+const input_timeout_ticks: u64 = 10;
 
 /// Dimensões do quadro composto pelo processo. A superfície fica na página
 /// que o kernel mapeia abaixo da janela do compositor; o cliente escreve
@@ -40,8 +49,10 @@ const composition_windows = [_]composition.Window{
 
 /// Limite da espera pela tecla Q que libera o screenshot. O teste de boot
 /// envia Q depois de capturar o quadro; um boot manual sem Q termina a
-/// espera e continua, em vez de bloquear a máquina para sempre.
-const composition_hold_attempts: u32 = 20_000_000;
+/// espera depois de vinte janelas de 0,5 s e continua, em vez de bloquear a
+/// máquina para sempre.
+const composition_hold_attempts: u32 = 1000;
+const composition_hold_ticks: u64 = 100;
 
 export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     _ = role;
@@ -98,32 +109,47 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
         }
     }
 
-    // F6.27: retira um evento da fila do serviço gráfico. A chamada não
-    // bloqueia; o teste automatizado envia a seta direita depois do
-    // marcador. Sem tecla, o laço termina e o boot continua.
-    _ = sdk.write("input probe ready\n");
+    // F6.30: o probe consome a fila existente sem bloquear e só chama
+    // input_wait quando ela está vazia. A rajada de diagnóstico do boot não
+    // consome uma espera por evento; o orçamento conta apenas expirações
+    // consecutivas, e o teste automatizado envia a seta direita depois do
+    // marcador de bloqueio emitido pelo kernel.
     var event: sdk.input.InputEvent = .{};
+    _ = sdk.write("input probe ready\n");
     var input_seen = false;
+    var wait_resumed = false;
     var interactive_requested = false;
-    var attempts: u32 = 0;
-    while (attempts < input_poll_attempts) : (attempts += 1) {
-        const status = sdk.inputPoll(&event);
+    var timeouts: u32 = 0;
+    while (timeouts < input_wait_timeouts) {
+        var status = sdk.inputPoll(&event);
+        var waited = false;
+        if (!sdk.syscall.isError(status) and status == 0) {
+            status = sdk.inputWait(&event, input_wait_ticks);
+            waited = true;
+        }
         if (sdk.syscall.isError(status)) {
             const code = sdk.syscall.errorCode(status) orelse 0;
-            if (code == @intFromEnum(sdk.syscall.Error.no_input) or
-                code == @intFromEnum(sdk.syscall.Error.not_authorized))
-            {
+            if (code == @intFromEnum(sdk.syscall.Error.timeout)) {
+                // A espera expirou sem evento; tenta de novo até o limite.
+                timeouts += 1;
+                continue;
+            }
+            if (code == @intFromEnum(sdk.syscall.Error.not_authorized)) {
                 _ = sdk.write("input unavailable\n");
             } else {
                 _ = sdk.write("input error\n");
             }
             break;
         }
-        if (status == 0) continue;
         if (status != 1) {
             _ = sdk.write("input invalid\n");
             break;
         }
+        if (waited and !wait_resumed) {
+            _ = sdk.write("input wait resumed\n");
+            wait_resumed = true;
+        }
+        timeouts = 0;
         sdk.input.validate(&event) catch {
             _ = sdk.write("input invalid\n");
             break;
@@ -133,7 +159,7 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
 
         // The I key selects the kernel interactive mode. The kernel already
         // has its own copy in the diagnostic queue; the probe leaves the
-        // user copy here instead of spending the whole poll budget.
+        // user copy here instead of spending the whole wait budget.
         if (pressed and !extended and event.code == 0x17) {
             interactive_requested = true;
             break;
@@ -162,6 +188,36 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
         break;
     }
     if (!input_seen) _ = sdk.write("input timeout\n");
+
+    // F6.30: prova determinística de que a expiração do timeout acorda a
+    // tarefa com o erro 13. O teste de boot envia teclas por aproximadamente
+    // dois segundos; o laço drena os eventos acumulados e tenta esperar com
+    // um curto timeout até que haja um intervalo sem teclas.
+    var timeout_seen = false;
+    var timeout_attempt: u32 = 0;
+    // Drena o restante da rajada de teclas antes de tentar o timeout.
+    var pre_drain: u32 = 0;
+    while (pre_drain < 500) : (pre_drain += 1) {
+        const polled = sdk.inputPoll(&event);
+        if (sdk.syscall.isError(polled) or polled != 1) break;
+    }
+    while (timeout_attempt < 50 and !timeout_seen) : (timeout_attempt += 1) {
+        var pending: u32 = 0;
+        while (pending < 128) : (pending += 1) {
+            const polled = sdk.inputPoll(&event);
+            if (sdk.syscall.isError(polled) or polled != 1) break;
+        }
+        const status = sdk.inputWait(&event, input_timeout_ticks);
+        if (!sdk.syscall.isError(status)) continue;
+        if ((sdk.syscall.errorCode(status) orelse 0) == @intFromEnum(sdk.syscall.Error.timeout)) {
+            timeout_seen = true;
+        } else break;
+    }
+    if (timeout_seen) {
+        _ = sdk.write("input wait timeout ok\n");
+    } else {
+        _ = sdk.write("input wait timeout failed\n");
+    }
 
     // F6.28: compõe um quadro no buffer da própria aplicação e o apresenta
     // como um único retângulo validado. O kernel não recebe a lista de
@@ -377,12 +433,31 @@ fn writeHashMarker(prefix: []const u8, hash: u64) void {
 }
 
 /// Espera a tecla Q que libera o screenshot do teste de boot.
+///
+/// O laço drena o que já está na fila sem bloquear e, quando ela fica vazia,
+/// usa `input_wait` com uma janela curta. Assim uma rajada de setas não
+/// atrasa a observação de Q e um boot manual sem Q termina depois do limite
+/// fixo de janelas.
 fn holdComposition() void {
     var event: sdk.input.InputEvent = .{};
     var attempts: u32 = 0;
     while (attempts < composition_hold_attempts) : (attempts += 1) {
-        const status = sdk.inputPoll(&event);
-        if (sdk.syscall.isError(status)) return;
+        var status = sdk.inputPoll(&event);
+        if (sdk.syscall.isError(status)) {
+            const code = sdk.syscall.errorCode(status) orelse 0;
+            if (code != @intFromEnum(sdk.syscall.Error.no_input)) return;
+            status = 0;
+        }
+        // Fila vazia: bloqueia até que um evento chegue ou a janela expire.
+        if (status == 0) {
+            status = sdk.inputWait(&event, composition_hold_ticks);
+            if (sdk.syscall.isError(status)) {
+                const wait_code = sdk.syscall.errorCode(status) orelse 0;
+                if (wait_code == @intFromEnum(sdk.syscall.Error.timeout) or
+                    wait_code == @intFromEnum(sdk.syscall.Error.wait_impossible)) continue;
+                return;
+            }
+        }
         if (status == 0) continue;
         if (status != 1) return;
         sdk.input.validate(&event) catch continue;

@@ -7,11 +7,11 @@
 // Copyright (C) 2026 VorynOS contributors.
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Interface de baixo nível da ABI VSC-0001, versão 12.
+//! Interface de baixo nível da ABI VSC-0001, versão 13.
 //! x86_64: RAX=número/resultado, RDI/RSI/RDX/R8=argumentos.
 //! RCX e R11 são destruídos pela instrução syscall.
 
-pub const abi_version: u32 = 12;
+pub const abi_version: u32 = 13;
 
 pub const Number = struct {
     pub const ping: u64 = 1;
@@ -37,6 +37,9 @@ pub const Number = struct {
     pub const input_poll: u64 = 21;
     /// Shrink an open file: RDI=fd, RSI=new size.
     pub const fs_truncate: u64 = 22;
+    /// Block until an input event is available or the timeout expires:
+    /// RDI=event address, RSI=size, RDX=timeout in ticks (0 = forever).
+    pub const input_wait: u64 = 23;
 };
 
 /// Códigos de erro estáveis definidos por VSC-0001 v12.
@@ -119,7 +122,8 @@ test "ABI call numbers are stable" {
     try std.testing.expectEqual(@as(u64, 20), Number.present);
     try std.testing.expectEqual(@as(u64, 21), Number.input_poll);
     try std.testing.expectEqual(@as(u64, 22), Number.fs_truncate);
-    try std.testing.expectEqual(@as(u32, 12), abi_version);
+    try std.testing.expectEqual(@as(u64, 23), Number.input_wait);
+    try std.testing.expectEqual(@as(u32, 13), abi_version);
 }
 
 test "negative status decoding" {

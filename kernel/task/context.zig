@@ -121,6 +121,25 @@ comptime {
 /// the frame of the return of the processor.
 pub const frame_size: usize = 176;
 
+/// Tells whether a tick of the timer may return the current task to the
+/// ready queue because its quantum expired.
+///
+/// Only a task that is still running is subject to time-slicing. The
+/// blocking paths mark the task as blocked before they ask for the next
+/// task; a quantum that expires in the same tick must not turn the blocked
+/// task ready again, otherwise it resumes with the neutral result of the
+/// call before the event or the message arrives.
+pub fn quantumPreempts(state_is_running: bool, quantum: u16) bool {
+    return state_is_running and quantum != 0;
+}
+
+test "the quantum only preempts a task that is still running" {
+    try std.testing.expect(quantumPreempts(true, 1));
+    try std.testing.expect(quantumPreempts(true, 16));
+    try std.testing.expect(!quantumPreempts(true, 0));
+    try std.testing.expect(!quantumPreempts(false, 1));
+}
+
 /// Reads the time stamp counter.
 pub fn timestamp() u64 {
     var low: u32 = undefined;

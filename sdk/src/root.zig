@@ -143,6 +143,20 @@ pub fn inputPoll(event: *input.InputEvent) u64 {
     ).status;
 }
 
+/// Bloqueia até que um evento de entrada esteja disponível ou o timeout
+/// expire (em ticks do timer; zero = espera indefinida).
+/// O resultado é 1 quando um evento foi escrito no buffer, ou um código de
+/// erro negativo (timeout = 13).
+pub fn inputWait(event: *input.InputEvent, ticks: u64) u64 {
+    return syscall.call(
+        syscall.Number.input_wait,
+        @intFromPtr(event),
+        @sizeOf(input.InputEvent),
+        ticks,
+        0,
+    ).status;
+}
+
 test {
     _ = @import("syscall.zig");
 }
