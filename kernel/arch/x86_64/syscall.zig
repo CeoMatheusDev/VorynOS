@@ -1011,7 +1011,7 @@ fn inputWait(address: u64, length: u64, timeout: u64, privilege: u64) u64 {
 
     if (ps2.userQueueReady()) {
         if (ps2.popUserIrqsDisabled()) |maybe_event| {
-            const task = scheduler.scheduler.current orelse return failure(Error.wait_impossible);
+            const task = scheduler.scheduler.currentTask() orelse return failure(Error.wait_impossible);
             const temporary = InputWait{ .task = task, .dest = address, .deadline = 0 };
             deliverInputEvent(&temporary, maybe_event);
             return 1;
@@ -1023,7 +1023,7 @@ fn inputWait(address: u64, length: u64, timeout: u64, privilege: u64) u64 {
     // call has the local interrupts disabled, therefore the slot cannot be
     // taken between the check and the registration.
     if (input_waiter != null) return failure(Error.wait_impossible);
-    const task = scheduler.scheduler.current orelse return failure(Error.wait_impossible);
+    const task = scheduler.scheduler.currentTask() orelse return failure(Error.wait_impossible);
     const deadline = if (timeout == 0) 0 else timer.ticks() +| timeout;
     input_waiter = .{ .task = task, .dest = address, .deadline = deadline };
     if (!scheduler.scheduler.blockCurrentForInput()) {
@@ -1193,7 +1193,7 @@ fn send(channel_id: u64, side: u64, kind: u64, value: u64, privilege: u64) u64 {
 /// made them. The capability of a process belongs to the process, and not
 /// to the task: two tasks of the same process share the same capability.
 fn callerProcess() ?u64 {
-    const task = scheduler.scheduler.current orelse return null;
+    const task = scheduler.scheduler.currentTask() orelse return null;
     const space = task.space orelse return null;
     return space.id;
 }

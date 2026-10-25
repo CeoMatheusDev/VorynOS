@@ -349,7 +349,7 @@ export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv
         // that the kernel does not know how to handle: without the task
         // there is no kernel stack to rewrite the frame to, and the machine
         // stops.
-        const task = scheduler.scheduler.current orelse {
+        const task = scheduler.scheduler.currentTask() orelse {
             serial.printLine("[VNK] FATAL: an exception of the user mode without a current task", .{});
             port.haltForever();
         };

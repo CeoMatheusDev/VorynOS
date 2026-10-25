@@ -28,6 +28,7 @@ const voryn = @import("voryn_shared");
 const context = @import("context.zig");
 const paging = @import("../arch/x86_64/paging.zig");
 const segment = @import("../arch/x86_64/segment.zig");
+const smp = @import("../arch/x86_64/smp.zig");
 const channel = @import("../ipc/channel.zig");
 
 /// The context of a task.
@@ -135,12 +136,64 @@ pub const Scheduler = struct {
     tasks: [max_tasks]?*Task = @splat(null),
     /// The number of tasks that exist.
     count: u32 = 0,
-    /// The task that is running.
-    current: ?*Task = null,
+    /// The task that is running on each CPU.
+    ///
+    /// O indice e o numero logico da CPU. Apenas o BSP executa tarefas
+    /// hoje; os APs entram no laco de espera e nao tocam nesta tabela.
+    current: [smp.max_cpus]?*Task = @splat(null),
+
+    /// Fila de tarefas prontas de cada CPU.
+    ///
+    /// O indice externo e o numero logico da CPU; o interno e a posicao
+    /// na fila. A fila e um anel logico FIFO: a insercao acrescenta no
+    /// fim e a remocao retira do inicio.
+    ready_queue: [smp.max_cpus][max_tasks]?*Task = @splat(@splat(null)),
+
+    /// Numero de tarefas prontas em cada fila.
+    ready_count: [smp.max_cpus]u32 = @splat(0),
     /// The identifier of the next task that is created.
     next_id: u32 = 0,
     /// The state of the scheduler.
     statistics: Statistics = .{},
+
+    /// Returns the task that is running on the current CPU.
+    pub fn currentTask(self: *Scheduler) ?*Task {
+        return self.current[smp.cpuId()];
+    }
+
+    /// Enfileira uma tarefa na fila de prontos de uma CPU.
+    ///
+    /// A tarefa passa a ser considerada pronta para ser escolhida quando a
+    /// CPU esvaziar a fila. A funcao ignora silenciosamente filas cheias:
+    /// o limite de `max_tasks` ja protege o armazenamento.
+    pub fn enqueueReady(self: *Scheduler, task: *Task, cpu_id: u8) void {
+        if (cpu_id >= smp.max_cpus) return;
+        if (self.ready_count[cpu_id] >= max_tasks) return;
+        self.ready_queue[cpu_id][self.ready_count[cpu_id]] = task;
+        self.ready_count[cpu_id] += 1;
+    }
+
+    /// Retira a proxima tarefa da fila de prontos de uma CPU.
+    ///
+    /// Retorna null quando a fila esta vazia.
+    pub fn dequeueReady(self: *Scheduler, cpu_id: u8) ?*Task {
+        if (cpu_id >= smp.max_cpus) return null;
+        if (self.ready_count[cpu_id] == 0) return null;
+        const task = self.ready_queue[cpu_id][0];
+        var index: u32 = 0;
+        while (index + 1 < self.ready_count[cpu_id]) : (index += 1) {
+            self.ready_queue[cpu_id][index] = self.ready_queue[cpu_id][index + 1];
+        }
+        self.ready_count[cpu_id] -= 1;
+        self.ready_queue[cpu_id][self.ready_count[cpu_id]] = null;
+        return task;
+    }
+
+    /// Numero de tarefas prontas na fila de uma CPU.
+    pub fn readyCount(self: *Scheduler, cpu_id: u8) u32 {
+        if (cpu_id >= smp.max_cpus) return 0;
+        return self.ready_count[cpu_id];
+    }
 
     /// Prepares the scheduler and captures the context of the task that is
     /// running, which becomes the first task.
@@ -153,7 +206,7 @@ pub const Scheduler = struct {
     pub fn init(self: *Scheduler, kernel_stack_top: u64, kernel_stack: []u8) void {
         self.tasks = @splat(null);
         self.count = 0;
-        self.current = null;
+        self.current = @splat(null);
         self.next_id = 0;
         self.statistics = .{};
 
@@ -169,7 +222,7 @@ pub const Scheduler = struct {
         task.kernel_rsp = stackTop(kernel_stack);
         task.state = .running;
         task.priority = 0;
-        self.current = task;
+        self.current[0] = task;
         segment.tss.rsp0 = task.kernel_rsp;
         voryn_kernel_stack_pointer = task.kernel_rsp;
     }
@@ -289,7 +342,7 @@ pub const Scheduler = struct {
     /// chosen and prepared. The difference is that the blocking is not a
     /// tick of the timer, and therefore the tick counter does not move.
     fn prepareNext(self: *Scheduler) bool {
-        const current = self.current orelse return false;
+        const current = self.current[smp.cpuId()] orelse return false;
 
         // Decrement the quantum of the current task, and preempt it if it
         // has expired. A quantum of zero means the task is not subject to
@@ -320,7 +373,7 @@ pub const Scheduler = struct {
             current.state = .ready;
         }
         next.state = .running;
-        self.current = next;
+        self.current[smp.cpuId()] = next;
         next.schedules += 1;
 
         // The processor loads the stack pointer of the task state segment
@@ -373,7 +426,7 @@ pub const Scheduler = struct {
     /// and in that case the task is **not** blocked: the call returns the
     /// error of the wait that cannot happen, and the task continues.
     pub fn blockCurrent(self: *Scheduler, target: *channel.Channel, side: u64, timeout: u64) bool {
-        const task = self.current orelse return false;
+        const task = self.current[smp.cpuId()] orelse return false;
 
         // The deadline is in the ticks of the scheduler, which is the
         // counter that the timer moves and the one that the expiry reads.
@@ -432,7 +485,7 @@ pub const Scheduler = struct {
     /// mode: the process has a defect, and the defect of a process does not
     /// bring the machine down.
     pub fn killCurrent(self: *Scheduler) void {
-        const task = self.current orelse return;
+        const task = self.current[smp.cpuId()] orelse return;
         if (task.state == .terminated) return;
         task.state = .terminated;
         task.exit_code = 1;
@@ -458,7 +511,7 @@ pub const Scheduler = struct {
     /// expires the wait. This function marks the task as blocked and
     /// prepares the switch, exactly like the channel wait.
     pub fn blockCurrentForInput(self: *Scheduler) bool {
-        const task = self.current orelse return false;
+        const task = self.current[smp.cpuId()] orelse return false;
         task.state = .blocked;
         self.statistics.blocks += 1;
 
@@ -480,7 +533,7 @@ pub const Scheduler = struct {
     /// it again. The processor keeps running the task until the next
     /// interruption, and the task does not have to know that it ended.
     pub fn terminateCurrent(self: *Scheduler, code: u64) void {
-        const current = self.current orelse return;
+        const current = self.current[smp.cpuId()] orelse return;
         if (current.state == .terminated) return;
         current.state = .terminated;
         current.exit_code = code;
