@@ -229,6 +229,23 @@ test "keyboard focus survives z order changes and clears on removal" {
     try std.testing.expectEqual(@as(?u64, null), stack.keyboardFocus());
 }
 
+test "input target resolution respects focus and z order" {
+    var stack: WindowStack(2) = .{};
+    const w: Window = .{ .x = 0, .y = 0, .width = 2, .height = 2, .color = 1 };
+    try std.testing.expectEqual(@as(?u64, null), stack.keyboardTarget());
+    try std.testing.expectEqual(@as(?u64, null), stack.pointerTarget(0, 0));
+    try stack.addOwned(11, 100, w);
+    try stack.addOwned(22, 200, w);
+    try stack.setKeyboardFocus(100);
+    try std.testing.expectEqual(@as(?u64, 11), stack.keyboardTarget());
+    try std.testing.expectEqual(@as(?u64, 22), stack.pointerTarget(0, 0));
+    try stack.raiseOwned(11, 100);
+    try std.testing.expectEqual(@as(?u64, 11), stack.pointerTarget(0, 0));
+    try stack.removeOwned(11, 100);
+    try std.testing.expectEqual(@as(?u64, null), stack.keyboardTarget());
+    try std.testing.expectEqual(@as(?u64, 22), stack.pointerTarget(0, 0));
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
