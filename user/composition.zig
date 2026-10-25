@@ -120,6 +120,14 @@ pub fn WindowStack(comptime capacity: usize) type {
             return self.entries[self.len - 1].id;
         }
 
+        /// Trusted compositor input: select focus by hit testing.
+        /// Empty space clears focus; z-order remains unchanged.
+        pub fn focusAt(self: *Self, x: u32, y: u32) ?u64 {
+            const id = self.hitTest(x, y);
+            self.keyboard_focus = id;
+            return id;
+        }
+
         pub fn setKeyboardFocus(self: *Self, id: u64) Error!void {
             if (self.indexOf(id) == null) return error.NotFound;
             self.keyboard_focus = id;
