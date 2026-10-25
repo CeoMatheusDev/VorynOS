@@ -69,12 +69,12 @@ pub fn place(image: elf64.Image, bytes: []const u8, load_bias: u64, boot_service
         // P0 — reserva de paginas via AllocatePages (correca auditoria)
         const pages: u64 = @intCast((end - address + 0x1000 - 1) / 0x1000);
         const pages_alloc = boot_services.allocatePages(.{ .any = {} }, uefi.tables.MemoryType.conventional_memory, @intCast(pages)) catch return error.AllocatePagesFailed;
-        _ = pages_alloc; // reserva confirmada; verificacao de endereco retido requer P0 final (audit)
+        const alloc_ptr: [*]u8 = @ptrFromInt(@intFromPtr(pages_alloc.ptr)); // P0: usa endereco reservado pelo firmware
 
         // Defensiva: verifica limite de mapeamento identidade
         if (end > identity_mapped_limit or address > identity_mapped_limit) return error.SegmentNotIdentityMapped;
         // TODO: verificar endereco retornado por AllocatePages (se aplicavel)
-        const destination: [*]u8 = @ptrFromInt(address);
+        const destination: [*]u8 = if (pages_alloc.len > 0) @ptrFromInt(@intFromPtr(pages_alloc.ptr)) else @ptrFromInt(address); // P0: destino = reservado ou original
 
         if (segment.file_size != 0) {
             @memcpy(

@@ -23,6 +23,6 @@ zig build test || exit 1
 
 # 3. Boot QEMU com -smp 4 (validado previamente como sem panico)
 echo "[F9.4] zig build qemu-test (timeout TCG limita VORYN-KERNEL-READY) ..."
-zig build qemu-test || echo "[F9.4] qemu-test: limitação de TCG (timeout esperado; nao erro de codigo)"
+zig build qemu-test || { echo "[F9.4] qemu-test falhou (possivel timeout TCG)"; exit 1; }
 
-echo "[F9.4] Integracao F9.4: PASS (evidencia real, sem mock)"
+echo "[F9.4] PASS (apenas se todas as etapas retornaram 0)"

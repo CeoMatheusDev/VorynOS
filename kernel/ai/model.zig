@@ -71,7 +71,7 @@ pub fn fromBytes(buf: []const u8) !Info {
     const weight_size = @as(usize, getU32(buf, 29));
     const bias_offset = @as(usize, getU32(buf, 37));
     const bias_size = @as(usize, getU32(buf, 41));
-    const crc32 = getU32(buf, 49);
+    const crc32 = getU32(buf, 52);
     return .{
         .magic = magic,
         .version = version,
@@ -126,11 +126,11 @@ pub fn validate(buf: []const u8) !void {
 /// Carrega um modelo e executa uma inferencia deterministica com testes.
 /// Nenhum mock substitui execucao real; o resultado numerico e verificavel.
     pub fn infer(buf: []const u8, input: []const f32, output: []f32) !void {
-        _ = input; // reserved for full linear layer in F9.4
         try validate(buf);
         const info = try fromBytes(buf);
         const out_len = info.output_dims;
         if (out_len == 0 or out_len > output.len) return error.InvalidShape;
+        if (input.len < info.input_dims) return error.InvalidShape;
         const w_start = info.weight_offset;
         const w_size = info.weight_size;
         if (w_start + w_size > buf.len) return error.OutOfBounds;
@@ -139,9 +139,20 @@ pub fn validate(buf: []const u8) !void {
         var idx: usize = 0;
         while (idx < out_len) : (idx += 1) {
             var sum: f32 = 0.0;
-            if (idx + 4 <= weights_buf.len) {
-                const b0 = @as(u32, weights_buf[idx * 4]) | (@as(u32, weights_buf[idx * 4 + 1]) << 8) | (@as(u32, weights_buf[idx * 4 + 2]) << 16) | (@as(u32, weights_buf[idx * 4 + 3]) << 24);
-                sum = @as(f32, @bitCast(b0));
+            // Inferencia real com matMul deterministica: W [out][in] x x [in] -> y [out]
+            // Dados do modelo: weights como flat f32 (um por elemento de saida por entrada)
+            for (0..info.input_dims) |k| {
+                if (idx * 4 + k * 4 + 3 < weights_buf.len) {
+                    const b0 = @as(u32, weights_buf[idx * 4 + k * 4]) | (@as(u32, weights_buf[idx * 4 + k * 4 + 1]) << 8) | (@as(u32, weights_buf[idx * 4 + k * 4 + 2]) << 16) | (@as(u32, weights_buf[idx * 4 + k * 4 + 3]) << 24);
+                    const w = @as(f32, @bitCast(b0));
+                    sum += w * input[k];
+                }
+            }
+            // Bias
+            const b_off = info.bias_offset;
+            if (b_off + idx * 4 + 3 < buf.len) {
+                const b0 = @as(u32, buf[b_off + idx * 4]) | (@as(u32, buf[b_off + idx * 4 + 1]) << 8) | (@as(u32, buf[b_off + idx * 4 + 2]) << 16) | (@as(u32, buf[b_off + idx * 4 + 3]) << 24);
+                sum += @as(f32, @bitCast(b0));
             }
             output[idx] = sum;
             tensor.relu(output[idx..idx + 1]);
