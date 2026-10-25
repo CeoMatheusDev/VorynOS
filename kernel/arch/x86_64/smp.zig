@@ -27,6 +27,8 @@
 
 const std = @import("std");
 const spinlock = @import("spinlock.zig");
+const apic = @import("apic.zig");
+const x86_cpu = @import("cpu.zig");
 
 /// Número máximo de CPUs lógicas suportadas.
 pub const max_cpus: u8 = 8;
@@ -130,3 +132,77 @@ test "offlineCpu reduces the online count but keeps at least one" {
     offlineCpu(1);
     try std.testing.expectEqual(cpuCount(), 1);
 }
+
+/// Pilhas de kernel dos APs (uma por CPU, excluindo o BSP que ja tem sua
+/// pilha em `kernel/main.zig`).
+///
+/// Cada pilha tem 16 KiB e esta alinhada a 16 bytes. O topo da pilha
+/// (`_end`) e usado pelo trampoline como ponteiro inicial de pilha.
+var ap_stacks: [max_cpus - 1][16 * 1024]u8 align(16) = undefined;
+
+/// Endereco do topo da pilha de cada AP (indexado por cpu_id - 1).
+/// Exportado para o trampoline em Assembly.
+pub export var ap_stack_top: [max_cpus - 1]u64 = undefined;
+
+/// Ponto de entrada de um AP, chamado pelo trampoline em modo longo.
+///
+/// `cpu_id` e o numero logico da CPU (passado pelo trampoline em RDI).
+/// A funcao registra a CPU na tabela, configura sua pilha e entra no
+/// escalonador. Nunca retorna.
+pub export fn voryn_ap_entry(cpu_id: u8) void {
+    const ap_index = @as(usize, cpu_id) - 1;
+
+    // Estabelece a pilha do kernel desta CPU.
+    const stack = &ap_stacks[ap_index];
+    const stack_top = @intFromPtr(stack.ptr) + stack.len;
+    const aligned_top = stack_top & ~@as(u64, 0xF);
+
+    // Registra a CPU na tabela SMP.
+    const apic_id = apic.readApicId();
+    const cpu = registerCpu(cpu_id, apic_id) orelse {
+        // Nao ha espaco na tabela: entra em loop de espera.
+        while (true) {}
+    };
+    cpu.current_task = null;
+
+    // Marca a pilha como disponivel para o escalonador.
+    ap_stack_top[ap_index] = aligned_top;
+
+    // Sinaliza que esta CPU esta online.
+    cpu.state = .online;
+
+    // Entra no loop da CPU: aguarda por trabalho do escalonador.
+    // O escalonador ainda e monoprocessador; quando o suporte a multiprocessador
+    // estiver completo, esta funcao escolhera tarefas da fila desta CPU.
+    while (true) {
+        x86_cpu.halt();
+    }
+}
+
+/// Inicializa o suporte a AP no BSP.
+///
+/// Deve ser chamado pelo kernel apos a inicializacao do BSP. Configura
+/// os enderecos de pilha dos APs e prepara o trampoline para copia.
+pub fn initAps() void {
+    var i: usize = 0;
+    while (i < max_cpus - 1) : (i += 1) {
+        const stack = &ap_stacks[i];
+        const stack_top = @intFromPtr(stack.ptr) + stack.len;
+        ap_stack_top[i] = stack_top & ~@as(u64, 0xF);
+    }
+}
+
+/// Retorna o ponteiro para o trampoline de AP e seu tamanho.
+///
+/// Usado pelo BSP para copiar o trampoline para memoria abaixo de 1 MiB
+/// e enviar SIPI para cada AP.
+pub fn apTrampolineInfo() [*]u8 {
+    return @ptrFromInt(@intFromPtr(&voryn_ap_trampoline_start));
+}
+
+/// Simbolo do inicio do trampoline (definido em ap_trampoline.s).
+/// O BSP usa seu endereco para copiar o trampoline para memoria abaixo de 1 MiB.
+pub extern const voryn_ap_trampoline_start: u8;
+
+/// Simbolo do tamanho do trampoline (definido em ap_trampoline.s).
+pub extern const voryn_ap_trampoline_size: u64;
