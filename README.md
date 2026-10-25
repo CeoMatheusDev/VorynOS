@@ -782,7 +782,8 @@ A full-repository audit was performed on the current `main` working tree (Zig 0.
 - **Fixed:** `kernel/ai/model.zig` — test `modelBinaryFormatValidatesAndRejectsCorrupt` had incorrect `magic_bytes`; corrected for `MAGIC = 0x564F5259`.
 - **Fixed:** `kernel/ai/security.zig` — `DimensionOverflow` test required `Limits` with elevated `max_tensor_elements`; corrected.
 - **Verified:** `loader.zig` (P0 audit TODO only — no functional error); `scheduler.zig`, `window_manager.zig`, `compositor.zig`, `session.zig` pass all tests; `syscall.zig` paths validated; no untracked secrets.
-- **Status:** `zig build test` exit 0; `main` published at `f3d1180`; tree clean. Continuous development permitted.
+- **Fixed:** `kernel/arch/x86_64/virtio_blk.zig` / `virtio_net.zig` — métodos entre campos corrigidos; `detectVirtioDevice(0)` e `submitDescriptor` corrigidos; build passa.
+- **Status:** `zig build` OK; `main` publicado (`2efb669`); desenvolvimento permitido.
 
 ---
 
