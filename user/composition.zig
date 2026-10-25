@@ -125,6 +125,12 @@ pub fn WindowStack(comptime capacity: usize) type {
             self.keyboard_focus = id;
         }
 
+        pub fn setKeyboardFocusOwned(self: *Self, owner: u64, id: u64) Error!void {
+            const index = self.indexOf(id) orelse return error.NotFound;
+            if (self.entries[index].owner != owner) return error.Unauthorized;
+            self.keyboard_focus = id;
+        }
+
         pub fn clearKeyboardFocus(self: *Self) void {
             self.keyboard_focus = null;
         }
