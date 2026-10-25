@@ -225,26 +225,26 @@ pub fn timerPeriodic(divisor: u32) void {
 /// tipo de comando (fixed, lowest_priority, init, startup etc.).
 pub fn sendIpi(apic_id: u32, delivery_mode: u32, vector: u8) void {
     // Espera ate que a IPI anterior tenha sido entregue.
-    while (read32(ApicOffset.icr_low) & u32(IcrDeliveryStatus.pending) != 0) {
+    while (read32(ApicOffset.icr_low) & @as(u32, @intFromEnum(IcrDeliveryStatus.pending)) != 0) {
         cpu.pause();
     }
     // ICR alto: ID de destino no byte mais significativo.
     write32(ApicOffset.icr_high, apic_id << 24);
     // ICR baixo: delivery mode + vector + edge trigger + physical destination.
-    const command: u32 = u32(delivery_mode) | u32(IcrLevel.assert) |
-        u32(IcrTriggerMode.edge) | u32(IcrDestinationMode.physical) | u32(vector);
+    const command: u32 = delivery_mode | IcrLevel.assert |
+        IcrTriggerMode.edge | IcrDestinationMode.physical | @as(u32, vector);
     write32(ApicOffset.icr_low, command);
 }
 
 /// Envia uma IPI INIT para todos exceto o emissor (modo broadcast fisico).
 pub fn sendInitAllExcludingSelf() void {
-    while (read32(ApicOffset.icr_low) & u32(IcrDeliveryStatus.pending) != 0) {
+    while (read32(ApicOffset.icr_low) & @as(u32, @intFromEnum(IcrDeliveryStatus.pending)) != 0) {
         cpu.pause();
     }
     write32(ApicOffset.icr_high, 0);
-    const command: u32 = u32(IcrDeliveryMode.init) | u32(IcrLevel.assert) |
-        u32(IcrTriggerMode.edge) | u32(IcrDestinationMode.physical) |
-        u32(IcrDestinationShorthand.all_excluding_self);
+    const command: u32 = IcrDeliveryMode.init | IcrLevel.assert |
+        IcrTriggerMode.edge | IcrDestinationMode.physical |
+        IcrDestinationShorthand.all_excluding_self;
     write32(ApicOffset.icr_low, command);
 }
 
@@ -253,12 +253,15 @@ pub fn sendInitAllExcludingSelf() void {
 /// `apic_id` e o ID de APIC local do AP. `vector` e o vetor de
 /// inicializacao (o endereco do trampoline eh vector * 4096 bytes).
 pub fn sendSipi(apic_id: u32, vector: u8) void {
-    while (read32(ApicOffset.icr_low) & u32(IcrDeliveryStatus.pending) != 0) {
+    while (read32(ApicOffset.icr_low) & @as(u32, @intFromEnum(IcrDeliveryStatus.pending)) != 0) {
         cpu.pause();
     }
     write32(ApicOffset.icr_high, apic_id << 24);
-    const command: u32 = u32(IcrDeliveryMode.startup) | u32(IcrLevel.assert) |
-        u32(IcrTriggerMode.edge) | u32(IcrDestinationMode.physical) | u32(vector);
+    const command: u32 = IcrDeliveryMode.startup |
+        IcrLevel.assert |
+        IcrTriggerMode.edge |
+        IcrDestinationMode.physical |
+        vector;
     write32(ApicOffset.icr_low, command);
 }
 
