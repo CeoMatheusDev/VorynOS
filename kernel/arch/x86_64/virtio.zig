@@ -181,21 +181,23 @@ pub const PciVirtioInfo = struct {
 /// is implemented in the PCI driver layer. This function validates the
 /// contract: it checks the vendor and returns the appropriate device type.
 pub fn detectVirtioDevice() PciVirtioInfo {
-    // Bus scanning no espaco de configuracao PCI via portas 0xCF8 / 0xCFC.
-    // Procura pelo vendor 0x1AF4 (Red Hat / VirtIO).
-    for (bus in 0..u8(255)) : for (dev in 0..u8(255)) : for (func in 0..u8(1)) {
-        // Offset do vendor: byte 0x00.
-        const vendor: u16 = pci.readConfigWord(bus, dev, func, 0x00);
-        if (vendor == 0x1AF4) {
-            return .{
-                .base = 0, // setado posteriormente pelo driver PCI
-                .vendor = vendor,
-                .device_id = pci.readConfigWord(bus, dev, func, 0x02),
-                .device_type = computeType(bus, dev, func),
-            };
+    // Scan simplificado: busca vendor VirtIO (0x1AF4) em bus 0, dev 0-31, func 0
+    var bus: u8 = 0;
+    while (bus < 1) : (bus += 1) {
+        var dev: u8 = 0;
+        while (dev < 32) : (dev += 1) {
+            const vendor: u16 = pci.readConfigWord(bus, dev, 0, 0x00);
+            if (vendor == 0x1AF4) {
+                return .{
+                    .base = 0,
+                    .vendor = vendor,
+                    .device_id = pci.readConfigWord(bus, dev, 0, 0x02),
+                    .device_type = computeType(bus, dev, 0),
+                };
+            }
         }
     }
-    return .{}; // none found — retorna zero struct
+    return .{};
 }
 
 /// Converte device ID em tipo de dispositivo (block=1, net=2, scsi=3, console=4).
