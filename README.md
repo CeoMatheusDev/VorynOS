@@ -110,7 +110,7 @@ Development is organized into incremental milestones, each with technical accept
 
 **Important:** These milestone statuses describe the active `feat/native-sdk` development branch where indicated; they do not imply that the same functionality has been merged into `main` or released.
 
-See the [technical roadmap](docs/roadmap/phase-status.md) for each milestone's objectives, acceptance criteria, limitations, and risks.
+See the [technical roadmap](docs/roadmap/phase-status.md) and the [final cycle report](docs/reports/final-cycle.md) for milestone evidence.
 
 ---
 
