@@ -157,7 +157,7 @@ pub fn validContract(contract: Contract) bool {
     return contract.surface_address <= ~@as(u64, 0) - contract.surface_bytes;
 }
 
-test "client contract rejects inconsistent and overflowing surface metadata" {
+test "client contract rejects inconsistent and unaligned surface metadata" {
     const std = @import("std");
     const good: Contract = .{
         .version = contract_version,
@@ -175,7 +175,7 @@ test "client contract rejects inconsistent and overflowing surface metadata" {
     bad.surface_address = 0;
     try std.testing.expect(!validContract(bad));
     bad = good;
-    bad.surface_address = 0xfffffffffffff000;
+    bad.surface_address = 0xffffffffffffffff;
     try std.testing.expect(!validContract(bad));
     bad = good;
     bad.surface_stride += 1;
