@@ -186,6 +186,11 @@ pub fn WindowStack(comptime capacity: usize) type {
             return .{ .window_id = entry.id, .owner_id = entry.owner };
         }
 
+        pub fn pointerEventRecipient(self: *const Self, event: *const input.PointerEvent, width: u32, height: u32) (input.PointerError || error{OutOfBounds})!?Recipient {
+            try input.validatePointerForSurface(event, width, height);
+            return self.pointerRecipient(event.x, event.y);
+        }
+
         pub fn keyboardTarget(self: *const Self) ?u64 {
             const id = self.keyboard_focus orelse return null;
             const index = self.indexOf(id) orelse return null;
