@@ -163,6 +163,12 @@ test "pointer bounds use exclusive surface edges" {
     try std.testing.expect(!pointerInBounds(&event, 0, 24));
 }
 
+/// Validate both pointer metadata and the destination surface bounds.
+pub fn validatePointerForSurface(event: *const PointerEvent, width: u32, height: u32) (PointerError || error{OutOfBounds})!void {
+    try validatePointer(event);
+    if (!pointerInBounds(event, width, height)) return error.OutOfBounds;
+}
+
 test "input event layout is stable" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(InputEvent));
     try std.testing.expectEqual(@as(usize, 0), @offsetOf(InputEvent, "version"));
