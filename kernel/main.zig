@@ -66,6 +66,10 @@ var graphics_front_x: usize = 0;
 var graphics_front_y: usize = 0;
 var graphics_ready: bool = false;
 var graphics_desktop: desktop_mod.Desktop = undefined;
+// F15.6: fixed-size diagnostic buffers, no heap or stack pressure.
+var graphics_bench_ram: [256 * 64 * 4]u8 = @splat(0);
+var graphics_bench_backup: [256 * 64 * 4]u8 = undefined;
+
 // F6.11: tecla I (Set 1, 0x17) seleciona o modo interativo durante o boot.
 var interactive_requested: bool = false;
 
@@ -701,6 +705,8 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
 
     reportCapabilities();
 
+    benchmarkFramebufferWrites();
+
     // Sentinel consumed by the automated boot test.
     serial.printLine("VORYN-KERNEL-READY", .{});
 
@@ -986,6 +992,54 @@ fn presentGraphicsDemo() void {
     graphics_ready = true;
 }
 
+
+/// F15.6: compare identical raster fills on RAM and the mapped GOP surface.
+/// The 256x64 framebuffer rectangle is saved and restored byte-for-byte.
+/// No PAT or paging attributes are modified. Run after the user screenshot
+/// checks, before the ready sentinel; this is a diagnostic, not a cache test.
+fn benchmarkFramebufferWrites() void {
+    const fb = boot_info.framebuffer;
+    const width: usize = @intCast(fb.width);
+    const height: usize = @intCast(fb.height);
+    const pitch: usize = @intCast(fb.pitch);
+    const size: usize = @intCast(fb.size);
+    if (fb.bits_per_pixel != 32 or width < 256 or height < 64 or pitch < 256 * 4) return;
+    if (size < (64 - 1) * pitch + 256 * 4) return;
+    const mapped: [*]u8 = @ptrFromInt(fb.base);
+    const bytes = mapped[0..size];
+    // Snapshot only the region being overwritten; preserve pitch padding.
+    for (0..64) |row| {
+        const offset = row * pitch;
+        @memcpy(graphics_bench_backup[row * 1024 ..][0..1024], bytes[offset..][0..1024]);
+    }
+    var ram = @import("graphics/raster.zig").Surface.init(&graphics_bench_ram, 256, 64, 1024) catch unreachable;
+    var video = @import("graphics/raster.zig").Surface.init(bytes, width, height, pitch) catch return;
+    const color: [4]u8 = .{ 0x35, 0x71, 0xa9, 0xff };
+    for (0..4) |trial| {
+        const ram_start = cpu.readTimestamp();
+        ram.fillRect(0, 0, 256, 64, color);
+        const ram_cycles = cpu.readTimestamp() - ram_start;
+        const video_start = cpu.readTimestamp();
+        video.fillRect(0, 0, 256, 64, color);
+        const video_cycles = cpu.readTimestamp() - video_start;
+        serial.printLine("[VNK] graphics: memory benchmark trial={d} bytes=65536 ram_cycles={d} framebuffer_cycles={d}", .{
+            trial + 1, ram_cycles, video_cycles,
+        });
+    }
+    for (0..64) |row| {
+        const offset = row * pitch;
+        @memcpy(bytes[offset..][0..1024], graphics_bench_backup[row * 1024 ..][0..1024]);
+    }
+    // Read back the restored region so the test detects restoration errors.
+    var mismatches: usize = 0;
+    for (0..64) |row| {
+        const offset = row * pitch;
+        for (0..1024) |col| {
+            if (bytes[offset + col] != graphics_bench_backup[row * 1024 + col]) mismatches += 1;
+        }
+    }
+    serial.printLine("[VNK] graphics: memory benchmark restore_mismatches={d}", .{mismatches});
+}
 
 fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
     if (!graphics_ready) return;
