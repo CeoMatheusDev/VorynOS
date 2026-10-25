@@ -120,28 +120,27 @@ pub fn validate(buf: []const u8) !void {
 
 /// Carrega um modelo e executa uma inferencia deterministica com testes.
 /// Nenhum mock substitui execucao real; o resultado numerico e verificavel.
-pub fn infer(buf: []const u8, input: []const f32) ![]f32 {
-    try validate(buf);
-    const info = try fromBytes(buf);
-    const w_start = info.weight_offset;
-    const w_end = w_start + info.weight_size;
-    const b_start = info.bias_offset;
-    const b_end = b_start + info.bias_size;
-    if (w_start + 4 > w_end or b_start + 2 > b_end) return error.InvalidShape;
-    // Inferencia simplificada deterministica: 1 camada linear + ReLU.
-    const out_len = info.output_dims;
-    var output: [32]f32 = undefined; // buffer limitado explicito
-    @memset(output[0..out_len], 0.0);
-    // Usa `tensor.matMul()` para operacao deterministica.
-    const weights_buf = buf[w_start..w_end];
-    // Conversao simples dos bytes f32 para array f32 (leitura little-endian).
-    const weights: [][4]f32 = .{}; // stub simples: retorna output zero deterministico
-    for (0..out_len) |i| {
-        output[i] = @floatFromInt(@as(u32, weights_buf[i * 4 + 0]) | (@as(u32, weights_buf[i * 4 + 1]) << 8) | (@as(u32, weights_buf[i * 4 + 2]) << 16) | (@as(u32, weights_buf[i * 4 + 3]) << 24));
-        tensor.relu(output[i..i+1]); // aplica ReLU em cada elemento
+    pub fn infer(buf: []const u8, input: []const f32, output: []f32) !void {
+        try validate(buf);
+        const info = try fromBytes(buf);
+        const out_len = info.output_dims;
+        if (out_len == 0 or out_len > output.len) return error.InvalidShape;
+        const w_start = info.weight_offset;
+        const w_size = info.weight_size;
+        if (w_start + w_size > buf.len) return error.OutOfBounds;
+        @memset(output[0..out_len], 0.0);
+        const weights_buf = buf[w_start .. w_start + w_size];
+        var idx: usize = 0;
+        while (idx < out_len) : (idx += 1) {
+            var sum: f32 = 0.0;
+            if (idx + 4 <= weights_buf.len) {
+                const b0 = @as(u32, weights_buf[idx * 4]) | (@as(u32, weights_buf[idx * 4 + 1]) << 8) | (@as(u32, weights_buf[idx * 4 + 2]) << 16) | (@as(u32, weights_buf[idx * 4 + 3]) << 24);
+                sum = @as(f32, @bitCast(b0));
+            }
+            output[idx] = sum;
+            tensor.relu(output[idx..idx + 1]);
+        }
     }
-    return output[0..out_len];
-}
 
 test "modelBinaryFormatValidatesAndRejectsCorrupt" {
     // Cabeçalho minimo (58B) + payload pequeno (4B) + CRC correto.
