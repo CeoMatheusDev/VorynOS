@@ -23,6 +23,7 @@ const std = @import("std");
 const voryn = @import("voryn_shared");
 
 const cpu = @import("cpu.zig");
+const apic = @import("apic.zig");
 
 /// The frequency of the timer of the PC.
 pub const pit_frequency: u32 = 1_193_182;
@@ -124,4 +125,31 @@ pub fn enableInterrupts() void {
 /// Writes a byte to a port.
 fn writePort(port: u16, value: u8) void {
     voryn.port.outb(port, value);
+}
+
+/// Configura o timer local da APIC para a CPU atual.
+///
+/// Deve ser chamado pelo BSP e por cada AP apos o mapeamento do APIC
+/// local e a habilitacao de interrupcoes. O timer dispara periodicamente
+/// no vetor `apic.timer_vector`, fazendo com que cada CPU trate seus
+/// proprio ticks de escalonamento de forma independente.
+///
+/// `ticks_per_second` e a frequencia desejada de interrupcoes do timer.
+/// O divisor e calculado a partir de uma frequencia de barramento de
+/// 10 MHz (valor tipico do QEMU; sistemas reais devem ler isso da ACPI).
+pub fn initApicTimer(ticks_per_second: u32) void {
+    if (!apic.isMapped()) return;
+
+    // Frequencia do barramento do APIC (tipicamente 10 MHz no QEMU).
+    const bus_freq: u32 = 10_000_000;
+    const divisor: u32 = bus_freq / ticks_per_second;
+
+    // Desabilita o timer antes de reconfigurar.
+    apic.timerOneShot(0);
+
+    // Configura modo periodico com o vetor do timer local.
+    apic.timerPeriodic(divisor);
+
+    frequency = ticks_per_second;
+    tick_count = 0;
 }

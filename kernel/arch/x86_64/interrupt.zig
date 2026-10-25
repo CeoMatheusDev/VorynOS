@@ -29,6 +29,7 @@ const serial = voryn.serial;
 const port = voryn.port;
 
 const cpu = @import("cpu.zig");
+const apic = @import("apic.zig");
 const frame_layout = @import("frame.zig");
 
 /// Number of entries of the table.
@@ -415,6 +416,22 @@ export fn voryn_interrupt_handler(vector: u64, frame: *const Registers) callconv
             @import("../../input/ps2.zig").onInterrupt();
         }
         timer.acknowledge(@intCast(vector));
+    }
+
+    // Interrupcao do timer local da APIC (vetor timer_vector, usado em SMP).
+    // Cada CPU trata seu proprio timer local de forma independente.
+    if (vector == @as(u64, apic.timer_vector)) {
+        const timer = @import("timer.zig");
+        timer.onTick();
+
+        const syscall = @import("syscall.zig");
+        syscall.inputWaitTick();
+
+        const scheduler = @import("../../task/scheduler.zig");
+        const must_switch = scheduler.scheduler.tick(syscall.failure(syscall.Error.timeout));
+
+        apic.eoi();
+        return if (must_switch) 1 else 0;
     }
 
     return 0;
