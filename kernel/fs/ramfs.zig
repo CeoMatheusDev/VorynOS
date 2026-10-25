@@ -96,7 +96,7 @@ pub const Error = error{
 };
 
 /// Entrada da tabela de diretórios.
-const DirEntry = struct {
+pub const DirEntry = struct {
     used: bool = false,
     parent: u32 = 0,
     inode: u32 = 0,

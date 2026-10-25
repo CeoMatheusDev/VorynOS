@@ -263,10 +263,10 @@ Objectives: RamFS, block layer, VNV, VFSX, persistence and recovery.
 | Host tests | COMPLETED | `zig build test` runs 13 tests of the RamFS and the descriptor facade |
 | Syscalls 13–18 | COMPLETED (kernel glue) | `fs_open`, `fs_close`, `fs_read`, `fs_write`, `fs_create` and `fs_mkdir` call the facade after checking the user range |
 | Boot self-test | COMPLETED | the kernel creates `/apps`, writes `/apps/hello.txt`, reads it back and compares the content before `VORYN-KERNEL-READY` |
-| Persistence and block driver | PROPOSED | the RamFS lives in the image of the kernel and disappears on power-off |
-| VNV and VFSX | PROPOSED | no virtual node layer and no disk format yet |
-| Per-process descriptors | PROPOSED | the descriptor table is global, because the contract has no process-scoped file table yet |
-| Unlink, rename, indirect blocks | PROPOSED | not implemented |
+| Persistence and block driver | PROPOSED | the RamFS lives in the image of the kernel and disappears on power-off; no block-device backend or durable on-disk format exists |
+| VNV and VFSX | IN DEVELOPMENT | `kernel/fs/vfsx.zig` provides bounded mount routing and generation checks; `kernel/fs/vnv.zig` provides a validated host/kernel codec, while block-device mounting and durable recovery remain pending |
+| Per-process descriptors | COMPLETED (host/QEMU) | `fs.zig` keeps independent descriptor tables, offsets, lifecycle cleanup and generation-checked internal handles per process |
+| Unlink, rename, indirect blocks | PARTIALLY IMPLEMENTED | regular-file unlink/rename and deferred inode reclamation are tested; indirect blocks and directory rename remain absent |
 
 Known limits of the verified core:
 
@@ -275,10 +275,11 @@ Known limits of the verified core:
 - a file is limited to 48 KiB, because only the 12 direct block pointers
   exist;
 - there are no `.` and `..` entries, and `..` is refused by the resolver;
-- the descriptor table is global and has 16 entries;
-- the file system is not shared with user mode end to end yet: the syscalls
-  compile and check the user range, but the embedded user program does not
-  call them. The boot verification exercises the kernel-side facade.
+- each process has a fixed table of 16 descriptors; internal checked handles
+  add generation validation, while the public syscall ABI still uses `u32` FDs;
+- the filesystem is exercised end to end by the native ELF application,
+  including `fs_truncate` (syscall 22), but persistence and block-device I/O
+  are not implemented;
 
 ### F5 — Runtime, SDK and native applications — IN PROGRESS
 
@@ -299,15 +300,15 @@ Objectives: VEX, VLIB, VPK, runtime, SDK and native applications.
 | Native user application | COMPLETED | `/apps/hello.elf`, an ET_DYN image with two PT_LOAD segments and one R_X86_64_RELATIVE, runs as the fourth process and exits with code 0 |
 | Host tests | COMPLETED | 26 tests in `fs-loader-tests` (RamFS, planner, native image and per-process descriptors); 90 host tests in total |
 | Per-process descriptors | COMPLETED | `fs.zig` keeps one table per process, with independent offsets and unknown-process rejection |
-| VEX, VLIB, VPK and SDK | PROPOSED | no native toolchain, package format or SDK yet |
+| VEX, VLIB, VPK and SDK | IN DEVELOPMENT | the freestanding SDK, syscall wrappers, display/input/compositor contracts and native ELF applications are present; VEX toolchain packaging and VPK remain absent |
 
 The planner is deliberately pure: it does not allocate, map or spawn. The
 materializer consumes the `LoadPlan` and owns the hardware-dependent work.
 Its verification is the QEMU boot, where the kernel reads the page-table
 permissions back, checks that the relative relocation holds the load bias
-and waits for the native task to terminate. The native image is a bootstrap
-built in kernel memory, because the SDK does not exist yet; the ELF file
-itself goes through the RamFS and is validated by the same planner used on
+and waits for the native tasks to terminate. The freestanding SDK now builds
+`hello` and compositor-client ELF images through the normal Zig build graph;
+the ELF files go through the RamFS and are validated by the same planner used on
 the host.
 
 ### F6 — Graphics and input — IN DEVELOPMENT
@@ -363,9 +364,9 @@ Known limitations of the verified F6 core:
 
 | Milestone | Content | State |
 |-------|----------|--------|
-| F4 | Block drivers, VNV, initial VFSX, persistence, recovery | IN PROGRESS — RamFS core verified |
-| F5 | VEX, VLIB, VPK, runtime, SDK, native applications | IN PROGRESS — native ELF and toolchain app verified; SDK pending |
-| F6 | Input, rasterizer, compositor, windows, VSH | IN DEVELOPMENT — framebuffer, input, interactive tests and exposed-strip damage verified; display metadata, presentation, input event call, user-space composition and screenshot validation verified; surface sharing, window manager, focus, cursor and full input service pending |
+| F4 | Block drivers, VNV, initial VFSX, persistence, recovery | IN PROGRESS — RamFS/VFSX and lifecycle paths verified; persistent block storage and recovery pending |
+| F5 | VEX, VLIB, VPK, runtime, SDK, native applications | IN PROGRESS — SDK, native ELF and compositor client verified; VEX/VLIB/VPK pending |
+| F6 | Input, rasterizer, compositor, windows, VSH | IN DEVELOPMENT — framebuffer, input, damage, capabilities, user-space composition and screenshot validation verified; full window service, focus, cursor and desktop shell pending |
 | F7 | Virtio, network, audio, physical hardware, GPU | PROPOSED |
 | F8 | ELF, Linux ABI, PE, Win32, external formats | PROPOSED |
 | F9 | VAI, backends, permissions, API, local execution | PROPOSED |

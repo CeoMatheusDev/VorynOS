@@ -99,9 +99,9 @@ Development is organized into incremental milestones, each with technical accept
 | F1 | UEFI bootloader and kernel initialization | ✅ Completed |
 | F2 | Processor structures, interrupts, and memory | 🟢 Locally Tested |
 | F3 | Threads, scheduler, processes, syscalls, and IPC | ✅ Completed |
-| F4 | Storage and file systems | 🚧 RamFS core verified — persistence and VFSX pending |
-| F5 | Runtime, SDK, and native applications | 🚧 In progress — native ELF and toolchain app verified; SDK pending |
-| F6 | Graphics subsystem and desktop environment | 🚧 Experimental — framebuffer, PS/2 input, interactive tests, F6.24 exposed-strip damage, F6.25 display metadata, F6.26 presentation and F6.27 input events verified in QEMU; user-space compositor and window manager pending |
+| F4 | Storage and file systems | 🚧 RamFS, VFSX routing, per-process descriptors, unlink/rename, user-mode truncation and host/kernel VNV codec verified; block-device persistence and recovery pending |
+| F5 | Runtime, SDK, and native applications | 🚧 Freestanding SDK, native ELF loader/materializer and compositor client verified; VEX/VLIB/VPK remain pending |
+| F6 | Graphics subsystem and desktop environment | 🚧 Experimental — framebuffer, PS/2 input, damage tracking, capabilities, user-space composition and QEMU screenshot validation verified; full desktop/window manager remains pending |
 | F7 | Drivers, networking, audio, and physical hardware | 📋 Proposed |
 | F8 | Compatibility with external formats and APIs | 📋 Proposed |
 | F9 | Artificial intelligence infrastructure | 📋 Proposed |

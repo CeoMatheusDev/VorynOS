@@ -24,6 +24,7 @@
 pub const ramfs = @import("fs/ramfs.zig");
 pub const fs = @import("fs/fs.zig");
 pub const vfsx = @import("fs/vfsx.zig");
+pub const vnv = @import("fs/vnv.zig");
 pub const elf_loader = @import("elf_loader.zig");
 pub const native_image = @import("native_image.zig");
 
@@ -35,6 +36,7 @@ test {
     _ = @import("fs/ramfs.zig");
     _ = @import("fs/fs.zig");
     _ = @import("fs/vfsx.zig");
+    _ = @import("fs/vnv.zig");
     _ = @import("elf_loader.zig");
     _ = @import("native_image.zig");
 }
