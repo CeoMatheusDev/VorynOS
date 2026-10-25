@@ -120,6 +120,11 @@ pub fn initVRing() VRing {
 }
 
 /// Configura um descritor para apontar para um endereco de memoria.
+pub fn submitDescriptor(ring: *VRing, index: usize) void {
+    _ = index;
+    ring.avail_idx += 1;
+}
+
 pub fn setupDescriptor(ring: *VRing, index: usize, addr: u64, len: u32, flags: u16) void {
     if (index >= ring.descriptors.len) return;
     ring.descriptors[index] = .{ .addr = addr, .len = len, .flags = flags };
@@ -147,7 +152,7 @@ test "vringDescriptorSetupAndLimits" {
 }
 
 test "pciVirtioInfoDefaults" {
-    const info = detectVirtioDevice(0);
+    const info = detectVirtioDevice();
     try std.testing.expectEqual(@as(u16, 0x1AF4), info.vendor);
 }
 
