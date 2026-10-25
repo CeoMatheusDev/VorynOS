@@ -21,7 +21,7 @@ pub const paging = @import("paging.zig");
 pub const spinlock = @import("spinlock.zig");
 pub const smp = @import("smp.zig");
 pub const apic = @import("apic.zig");
-pub const acpi = @import("acpi.zig");
+pub const virtio = @import("virtio.zig");
 
 // The unit tests of the modules live in the modules themselves, and this
 // block is what brings them into the test binary.
@@ -36,5 +36,4 @@ test {
     _ = @import("spinlock.zig");
     _ = @import("smp.zig");
     _ = @import("apic.zig");
-    _ = @import("acpi.zig");
 }
