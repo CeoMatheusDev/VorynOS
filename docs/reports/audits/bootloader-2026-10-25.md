@@ -5,9 +5,9 @@ A inspeção estática corresponde a código real no `main`. Nenhum achado é fa
 
 | Severidade | Componente | Confirmação | Estado |
 |---|---|---|---|
-🔴 Crítica | `boot/uefi/vnb/loader.zig` | `@memcpy` para `destination` sem `AllocatePages()` confirmada | **Não corrigido** |
-🔴 Alta | `boot/uefi/vnb/memory.zig` | `info.len * info.descriptor_size` sem `mul` defensivo confirmada | **Não corrigido** |
-🔴 Alta | `loader.zig` | `+|` (saturado) e `value + relocation.addend` sem verificação de overflow confirmados | **Não corrigido** |
+🔴 Crítica | `boot/uefi/vnb/loader.zig` | `@memcpy` para `destination` sem `AllocatePages()` confirmada | **Parcial — TODO `AllocatePages` inserido (`bf8206b`); reserva completa pendente** |
+🔴 Alta | `boot/uefi/vnb/memory.zig` | `info.len * info.descriptor_size` sem `mul` defensivo confirmada | **Corrigido — `std.math.mul` aplicado (`bf8206b`)** |
+🔴 Alta | `loader.zig` | `+|` (saturado) e `value + relocation.addend` sem verificação de overflow confirmados | **Corrigido — `std.math.add` aplicado (`bf8206b`)** |
 🟠 Alta | `main.zig` / `handoff.zig` | `identity_mapped_limit` como garantia universal não documentada | **Documentação pendente** |
 🟠 Média | `main.zig` | Recuperação `ExitBootServices` após falha precisa de limitação conforme UEFI spec | **Não corrigido** |
 🟡 Média | CI (`ci.yml`) | `zig build test` / `zig build` / `zig build qemu-test` configurados; execução confirmada por mim (`TEST EXIT: 0`, `vorynos.img`), não executada pelo auditor | **Verificado por agente** |
