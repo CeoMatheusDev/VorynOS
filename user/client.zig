@@ -96,7 +96,16 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     ) orelse sdk.exit(7);
 
     // Record the computed hash before the IPC handoff for diagnostics.
-    _ = sdk.write("client checksum computed\n");
+    var hash_text: [17]u8 = undefined;
+    var digit: usize = 0;
+    while (digit < 16) : (digit += 1) {
+        const shift: u6 = @intCast((15 - digit) * 4);
+        const nibble: usize = @intCast((client_hash >> shift) & 0xf);
+        hash_text[digit] = "0123456789abcdef"[nibble];
+    }
+    hash_text[16] = '\n';
+    _ = sdk.write("client checksum=0x");
+    _ = sdk.write(&hash_text);
 
     // Posiciona a janela no compositor antes de avisar que o quadro está pronto.
     const placement = sdk.compositor.packWindow(
