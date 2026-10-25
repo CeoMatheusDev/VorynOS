@@ -386,3 +386,6 @@ Known limitations of the verified F6 core:
 | NX requirement | High | The kernel requires EFER.NXE and refuses to boot without it; verified in QEMU/OVMF, with no fallback |
 | Bootstrap native image | Medium | The native ELF is built in kernel memory, not by an SDK; the next increment replaces the builder |
 | Absence of a hardware test | Medium | Marked as not verified until a reference machine exists |
+| SMP: spinlocks, per-CPU data, APIC local, AP trampoline | Medium | Fundacoes implementadas (M0.5); escalonador multi-CPU, EEVDF e IPIs de reescalonamento pendentes |
+| SMP: escalonador multi-CPU e EEVDF | High | Escalonador unicorno funcional; multiprocessador requer filas por CPU, balanceamento de carga e IPIs |
+| SMP: boot de APs via SIPI/trampoline | Medium | Trampoline implementado em Assembly; integracao com o kernel pendente (chamada de initAps() e envio de SIPI) |
