@@ -105,7 +105,7 @@ Development is organized into incremental milestones, each with technical accept
 | F6 | Graphics subsystem and desktop environment | 🚧 Experimental — F6.30 `input_wait` (syscall 23, ABI v13) verified |
 | F7 | Virtio drivers / PCI / block / net (`virtio.zig`, `virtio_blk.zig`, `virtio_net.zig`, `pci.zig`) | 🟢 Base completo — F7 base + PCI + blk + net verificado, estande corrido |
 | F8 | Compatibility with external formats and APIs | ✅ F8 concluído — `vex.zig` funcional + `elf_compat.zig` + ABI v13 (`12ac3a2`) |
-| F9 | Artificial intelligence infrastructure | 🟢 Concluído — `tensor.zig` + `model.zig` (infer real, CRC alinhado) + `security.zig` (overflow verificado) + F9.4 audit (`fe34196`) |
+| F9 | Artificial intelligence infrastructure | 🟢 Completed — `tensor.zig` + `model.zig` (real inference, aligned CRC) + `security.zig` (overflow verified) + F9.4 audit (`fe34196`) |
 | F10 | Installation, security, recovery, and production readiness | 📋 Proposed |
 
 **Important:** These milestone statuses describe the active `feat/native-sdk` development branch where indicated; they do not imply that the same functionality has been merged into `main` or released.
@@ -890,8 +890,8 @@ Após atualização da branch `main` até `36f58ff`, os comandos executados pelo
 | `zig test kernel/graphics/frame.zig` | 26 testes aprovados |
 | `zig test kernel/graphics/session.zig` | 12 testes aprovados |
 | `zig test kernel/graphics/window_renderer.zig` | 12 testes aprovados |
-| `zig build test` | Concluído sem erros |
-| `zig build` | Concluído sem erros; `zig-out/bin/vorynos.img` com 64 MiB |
+| `zig build test` | Completed, no errors |
+| `zig build` | Completed; `zig-out/bin/vorynos.img` (64 MiB) |
 
 Os conjuntos de testes compartilham testes importados e, portanto, as contagens não representam 50 casos distintos. A compilação da imagem **não** constitui validação de execução gráfica no QEMU. Permanecem pendentes a integração do fluxo de eventos físicos do mouse e a renderização na execução real do kernel.
 
