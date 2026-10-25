@@ -169,6 +169,13 @@ pub fn validatePointerForSurface(event: *const PointerEvent, width: u32, height:
     if (!pointerInBounds(event, width, height)) return error.OutOfBounds;
 }
 
+test "pointer surface validation rejects out-of-range coordinates" {
+    const inside: PointerEvent = .{ .x = 31, .y = 23 };
+    try validatePointerForSurface(&inside, 32, 24);
+    const outside: PointerEvent = .{ .x = 32, .y = 23 };
+    try std.testing.expectError(error.OutOfBounds, validatePointerForSurface(&outside, 32, 24));
+}
+
 test "input event layout is stable" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(InputEvent));
     try std.testing.expectEqual(@as(usize, 0), @offsetOf(InputEvent, "version"));
