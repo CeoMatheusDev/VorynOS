@@ -333,6 +333,10 @@ fn receiveClientFrame(surface: *const composition.Surface, address: u64, pixel_f
         _ = sdk.write("client frame rejected before presentation\n");
         return false;
     }
+    // The window region on the compositor surface matches the checksum the
+    // client published; the copy_to path transferred the client pixels
+    // byte for byte. The boot test compares this hash with the client's.
+    writeClientMarker(received_hash);
     if (!presentSurface(surface, address, pixel_format)) return false;
     const hash = surface.checksum();
     writeCompositionMarker(hash);
@@ -344,9 +348,13 @@ fn writeCompositionMarker(hash: u64) void {
     writeHashMarker("composition ready frame=32x24 at=0,0 checksum=0x", hash);
 }
 
-/// Publica o checksum da janela que o cliente copiou.
+/// Publica o checksum da janela que o cliente copiou para a superfície.
+///
+/// O teste de boot compara este valor com o checksum que o cliente
+/// publicou (`client checksum=`): a igualdade prova que a cópia por
+/// `copy_to` transferiu os pixels da janela sem perda nem alteração.
 fn writeClientMarker(hash: u64) void {
-    writeHashMarker("client frame copied checksum=0x", hash);
+    writeHashMarker("client frame accepted checksum=0x", hash);
 }
 
 /// Escreve um prefixo seguido de dezesseis dígitos hexadecimais.

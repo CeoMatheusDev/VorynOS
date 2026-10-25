@@ -345,6 +345,18 @@ require_marker "[VNK] fs: ramfs ready"
 require_marker "[VNK] fs: /apps/hello.txt round trip ok"
 require_marker "[VNK] fs: /apps/hello.elf installed"
 require_marker "[VNK] fs: lifecycle cleanup normal exit and user fault ok"
+# F4: o volume raiz é commitado em um dispositivo de blocos, apagado e
+# recuperado; os arquivos da árvore sobrevivem ao ciclo completo.
+require_pattern '\[VNK\] fs: persistence device ready, [1-9][0-9]* sectors of [0-9]+ bytes' 'the block device geometry'
+require_pattern '\[VNK\] fs: vnv committed sequence=[1-9][0-9]* image=[1-9][0-9]* bytes over [1-9][0-9]* sectors' 'the VNV commit to the block device'
+require_marker "[VNK] fs: volume wiped, /apps/hello.txt no longer resolvable"
+require_pattern '\[VNK\] fs: vnv recovered sequence=[1-9][0-9]* from the block device' 'the VNV recovery from the block device'
+require_marker "[VNK] fs: persistence round trip ok"
+# F5: o pacote VPK gravado no RamFS sobrevive à recuperação e desempacota.
+require_pattern '\[VNK\] vpk: packed [1-9][0-9]* entries, [1-9][0-9]* bytes' 'the VPK packing'
+require_marker "[VNK] fs: /apps/sample.vpk installed"
+require_pattern '\[VNK\] vpk: /apps/sample.vpk validated and unpacked \([1-9][0-9]* entries' 'the VPK validation and unpack'
+require_marker "[VNK] vpk: pack/persist/recover/unpack round trip ok"
 require_marker "[VNK] tasks: 9 created"
 require_marker "[VNK] native: /apps/hello.elf entry="
 require_marker "[VNK] native: process"
@@ -436,6 +448,32 @@ elif python3 tests/integration/compare-presentation.py "$SCREENSHOT" 0 0 32 24 "
     echo "ok: QEMU screenshot matches the user-space composition"
 else
     echo "FAIL: the QEMU screenshot does not match the user-space composition" >&2
+    FAILURES=$((FAILURES + 1))
+fi
+
+# F6.29: o cliente publica o checksum da janela que copiou por `copy_to`;
+# o compositor confere o mesmo hash sobre a região da superfície antes de
+# apresentar. A igualdade prova que a cópia entre processos transferiu os
+# pixels byte a byte, e não apenas que as duas partes terminaram com êxito.
+if python3 - "$SERIAL_LOG" <<'PY'
+import re
+import sys
+
+log = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+client = re.findall(r"client checksum=0x([0-9a-f]{16})", log)
+compositor = re.findall(r"client frame accepted checksum=0x([0-9a-f]{16})", log)
+if not client:
+    sys.exit("the client published window checksum is missing")
+if not compositor:
+    sys.exit("the compositor acceptance checksum is missing")
+if client[-1] != compositor[-1]:
+    sys.exit(f"client and compositor checksums differ: {client[-1]} != {compositor[-1]}")
+print(f"ok: F6.29 client frame accepted checksum=0x{compositor[-1]}")
+PY
+then
+    :
+else
+    echo "FAIL: the F6.29 client frame verification failed" >&2
     FAILURES=$((FAILURES + 1))
 fi
 

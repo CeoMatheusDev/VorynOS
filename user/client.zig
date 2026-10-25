@@ -109,16 +109,18 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     ) orelse sdk.exit(7);
 
     // Record the computed hash before the IPC handoff for diagnostics.
-    var hash_text: [17]u8 = undefined;
+    // The marker is written as one serial line so the kernel report cannot
+    // interleave between the prefix and the hash.
+    var hash_line: [35]u8 = undefined;
+    @memcpy(hash_line[0..18], "client checksum=0x");
     var digit: usize = 0;
     while (digit < 16) : (digit += 1) {
         const shift: u6 = @intCast((15 - digit) * 4);
         const nibble: usize = @intCast((client_hash >> shift) & 0xf);
-        hash_text[digit] = "0123456789abcdef"[nibble];
+        hash_line[18 + digit] = "0123456789abcdef"[nibble];
     }
-    hash_text[16] = '\n';
-    _ = sdk.write("client checksum=0x");
-    _ = sdk.write(&hash_text);
+    hash_line[34] = '\n';
+    _ = sdk.write(&hash_line);
 
     // Avisa o compositor com o kind FRAME1 e o checksum da região.
     const sent = sdk.send(

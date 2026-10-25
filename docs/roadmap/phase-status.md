@@ -3,9 +3,9 @@
 | Field | Value |
 |-------|-------|
 | **State** | ALIVE |
-| **Date** | 2026-10-24 |
+| **Date** | 2026-10-25 |
 | **Published version** | `v0.1.0-dev.3` (tag) |
-| **Working tree** | F6.28 user-space composition, visual validation and capability-refusal increment, verified locally in QEMU, not yet tagged |
+| **Working tree** | F4 block-device persistence/recovery (VNV volume), F5 VPK container and F6.29 client-frame verification, verified locally in QEMU, not yet tagged |
 
 The state below reflects the **existing and verified code**, and not the
 intention. An item is only marked as completed when it meets every criterion
@@ -263,8 +263,8 @@ Objectives: RamFS, block layer, VNV, VFSX, persistence and recovery.
 | Host tests | COMPLETED | `zig build test` runs 13 tests of the RamFS and the descriptor facade |
 | Syscalls 13–18 | COMPLETED (kernel glue) | `fs_open`, `fs_close`, `fs_read`, `fs_write`, `fs_create` and `fs_mkdir` call the facade after checking the user range |
 | Boot self-test | COMPLETED | the kernel creates `/apps`, writes `/apps/hello.txt`, reads it back and compares the content before `VORYN-KERNEL-READY` |
-| Persistence and block driver | PROPOSED | the RamFS lives in the image of the kernel and disappears on power-off; no block-device backend or durable on-disk format exists |
-| VNV and VFSX | IN DEVELOPMENT | `kernel/fs/vfsx.zig` provides bounded mount routing and generation checks; `kernel/fs/vnv.zig` provides a validated host/kernel codec, while block-device mounting and durable recovery remain pending |
+| Persistence and block driver | IN DEVELOPMENT | `kernel/storage/block.zig` (device interface), `kernel/storage/ramdisk.zig` (RAM backend) and `kernel/fs/vnv_volume.zig` (commit/recover) are verified: the root volume is committed to a block device, wiped and recovered during the boot self-test; a physical driver (virtio-blk/ATA) and automatic boot mounting remain pending |
+| VNV and VFSX | IN DEVELOPMENT | `kernel/fs/vfsx.zig` provides bounded mount routing and generation checks; `kernel/fs/vnv.zig` provides a validated host/kernel codec and `vnv_volume.zig` the block-device commit/recovery; durable physical storage remains pending |
 | Per-process descriptors | COMPLETED (host/QEMU) | `fs.zig` keeps independent descriptor tables, offsets, lifecycle cleanup and generation-checked internal handles per process |
 | Unlink, rename, indirect blocks | PARTIALLY IMPLEMENTED | regular-file unlink/rename and deferred inode reclamation are tested; indirect blocks and directory rename remain absent |
 
@@ -278,8 +278,9 @@ Known limits of the verified core:
 - each process has a fixed table of 16 descriptors; internal checked handles
   add generation validation, while the public syscall ABI still uses `u32` FDs;
 - the filesystem is exercised end to end by the native ELF application,
-  including `fs_truncate` (syscall 22), but persistence and block-device I/O
-  are not implemented;
+  including `fs_truncate` (syscall 22); block-device commit/wipe/recovery
+  is verified over the RAM-backed device, and a physical driver remains
+  pending;
 
 ### F5 — Runtime, SDK and native applications — IN PROGRESS
 
@@ -300,7 +301,7 @@ Objectives: VEX, VLIB, VPK, runtime, SDK and native applications.
 | Native user application | COMPLETED | `/apps/hello.elf`, an ET_DYN image with two PT_LOAD segments and one R_X86_64_RELATIVE, runs as the fourth process and exits with code 0 |
 | Host tests | COMPLETED | 26 tests in `fs-loader-tests` (RamFS, planner, native image and per-process descriptors); 90 host tests in total |
 | Per-process descriptors | COMPLETED | `fs.zig` keeps one table per process, with independent offsets and unknown-process rejection |
-| VEX, VLIB, VPK and SDK | IN DEVELOPMENT | the freestanding SDK, syscall wrappers, display/input/compositor contracts and native ELF applications are present; VEX toolchain packaging and VPK remain absent |
+| VEX, VLIB, VPK and SDK | IN DEVELOPMENT | the freestanding SDK, syscall wrappers, display/input/compositor contracts and native ELF applications are present; the VPK container (`formats/vpk.zig`) is implemented with host tests and a boot self-test (pack → RamFS → VNV persistence → recovery → unpack), the VEX native-executable format is specified in `docs/specs/vpk.md` as the payload kind of VPK but its loader integration remains pending, and VLIB (libraries) remains absent |
 
 The planner is deliberately pure: it does not allocate, map or spawn. The
 materializer consumes the `LoadPlan` and owns the hardware-dependent work.
@@ -333,7 +334,8 @@ service and a desktop shell remain future work.
 | F6.26 display presentation | TESTED LOCALLY | syscall 20 (`present`, ABI 11) copies a validated 16x16 rectangle from the native SDK application; the display capability (kind 2) is checked first and the first pixel is read back as `0xff` |
 | F6.27 input event capability | TESTED LOCALLY | syscall 21 (`input_poll`, ABI 12) takes one event from the user queue with the input capability (kind 3, `read`); the boot test sends `right`, the application presents at (16,0) and the kernel diagnostic queue keeps its copy |
 | F6.28 user-space composition | TESTED LOCALLY | `user/composition.zig` composes a 32x24 grayscale frame in the native application; the boot test captures a P6 screenshot and matches its FNV-1a checksum to the application; a third process without display/input capabilities is refused by `present` and `input_poll` with error 10 |
-| User-space graphics service | IN DEVELOPMENT | `display_info`, `present`, `input_poll`, the composition demo, screenshot verification and the refusal tests are verified locally; a separate compositor, surface sharing, window manager, focus, cursor and blocking/per-process input remain proposed in ADR-0015 |
+| F6.29 client-frame IPC | TESTED LOCALLY | the client process sends WNDPLACE, waits for COMPRDY, copies its frame to the compositor surface via `copy_to` and publishes FRAME1 with the window checksum; the compositor verifies the same hash over the received region and presents it; the boot test asserts the client-published checksum equals the compositor-accepted checksum and the QEMU screenshot matches the composed surface |
+| User-space graphics service | IN DEVELOPMENT | `display_info`, `present`, `input_poll`, the composition demo, screenshot verification, the refusal tests and the client→compositor frame handshake are verified locally; surface sharing, focus, cursor and blocking/per-process input remain proposed in ADR-0015 |
 
 Measured environment for F6.22.2/F6.23/F6.24: Fedora 44, Zig 0.17.0,
 QEMU 10.2.2, OVMF, `-smp 1`, 256 MiB, no KVM (TCG), GOP mode 2048x2048.
@@ -364,9 +366,9 @@ Known limitations of the verified F6 core:
 
 | Milestone | Content | State |
 |-------|----------|--------|
-| F4 | Block drivers, VNV, initial VFSX, persistence, recovery | IN PROGRESS — RamFS/VFSX and lifecycle paths verified; persistent block storage and recovery pending |
-| F5 | VEX, VLIB, VPK, runtime, SDK, native applications | IN PROGRESS — SDK, native ELF and compositor client verified; VEX/VLIB/VPK pending |
-| F6 | Input, rasterizer, compositor, windows, VSH | IN DEVELOPMENT — framebuffer, input, damage, capabilities, user-space composition and screenshot validation verified; full window service, focus, cursor and desktop shell pending |
+| F4 | Block drivers, VNV, initial VFSX, persistence, recovery | IN PROGRESS — RamFS/VFSX, per-process descriptors and the block-device commit/wipe/recovery cycle are verified (ramdisk backend); a physical driver and automatic boot mounting are pending |
+| F5 | VEX, VLIB, VPK, runtime, SDK, native applications | IN PROGRESS — SDK, native ELF, compositor client and the VPK container are verified (pack/persist/recover/unpack in the boot test); VEX loader integration and VLIB are pending |
+| F6 | Input, rasterizer, compositor, windows, VSH | IN DEVELOPMENT — framebuffer, input, damage, capabilities, user-space composition, screenshot validation and the F6.29 client→compositor frame handshake are verified; focus, cursor, surface sharing and the desktop shell are pending |
 | F7 | Virtio, network, audio, physical hardware, GPU | PROPOSED |
 | F8 | ELF, Linux ABI, PE, Win32, external formats | PROPOSED |
 | F9 | VAI, backends, permissions, API, local execution | PROPOSED |

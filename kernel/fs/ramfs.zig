@@ -93,6 +93,8 @@ pub const Error = error{
     InvalidPath,
     /// O buffer fornecido é pequeno demais para a lista.
     BufferTooSmall,
+    InvalidBlock,
+    InvalidDirectory,
 };
 
 /// Entrada da tabela de diretórios.
@@ -126,6 +128,15 @@ var default_state: State = .{};
 /// Inicializa o RamFS e apaga todo o conteúdo anterior.
 pub fn init() void {
     initState(&default_state);
+}
+
+/// Returns the live state of the root volume.
+///
+/// The legacy facade (`fs.zig`) routes volume zero to this instance. The
+/// VNV volume layer uses the pointer to commit and recover the live tree
+/// without a copy: recovery replaces this state in place.
+pub fn defaultState() *State {
+    return &default_state;
 }
 
 /// Initializes an explicitly supplied RamFS state without touching other instances.
@@ -169,6 +180,11 @@ fn blockUsedFor(state: *const State, block: usize) bool {
 
 fn blockUsed(block: usize) bool {
     return blockUsedFor(&default_state, block);
+}
+
+fn blockIndex(block: u64) Error!usize {
+    if (block == 0 or block >= block_count) return error.InvalidBlock;
+    return @intCast(block);
 }
 
 /// Updates a bitmap bit for one volume.
@@ -276,9 +292,12 @@ pub fn storageStatsFor(state: *const State) StorageStats {
     for (state.dir_entries) |entry| {
         if (entry.used) used_entries += 1;
     }
+    const used_blocks = block_count - free_blocks;
+    const reserved_blocks = if (state.block_bitmap[0] & 1 != 0) @as(usize, 1) else 0;
+    const allocated_data_blocks = used_blocks -| reserved_blocks;
     return .{
         .total_blocks = block_count,
-        .used_blocks = block_count - free_blocks,
+        .used_blocks = used_blocks,
         .free_blocks = free_blocks,
         .total_inodes = inode_count,
         .used_inodes = inode_count - free_inodes,
@@ -287,7 +306,7 @@ pub fn storageStatsFor(state: *const State) StorageStats {
         .used_dir_entries = used_entries,
         .free_dir_entries = dir_entry_count - used_entries,
         .total_bytes = total_size,
-        .allocated_data_bytes = (block_count - free_blocks - 1) * block_size,
+        .allocated_data_bytes = allocated_data_blocks * block_size,
     };
 }
 
@@ -422,7 +441,9 @@ pub fn releaseInodeFor(state: *State, inode_num: u32) void {
     const entry = &state.inodes[inode_num];
     if (entry.i_links_count == 0) return;
     for (entry.i_block) |block| {
-        if (block != 0) _ = freeBlockFor(state, @intCast(block));
+        if (block == 0) continue;
+        const index = blockIndex(block) catch continue;
+        _ = freeBlockFor(state, @intCast(index));
     }
     entry.* = .{
         .i_type = .file,
@@ -450,9 +471,11 @@ fn validName(name: []const u8) bool {
 /// Procura uma entrada pelo nome dentro de um diretório.
 /// Resolves a name in one initialized RamFS instance.
 pub fn lookupFor(state: *const State, parent: u32, name: []const u8) ?u32 {
-    if (parent >= inode_count) return null;
+    if (parent >= inode_count or state.inodes[parent].i_links_count == 0 or
+        state.inodes[parent].i_type != .directory or !validName(name)) return null;
     for (state.dir_entries) |entry| {
-        if (!entry.used or entry.parent != parent) continue;
+        if (!entry.used or entry.parent != parent or entry.name_len > max_name_len) continue;
+        if (!validName(entry.name[0..entry.name_len])) continue;
         if (std.mem.eql(u8, entry.name[0..entry.name_len], name)) return entry.inode;
     }
     return null;
@@ -470,6 +493,12 @@ pub fn addDirEntryFor(state: *State, parent: u32, name: []const u8, inode_num: u
         return error.InvalidInode;
     if (!validName(name)) return error.InvalidName;
     if (lookupFor(state, parent, name) != null) return error.NameExists;
+    if (state.inodes[inode_num].i_type == .directory) {
+        if (inode_num == root_inode) return error.InvalidDirectory;
+        for (state.dir_entries) |entry| {
+            if (entry.used and entry.inode == inode_num) return error.InvalidDirectory;
+        }
+    }
 
     for (&state.dir_entries) |*entry| {
         if (entry.used) continue;
@@ -626,7 +655,10 @@ fn ensureBlocksFor(state: *State, inode_num: u32, required: usize) Error!void {
 
     var count: usize = 0;
     while (count < required) : (count += 1) {
-        if (state.inodes[inode_num].i_block[count] != 0) continue;
+        if (state.inodes[inode_num].i_block[count] != 0) {
+            _ = try blockIndex(state.inodes[inode_num].i_block[count]);
+            continue;
+        }
         const block = allocateBlockFor(state) orelse return error.NoSpace;
         state.inodes[inode_num].i_block[count] = block;
         new_indices[new_count] = count;
@@ -638,7 +670,7 @@ fn ensureBlocksFor(state: *State, inode_num: u32, required: usize) Error!void {
 fn releaseBlocksFor(state: *State, inode_num: u32) void {
     for (&state.inodes[inode_num].i_block) |*block| {
         if (block.* != 0) {
-            _ = freeBlockFor(state, @as(u32, @intCast(block.*)));
+            if (blockIndex(block.*)) |index| _ = freeBlockFor(state, @intCast(index)) else |_| {}
             block.* = 0;
         }
     }
@@ -714,7 +746,7 @@ pub fn writeFileAtFor(state: *State, inode_num: u32, offset: usize, data: []cons
         const block_index = position / block_size;
         const inside = position % block_size;
         const count = @min(block_size - inside, data.len - source);
-        const block = @as(usize, @intCast(state.inodes[inode_num].i_block[block_index]));
+        const block = try blockIndex(state.inodes[inode_num].i_block[block_index]);
         @memcpy(
             state.memory[block * block_size + inside ..][0..count],
             data[source..][0..count],
@@ -739,7 +771,8 @@ pub fn truncateFor(state: *State, inode_num: u32, new_size: usize) Error!void {
     while (index < direct_blocks) : (index += 1) {
         const block = state.inodes[inode_num].i_block[index];
         if (block != 0) {
-            _ = freeBlockFor(state, @as(u32, @intCast(block)));
+            const block_index = blockIndex(block) catch return error.InvalidBlock;
+            _ = freeBlockFor(state, @intCast(block_index));
             state.inodes[inode_num].i_block[index] = 0;
         }
     }
@@ -780,7 +813,7 @@ pub fn readFileAtFor(state: *const State, inode_num: u32, offset: usize, buffer:
         const block_index = position / block_size;
         const inside = position % block_size;
         const chunk = @min(block_size - inside, count - destination);
-        const block = @as(usize, @intCast(state.inodes[inode_num].i_block[block_index]));
+        const block = try blockIndex(state.inodes[inode_num].i_block[block_index]);
         @memcpy(
             buffer[destination..][0..chunk],
             state.memory[block * block_size + inside ..][0..chunk],
@@ -812,7 +845,8 @@ pub fn listDirFor(state: *const State, directory: u32, out: []DirEntryInfo) Erro
     var count: usize = 0;
     for (&state.dir_entries) |*entry| {
         if (!entry.used or entry.parent != directory) continue;
-        const target = inodeKindFor(state, entry.inode) orelse continue;
+        if (entry.name_len > max_name_len or !validName(entry.name[0..entry.name_len])) return error.InvalidDirectory;
+        const target = inodeKindFor(state, entry.inode) orelse return error.InvalidDirectory;
         if (count >= out.len) return error.BufferTooSmall;
         out[count] = .{
             .inode = entry.inode,
@@ -1521,7 +1555,12 @@ test "audit rejects directory with multiple parent links" {
     const a = try createDirectory(root_inode, "a");
     const b = try createDirectory(root_inode, "b");
     const child = try createDirectory(a, "child");
-    try addDirEntry(b, "alias", child);
+    for (&default_state.dir_entries) |*entry| {
+        if (entry.used) continue;
+        entry.* = .{ .used = true, .parent = b, .inode = child, .name_len = 5 };
+        @memcpy(entry.name[0..5], "alias");
+        break;
+    }
     try testing.expectError(error.DirectoryMultipleParents, audit());
 }
 
@@ -1785,4 +1824,30 @@ test "directory listings and metadata remain scoped to each volume" {
     try testing.expectError(error.InvalidInode, getInodeInfoFor(&other, inode_count));
     try testing.expectError(error.BufferTooSmall, listDirFor(&other, root_inode, entries[0..0]));
     try audit();
+}
+
+test "malformed volume pointers and names return errors instead of panicking" {
+    var state: State = undefined;
+    initState(&state);
+    const file = try createFileFor(&state, root_inode, "file");
+    try writeFileFor(&state, file, "x");
+    state.inodes[file].i_block[0] = block_count;
+    var buffer: [4]u8 = undefined;
+    try testing.expectError(error.InvalidBlock, readFileFor(&state, file, &buffer));
+
+    var names: State = undefined;
+    initState(&names);
+    _ = try createFileFor(&names, root_inode, "named");
+    names.dir_entries[0].name_len = std.math.maxInt(u8);
+    try testing.expectEqual(@as(?u32, null), lookupFor(&names, root_inode, "named"));
+    var entries: [2]DirEntryInfo = undefined;
+    try testing.expectError(error.InvalidDirectory, listDirFor(&names, root_inode, &entries));
+}
+
+test "storage statistics remain bounded when the reserved bit is corrupted" {
+    var state: State = undefined;
+    initState(&state);
+    state.block_bitmap[0] &= ~@as(u8, 1);
+    const stats = storageStatsFor(&state);
+    try testing.expectEqual(@as(usize, 0), stats.allocated_data_bytes);
 }

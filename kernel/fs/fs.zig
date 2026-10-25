@@ -43,6 +43,32 @@ fn extraVolume(volume_id: u32) ?*ramfs.State {
     return null;
 }
 
+/// Returns the live RamFS state of a registered volume (zero = root).
+///
+/// The pointer is owned by the facade: the VNV volume layer commits and
+/// recovers the tree in place, and the caller must not retain it across a
+/// wipe. Volume zero is the legacy `default_state` of the RamFS.
+pub fn stateFor(volume_id: u32) ?*ramfs.State {
+    if (volume_id == 0) return ramfs.defaultState();
+    return extraVolume(volume_id);
+}
+
+/// Destroys the contents of a volume and resets its bookkeeping.
+///
+/// The caller must guarantee that no descriptor of the volume is open: a
+/// descriptor references an inode number that the wipe invalidates. The
+/// boot self-test runs the wipe after every user process terminated and
+/// after the lifecycle probe proved that every descriptor was reclaimed.
+pub fn wipeVolume(volume_id: u32) void {
+    const state = stateFor(volume_id) orelse return;
+    ramfs.initState(state);
+    if (volume_id == 0) {
+        @memset(&unlinked, false);
+    } else if (unlinkedFor(volume_id)) |table| {
+        @memset(table, false);
+    }
+}
+
 /// Registers a separately allocated RamFS volume, without mounting it yet.
 pub fn registerRamfsVolume(volume_id: u32) Error!void {
     if (volume_id == 0) return error.VolumeAlreadyRegistered;

@@ -84,7 +84,8 @@ fn validate(state: *const ramfs.State) Error!void {
     for (state.inodes, 0..) |entry, index| {
         const occupied = entry.i_links_count != 0;
         if (!occupied) {
-            if (entry.i_size != 0 or entry.i_block[0] != 0) return error.InvalidInode;
+            if (entry.i_size != 0 or entry.i_indirect != 0 or entry.i_double_indirect != 0) return error.InvalidInode;
+            for (entry.i_block) |block| if (block != 0) return error.InvalidInode;
             continue;
         }
         if (index == ramfs.root_inode and entry.i_type != .directory) return error.InvalidInode;
@@ -106,7 +107,11 @@ fn validate(state: *const ramfs.State) Error!void {
     if (!std.mem.eql(u8, &expected_bitmap, &state.block_bitmap)) return error.BitmapMismatch;
 
     for (state.dir_entries, 0..) |entry, entry_index| {
-        if (!entry.used) continue;
+        if (!entry.used) {
+            if (entry.parent != 0 or entry.inode != 0 or entry.name_len != 0 or
+                !std.mem.allEqual(u8, &entry.name, 0)) return error.InvalidDirectory;
+            continue;
+        }
         if (entry.name_len == 0 or entry.name_len > ramfs.max_name_len) return error.InvalidName;
         for (state.dir_entries[entry_index + 1 ..]) |other| {
             if (other.used and other.parent == entry.parent and other.name_len == entry.name_len and
@@ -165,8 +170,14 @@ pub fn encode(state: *const ramfs.State, out: []u8, sequence: u64) Error!usize {
     return image_size;
 }
 
-/// Decodes into a temporary state and commits only after every validation passes.
-pub fn decode(input: []const u8, destination: *ramfs.State) Error!void {
+/// Decodes into a caller-supplied scratch state and commits only after
+/// every validation passes.
+///
+/// The scratch state is explicit because `ramfs.State` is ~1 MiB: a local
+/// of that size overflows the 16 KiB boot stack of the kernel. The caller
+/// owns the scratch (a static buffer in the kernel, a local on the host)
+/// and the destination is only touched after `validate` succeeds.
+pub fn decode(input: []const u8, destination: *ramfs.State, scratch: *ramfs.State) Error!void {
     if (input.len != image_size) return error.InvalidSize;
     if (get32(input, 0) != magic) return error.InvalidMagic;
     if (get16(input, 4) != version) return error.UnsupportedVersion;
@@ -176,7 +187,7 @@ pub fn decode(input: []const u8, destination: *ramfs.State) Error!void {
         get64(input, 36) != payload_size) return error.InvalidHeader;
     if (get32(input, 44) != checksum(input[header_size..image_size])) return error.ChecksumMismatch;
 
-    var candidate: ramfs.State = undefined;
+    const candidate = scratch;
     @memcpy(&candidate.block_bitmap, input[header_size .. header_size + candidate.block_bitmap.len]);
     for (&candidate.inodes, 0..) |*entry, index| {
         const at = inodeOffset(index);
@@ -201,8 +212,14 @@ pub fn decode(input: []const u8, destination: *ramfs.State) Error!void {
         @memcpy(&entry.name, input[at + 10 .. at + 10 + ramfs.max_name_len]);
     }
     @memcpy(&candidate.memory, input[memoryOffset() .. memoryOffset() + ramfs.total_size]);
-    try validate(&candidate);
-    destination.* = candidate;
+    try validate(candidate);
+    // O commit usa @memcpy campo a campo, e não uma atribuição de struct:
+    // em modo Debug o compilador copia uma struct de ~1 MiB através de um
+    // temporário na pilha, e a pilha de boot do kernel tem só 16 KiB.
+    @memcpy(destination.memory[0..], &candidate.memory);
+    @memcpy(destination.block_bitmap[0..], &candidate.block_bitmap);
+    @memcpy(destination.inodes[0..], &candidate.inodes);
+    @memcpy(destination.dir_entries[0..], &candidate.dir_entries);
 }
 
 test "VNV round trip is deterministic and preserves RamFS state" {
@@ -217,7 +234,8 @@ test "VNV round trip is deterministic and preserves RamFS state" {
     _ = try encode(&state, &second, 7);
     try std.testing.expectEqualSlices(u8, &first, &second);
     var restored: ramfs.State = undefined;
-    try decode(&first, &restored);
+    var scratch: ramfs.State = undefined;
+    try decode(&first, &restored, &scratch);
     var buffer: [16]u8 = undefined;
     const count = try ramfs.readFileFor(&restored, file, &buffer);
     try std.testing.expectEqualStrings("persistent", buffer[0..count]);
@@ -232,6 +250,7 @@ test "VNV rejects corruption without modifying destination" {
     @memset(destination.memory[0..], 0xA5);
     const before = destination.memory;
     image[header_size + 3] ^= 1;
-    try std.testing.expectError(error.ChecksumMismatch, decode(&image, &destination));
+    var scratch: ramfs.State = undefined;
+    try std.testing.expectError(error.ChecksumMismatch, decode(&image, &destination, &scratch));
     try std.testing.expectEqualSlices(u8, &before, &destination.memory);
 }

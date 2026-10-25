@@ -184,6 +184,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     kernel_module.addImport("voryn_keyboard", kernel_keyboard_module);
+    // The VPK container codec is pure and shared with the SDK/toolchain;
+    // the kernel instance compiles for the freestanding target.
+    const vpk_kernel_module = b.createModule(.{
+        .root_source_file = b.path("formats/vpk.zig"),
+        .target = kernel_target,
+        .optimize = optimize,
+    });
+    kernel_module.addImport("voryn_vpk", vpk_kernel_module);
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/entry.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/cpu.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/segment.s"));
@@ -283,6 +291,18 @@ pub fn build(b: *std.Build) void {
         .root_module = sdk_test_module,
     });
     unit_test_step.dependOn(&b.addRunArtifact(sdk_tests).step);
+
+    // F5: container VPK, codec puro testado no host.
+    const vpk_test_module = b.createModule(.{
+        .root_source_file = b.path("formats/vpk.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const vpk_tests = b.addTest(.{
+        .name = "vpk-tests",
+        .root_module = vpk_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(vpk_tests).step);
 
     // F6: rasterizador puro, testado sem hardware de vídeo.
     const raster_test_module = b.createModule(.{

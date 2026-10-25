@@ -99,9 +99,9 @@ Development is organized into incremental milestones, each with technical accept
 | F1 | UEFI bootloader and kernel initialization | ✅ Completed |
 | F2 | Processor structures, interrupts, and memory | 🟢 Locally Tested |
 | F3 | Threads, scheduler, processes, syscalls, and IPC | ✅ Completed |
-| F4 | Storage and file systems | 🚧 RamFS, VFSX routing, per-process descriptors, unlink/rename, user-mode truncation and host/kernel VNV codec verified; block-device persistence and recovery pending |
-| F5 | Runtime, SDK, and native applications | 🚧 Freestanding SDK, native ELF loader/materializer and compositor client verified; VEX/VLIB/VPK remain pending |
-| F6 | Graphics subsystem and desktop environment | 🚧 Experimental — framebuffer, PS/2 input, damage tracking, capabilities, user-space composition and QEMU screenshot validation verified; full desktop/window manager remains pending |
+| F4 | Storage and file systems | 🚧 RamFS, VFSX routing, per-process descriptors, unlink/rename, user-mode truncation and the host/kernel VNV codec are verified; block-device persistence and recovery (commit → wipe → recover) are verified over a RAM-backed device, with a physical driver pending |
+| F5 | Runtime, SDK, and native applications | 🚧 Freestanding SDK, native ELF loader/materializer, compositor client and the VPK container (pack/persist/recover/unpack verified in the boot test) are done; VEX loader integration and VLIB remain pending |
+| F6 | Graphics subsystem and desktop environment | 🚧 Experimental — framebuffer, PS/2 input, damage tracking, capabilities, user-space composition, QEMU screenshot validation and the client→compositor frame handshake are verified; focus, cursor, surface sharing and the desktop shell remain pending |
 | F7 | Drivers, networking, audio, and physical hardware | 📋 Proposed |
 | F8 | Compatibility with external formats and APIs | 📋 Proposed |
 | F9 | Artificial intelligence infrastructure | 📋 Proposed |

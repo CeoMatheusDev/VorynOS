@@ -49,6 +49,12 @@ const capability = @import("security/capability.zig");
 const physical = @import("memory/physical.zig");
 const scheduler = @import("task/scheduler.zig");
 const fs = @import("fs/fs.zig");
+const ramfs = @import("fs/ramfs.zig");
+const vnv = @import("fs/vnv.zig");
+const vnv_volume = @import("fs/vnv_volume.zig");
+const block_dev = @import("storage/block.zig");
+const ramdisk = @import("storage/ramdisk.zig");
+const vpk = @import("voryn_vpk");
 const elf_loader = @import("elf_loader.zig");
 const elf_materializer = @import("elf_materializer.zig");
 const native_image = @import("native_image.zig");
@@ -328,6 +334,32 @@ var client_image_buffer: [client_app.bytes.len]u8 = undefined;
 
 /// The number of bytes of the native image.
 var native_image_length: usize = 0;
+
+// ----------------------------------------------------------------------
+// F4: persistência em dispositivo de blocos (commit/wipe/recuperação VNV).
+//
+// O dispositivo é um ramdisk estático do kernel: a camada de bloco e o
+// ciclo de vida do volume (commit, wipe, recovery) são verificados sem um
+// driver físico, e um driver real (virtio-blk, ATA PIO) implementa a mesma
+// interface `block.Device` sem alterar o volume nem o filesystem.
+// ----------------------------------------------------------------------
+const persistence_sector_size: u32 = 512;
+const persistence_sectors: usize = (vnv.image_size + persistence_sector_size - 1) / persistence_sector_size;
+const persistence_bytes: usize = persistence_sectors * persistence_sector_size;
+var persistence_ramdisk_memory: [persistence_bytes]u8 align(16) = undefined;
+var persistence_ramdisk: ramdisk.RamDisk = undefined;
+var persistence_staging: [vnv.image_size]u8 align(16) = undefined;
+// Estado temporário de decodificação: `ramfs.State` tem ~1 MiB e um local
+// desse tamanho estouraria a pilha de boot de 16 KiB.
+var persistence_scratch: ramfs.State = undefined;
+var persistence_sequence: u64 = 0;
+
+// ----------------------------------------------------------------------
+// F5: pacote VPK de exemplo gravado no RamFS.
+// ----------------------------------------------------------------------
+const vpk_pack_buffer_size: usize = 512;
+var vpk_pack_buffer: [vpk_pack_buffer_size]u8 align(16) = undefined;
+var vpk_packed_length: usize = 0;
 
 /// The virtual address of the program of the task that runs in user mode.
 fn userCodeAddress() u64 {
@@ -695,6 +727,12 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     reportToolchainTask();
     reportClientTask();
     verifyFsLifecycleProbe();
+    // F4: o volume raiz é commitado em um dispositivo de blocos, apagado e
+    // recuperado; o boot prova que a árvore sobrevive ao ciclo. F5: o
+    // pacote VPK instalado no RamFS é relido depois da recuperação e
+    // desempacotado byte a byte.
+    verifyFsPersistence();
+    verifyVpkPackaging();
 
     // F6.26: the toolchain application presents a probe rectangle during
     // its test. The diagnostic scene is drawn again after the task has
@@ -1395,6 +1433,41 @@ fn installFs() void {
         port.haltForever();
     };
     serial.printLine("[VNK] fs: /apps/client.elf installed ({d} bytes)", .{client_app.bytes.len});
+
+    // F5: o container VPK é empacotado no kernel e gravado no RamFS como
+    // qualquer arquivo. O teste de boot relê o pacote depois da
+    // recuperação VNV, provando o caminho completo: empacotar, persistir,
+    // recuperar e desempacotar.
+    const vpk_sources = [_]vpk.FileSource{
+        .{ .name = "hello.txt", .kind = .data, .bytes = "VorynOS" },
+        .{ .name = "manifest.vcfg", .kind = .config, .bytes = "app=hello\nexec=hello.vex\n" },
+    };
+    vpk_packed_length = vpk.pack(&vpk_sources, &vpk_pack_buffer) catch |err| {
+        serial.printLine("[VNK] FATAL: the VPK package could not be packed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (vpk_packed_length > vpk_pack_buffer.len) {
+        serial.printLine("[VNK] FATAL: the VPK package does not fit the pack buffer", .{});
+        port.haltForever();
+    }
+    const vpk_descriptor = fs.create(0, "/apps/sample.vpk", 0o644) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/sample.vpk could not be created: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    const vpk_written = fs.write(0, vpk_descriptor, vpk_pack_buffer[0..vpk_packed_length]) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/sample.vpk could not be written: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (vpk_written != vpk_packed_length) {
+        serial.printLine("[VNK] FATAL: the file /apps/sample.vpk accepted {d} bytes", .{vpk_written});
+        port.haltForever();
+    }
+    fs.close(0, vpk_descriptor) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/sample.vpk could not be closed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    serial.printLine("[VNK] vpk: packed {d} entries, {d} bytes", .{ vpk_sources.len, vpk_packed_length });
+    serial.printLine("[VNK] fs: /apps/sample.vpk installed ({d} bytes)", .{vpk_packed_length});
 }
 
 /// Creates the capability of the channel of the VNX and gives it to the
@@ -2873,6 +2946,140 @@ fn verifyFsLifecycleProbe() void {
         port.haltForever();
     }
     serial.printLine("[VNK] fs: lifecycle cleanup normal exit and user fault ok", .{});
+}
+
+/// F4: commit do volume raiz em um dispositivo de blocos, wipe e recovery.
+///
+/// O autoteste executa depois do probe de ciclo de vida, quando todos os
+/// processos de usuário terminaram e a fachada provou que nenhum descritor
+/// ficou aberto: apagar o estado do volume não invalida um descritor vivo.
+/// O commit serializa o estado vivo (`fs.stateFor(0)`) em uma imagem VNV,
+/// o wipe destrói o estado, e a recuperação relê a imagem, valida magic,
+/// geometria e CRC, e substitui o estado no lugar. Só depois disso o boot
+/// volta a ler o filesystem.
+fn verifyFsPersistence() void {
+    const state = fs.stateFor(0) orelse {
+        serial.printLine("[VNK] FATAL: the root RamFS volume is unavailable", .{});
+        port.haltForever();
+    };
+
+    persistence_ramdisk = ramdisk.RamDisk.init(&persistence_ramdisk_memory, persistence_sector_size);
+    const device = persistence_ramdisk.device();
+    serial.printLine("[VNK] fs: persistence device ready, {d} sectors of {d} bytes", .{
+        device.sector_count,
+        device.sector_size,
+    });
+
+    persistence_sequence += 1;
+    vnv_volume.commit(&device, state, persistence_sequence, &persistence_staging) catch |err| {
+        serial.printLine("[VNK] FATAL: the VNV commit failed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    serial.printLine("[VNK] fs: vnv committed sequence={d} image={d} bytes over {d} sectors", .{
+        persistence_sequence,
+        vnv.image_size,
+        vnv_volume.requiredSectors(device.sector_size),
+    });
+
+    // O wipe destrói o estado vivo; a leitura tem de falhar.
+    fs.wipeVolume(0);
+    var probe: [8]u8 = undefined;
+    if (fs.readFile("/apps/hello.txt", &probe)) |_| {
+        serial.printLine("[VNK] FATAL: the wiped volume still holds /apps/hello.txt", .{});
+        port.haltForever();
+    } else |_| {
+        serial.printLine("[VNK] fs: volume wiped, /apps/hello.txt no longer resolvable", .{});
+    }
+
+    device.readBytes(0, persistence_staging[0..vnv.image_size]) catch |err| {
+        serial.printLine("[VNK] FATAL: the VNV image could not be read: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    vnv.decode(persistence_staging[0..vnv.image_size], state, &persistence_scratch) catch |err| {
+        serial.printLine("[VNK] FATAL: the VNV recovery failed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    serial.printLine("[VNK] fs: vnv recovered sequence={d} from the block device", .{persistence_sequence});
+
+    // A árvore recuperada tem de servir o filesystem de novo.
+    var buffer: [8]u8 = undefined;
+    const count = fs.readFile("/apps/hello.txt", &buffer) catch |err| {
+        serial.printLine("[VNK] FATAL: the recovered volume lost /apps/hello.txt: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (count != 7 or !std.mem.eql(u8, buffer[0..count], "VorynOS")) {
+        serial.printLine("[VNK] FATAL: the recovered volume returned the wrong content", .{});
+        port.haltForever();
+    }
+    verifyRecoveredSize("/apps/hello.elf", native_image_length);
+    verifyRecoveredSize("/apps/toolchain.elf", toolchain_app.bytes.len);
+    verifyRecoveredSize("/apps/client.elf", client_app.bytes.len);
+    verifyRecoveredSize("/apps/sample.vpk", vpk_packed_length);
+    serial.printLine("[VNK] fs: persistence round trip ok (hello.txt + 4 files, {d} blocks free)", .{
+        fs.freeBlockCount(),
+    });
+}
+
+/// Confere o tamanho de um arquivo recuperado do dispositivo de blocos.
+fn verifyRecoveredSize(path: []const u8, expected: usize) void {
+    const size = fs.sizeOf(path) catch |err| {
+        serial.printLine("[VNK] FATAL: the recovered volume lost {s}: {s}", .{ path, @errorName(err) });
+        port.haltForever();
+    };
+    if (size != expected) {
+        serial.printLine("[VNK] FATAL: {s} recovered with {d} bytes, expected {d}", .{ path, size, expected });
+        port.haltForever();
+    }
+}
+
+/// F5: o pacote VPK gravado no RamFS é relido, validado e desempacotado.
+///
+/// A validação cobre magic, versão, geometria, CRC do corpo e consistência
+/// da tabela; cada entrada é conferida pelo CRC próprio. O autoteste roda
+/// depois da recuperação VNV, então o caminho verificado é empacotar,
+/// persistir, recuperar e desempacotar.
+fn verifyVpkPackaging() void {
+    var package: [vpk_pack_buffer_size]u8 = undefined;
+    const count = fs.readFile("/apps/sample.vpk", &package) catch |err| {
+        serial.printLine("[VNK] FATAL: the recovered volume lost /apps/sample.vpk: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    const info = vpk.validate(package[0..count]) catch |err| {
+        serial.printLine("[VNK] FATAL: the recovered VPK failed validation: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (info.entry_count != 2 or info.total_size != vpk_packed_length) {
+        serial.printLine("[VNK] FATAL: the recovered VPK geometry changed", .{});
+        port.haltForever();
+    }
+
+    var entry: [64]u8 = undefined;
+    const hello = vpk.readEntryByName(package[0..count], "hello.txt", &entry) catch |err| {
+        serial.printLine("[VNK] FATAL: the VPK entry hello.txt failed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (hello != 7 or !std.mem.eql(u8, entry[0..hello], "VorynOS")) {
+        serial.printLine("[VNK] FATAL: the VPK entry hello.txt has the wrong content", .{});
+        port.haltForever();
+    }
+    const manifest = vpk.readEntryByName(package[0..count], "manifest.vcfg", &entry) catch |err| {
+        serial.printLine("[VNK] FATAL: the VPK entry manifest.vcfg failed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (!std.mem.eql(u8, entry[0..manifest], "app=hello\nexec=hello.vex\n")) {
+        serial.printLine("[VNK] FATAL: the VPK entry manifest.vcfg has the wrong content", .{});
+        port.haltForever();
+    }
+    serial.printLine("[VNK] vpk: /apps/sample.vpk validated and unpacked ({d} entries, {d} bytes)", .{
+        info.entry_count,
+        count,
+    });
+    serial.printLine("[VNK] vpk: pack/persist/recover/unpack round trip ok", .{});
+
+    fs.unlink("/apps/sample.vpk") catch |err| {
+        serial.printLine("[VNK] FATAL: the VPK file could not be removed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
 }
 
 /// Reports the state of the scheduler and the cost of the switches.
