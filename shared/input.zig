@@ -82,6 +82,37 @@ pub fn validate(event: *const InputEvent) InputError!void {
     if (event.code == 0 or event.code > 0x58) return error.InvalidCode;
 }
 
+/// Pointer events use a separate ABI; InputEvent v1 remains unchanged.
+pub const pointer_version: u32 = 1;
+pub const pointer_kind_motion: u32 = 1;
+pub const pointer_kind_button: u32 = 2;
+pub const pointer_button_primary: u32 = 1;
+pub const pointer_flag_pressed: u32 = 1;
+
+pub const PointerEvent = extern struct {
+    version: u32 = pointer_version,
+    kind: u32 = pointer_kind_motion,
+    x: u32 = 0,
+    y: u32 = 0,
+    button: u32 = 0,
+    flags: u32 = 0,
+};
+
+pub const PointerError = error{ InvalidVersion, InvalidKind, InvalidButton, InvalidFlags };
+
+/// Validate untrusted pointer metadata; display bounds are checked by the consumer.
+pub fn validatePointer(event: *const PointerEvent) PointerError!void {
+    if (event.version != pointer_version) return error.InvalidVersion;
+    if (event.kind == pointer_kind_motion) {
+        if (event.button != 0) return error.InvalidButton;
+        if (event.flags != 0) return error.InvalidFlags;
+        return;
+    }
+    if (event.kind != pointer_kind_button) return error.InvalidKind;
+    if (event.button != pointer_button_primary) return error.InvalidButton;
+    if (event.flags & ~pointer_flag_pressed != 0) return error.InvalidFlags;
+}
+
 test "input event layout is stable" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(InputEvent));
     try std.testing.expectEqual(@as(usize, 0), @offsetOf(InputEvent, "version"));
