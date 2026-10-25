@@ -379,6 +379,7 @@ require_marker "toolchain ELF"
 require_marker "[VNK] fs: /apps/toolchain.vex installed"
 require_pattern '\[VNK\] vex: manifest declares display\(0x[0-9a-f]+\) and input\(0x[0-9a-f]+\)' 'the VEX capability manifest'
 require_marker "[VNK] vex: unwrapped and planned from the VEX image"
+require_marker "[VNK] vex: manifest enforced against the kernel grant"
 require_pattern '\[VNK\] syscall 19 from user display_info result 0x28' 'the display metadata call from the user mode'
 require_marker "display metadata"
 require_pattern '\[VNK\] capabilities: the display belongs to the process [0-9]+' 'the display capability'

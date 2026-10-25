@@ -75,11 +75,14 @@ buffer do chamador) quando o VEX é válido.
 
 `elf_loader.planFromRamFs` lê o arquivo, chama `vex.unwrap` e, para um
 VEX, move o payload para o início do buffer antes de planejar: o
-materializador continua lendo os bytes a partir do offset zero. O manifest
-é **metadado validado e reportado**; a concessão das capacidades ao
-processo continua sendo decisão explícita do kernel (tabela de
-capacidades), e a verificação do conjunto declarado contra a concessão é
-trabalho futuro.
+materializador continua lendo os bytes a partir do offset zero.
+
+O manifest é **imposto** no spawn do processo: `elf_loader.
+readManifestFromRamFs` relê as capacidades declaradas e o kernel verifica
+que cada entrada é um kind que ele concede ao processo e que os direitos
+declarados são um subconjunto dos direitos concedidos. Uma declaração que
+o kernel não honra é fatal. A concessão em si continua sendo decisão
+explícita do kernel (tabela de capacidades), e o VEX não pode ampliá-la.
 
 ## 5. Verificação
 

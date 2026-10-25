@@ -1802,6 +1802,21 @@ fn installToolchainProcess() void {
         port.haltForever();
     };
 
+    // F5: o manifest declarado no VEX é imposto contra a concessão do
+    // kernel. A leitura usa um buffer próprio, porque o planejador
+    // desembrulhou o payload no buffer da imagem.
+    var declared: [vex.max_manifest_entries]vex.Capability = undefined;
+    var toolchain_manifest_buffer: [toolchain_app.bytes.len + vex.header_size + vex.max_manifest_entries * 8]u8 = undefined;
+    const declared_count = elf_loader.readManifestFromRamFs(
+        "/apps/toolchain.vex",
+        &toolchain_manifest_buffer,
+        &declared,
+    ) catch |err| {
+        serial.printLine("[VNK] FATAL: the toolchain manifest could not be read: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    verifyVexManifest(declared[0..declared_count]);
+
     const space = paging.createAddressSpace(window) orelse {
         serial.printLine("[VNK] FATAL: the toolchain address space could not be created", .{});
         port.haltForever();
@@ -2036,6 +2051,44 @@ fn verifyImagePermissions(
     }
 
     serial.printLine("[VNK] {s}: page permissions verified", .{label});
+}
+
+/// F5: impõe o manifest VEX contra a concessão de capacidades do kernel.
+///
+/// Cada entrada declarada tem de ser um kind que o kernel concede a este
+/// processo, e os direitos declarados têm de ser um subconjunto dos
+/// direitos concedidos. Uma declaração que o kernel não honra é fatal: o
+/// binário exigiria uma autoridade que o kernel não entrega.
+fn verifyVexManifest(declared: []const vex.Capability) void {
+    if (declared.len == 0) {
+        serial.printLine("[VNK] FATAL: the VEX declares no capabilities", .{});
+        port.haltForever();
+    }
+    for (declared) |entry| {
+        const granted: u64 = switch (entry.kind) {
+            .display => capability.Rights.write | capability.Rights.delegate,
+            .input => capability.Rights.read | capability.Rights.delegate,
+            else => {
+                serial.printLine("[VNK] FATAL: the VEX declares kind {d}, which the kernel does not grant to this process", .{
+                    @intFromEnum(entry.kind),
+                });
+                port.haltForever();
+            },
+        };
+        if (@as(u64, entry.rights) & ~granted != 0) {
+            serial.printLine("[VNK] FATAL: the VEX declares rights 0x{x} beyond the granted 0x{x}", .{
+                entry.rights,
+                granted,
+            });
+            port.haltForever();
+        }
+        serial.printLine("[VNK] vex: manifest entry kind={d} rights=0x{x} within the grant 0x{x}", .{
+            @intFromEnum(entry.kind),
+            entry.rights,
+            granted,
+        });
+    }
+    serial.printLine("[VNK] vex: manifest enforced against the kernel grant ({d} entries)", .{declared.len});
 }
 
 /// Verifies W^X for every page that the toolchain image uses.

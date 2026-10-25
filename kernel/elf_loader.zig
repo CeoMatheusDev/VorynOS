@@ -354,6 +354,28 @@ pub fn planFromRamFs(
     return plan(buffer[0..image.len], load_bias, window_base, window_size);
 }
 
+/// Lê o manifest de capacidades declarado por um arquivo VEX do RamFS.
+///
+/// O arquivo tem de ser um VEX; um ELF puro devolve `error.NotVex`, e o
+/// chamador trata a ausência de manifest como "nenhuma declaração". O
+/// buffer é usado apenas para a leitura; o manifest é copiado para `out`.
+pub fn readManifestFromRamFs(
+    path: []const u8,
+    buffer: []u8,
+    out: *[vex.max_manifest_entries]vex.Capability,
+) Error!usize {
+    const file_size = try fs.sizeOf(path);
+    if (file_size > @as(u64, buffer.len)) return error.BufferTooSmall;
+
+    const count = try fs.readFile(path, buffer);
+    if (@as(u64, count) != file_size) return error.BufferTooSmall;
+
+    const bytes = buffer[0..count];
+    // `unwrap` devolve error.NotVex para um ELF puro e valida o VEX.
+    _ = try vex.unwrap(bytes);
+    return vex.manifestList(bytes, out);
+}
+
 // ---------------------------------------------------------------------------
 // Testes
 // ---------------------------------------------------------------------------
@@ -639,4 +661,38 @@ test "planFromRamFs unwraps a VEX container and plans the inner ELF" {
         error.ChecksumMismatch,
         planFromRamFs("/bad.vex", &scratch, 0, 0x400000, 0x2000),
     );
+}
+
+test "readManifestFromRamFs returns the declared capabilities of a VEX" {
+    fs.init();
+
+    var image_buffer: [0x3000]u8 = undefined;
+    const segments = [_]TestSegment{ rx_segment, rw_segment };
+    const bytes = try buildTestImage(&image_buffer, 0x400080, &segments);
+
+    var vex_buffer: [0x3000 + vex.header_size]u8 = undefined;
+    const manifest = [_]vex.Capability{
+        .{ .kind = .display, .rights = 12 },
+        .{ .kind = .input, .rights = 20 },
+    };
+    const wrapped = try vex.wrap(bytes, &manifest, &vex_buffer);
+
+    const fd = try fs.create(0, "/manifest.vex", 0o755);
+    _ = try fs.write(0, fd, vex_buffer[0..wrapped]);
+    try fs.close(0, fd);
+
+    var scratch: [0x3000 + vex.header_size]u8 = undefined;
+    var declared: [vex.max_manifest_entries]vex.Capability = undefined;
+    const count = try readManifestFromRamFs("/manifest.vex", &scratch, &declared);
+    try testing.expectEqual(@as(usize, 2), count);
+    try testing.expectEqual(vex.CapabilityKind.display, declared[0].kind);
+    try testing.expectEqual(@as(u32, 12), declared[0].rights);
+    try testing.expectEqual(vex.CapabilityKind.input, declared[1].kind);
+    try testing.expectEqual(@as(u32, 20), declared[1].rights);
+
+    // Um ELF puro não tem manifest.
+    const elf_fd = try fs.create(0, "/plain.elf", 0o755);
+    _ = try fs.write(0, elf_fd, bytes);
+    try fs.close(0, elf_fd);
+    try testing.expectError(error.NotVex, readManifestFromRamFs("/plain.elf", &scratch, &declared));
 }
