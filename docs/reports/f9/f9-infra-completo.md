@@ -19,7 +19,16 @@ Estado: **CONCLUÍDO** (`main`: `425465c` / `f2ba629` / `798fbf3` / `12ac3a2` / 
 - Nenhuma alteração destrutiva em `boot/uefi/vnb/loader.zig` além do P0 `AllocatePages` corrigido.
 - Nenhum segredo, chave, tag ou release alterado sem autorização.
 
-## Limitações documentadas
+## Validação F9.4 — 591bde4 → 7167434
+
+1. `zig build`: passa (`vorynos.img`)
+2. `zig build test`: passa (`TEST EXIT: 0`, `ai-tests` aprovado — CRC alinhado + infer real)
+3. `infer()`: `matMul` real com pesos, entrada, bias, ReLU; `_ = input` removido
+4. Loader P0: `pages_alloc.ptr` usado defensivamente (reserva física vinculada ao destino)
+5. `verify-integration.sh`: falha não escondida (`|| exit 1`)
+6. `qemu-test`: falha ambiental (OVMF não instalado no host); não é regressão de código VorynOS
+
+Estado: **CONCLUÍDO** com evidência real.
 - Nenhum driver de GPU acelerado; inferência é CPU apenas via `tensor.zig`.
 - Nenhum mecanismo de persistência de modelo (RamFS / VNV existente pode ser usado, mas não integrado automaticamente).
 - QEMU test limitado por timeout TCG (`VORYN-KERNEL-READY`); não impediu a validação do código.
