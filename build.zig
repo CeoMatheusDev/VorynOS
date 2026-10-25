@@ -319,6 +319,16 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const ai_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/ai/model.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const ai_tests = b.addTest(.{
+        .name = "ai-tests",
+        .root_module = ai_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(ai_tests).step);
     const vex_tests = b.addTest(.{
         .name = "vex-tests",
         .root_module = vex_test_module,
