@@ -1080,6 +1080,9 @@ fn applyKeyboardGraphics(event: keyboard.KeyEvent) void {
     serial.printLine("[VNK] graphics: redraw stages movement_cycles={d} composition_cycles={d} total_cycles={d}", .{
         stage_timing.movement_cycles, stage_timing.composition_cycles, render_cycles,
     });
+    serial.printLine("[VNK] graphics: redraw detail geometry_cycles={d} paint_cycles={d}", .{
+        stage_timing.geometry_cycles, stage_timing.paint_cycles,
+    });
     graphics_front_x = next.x;
     graphics_front_y = next.y;
     serial.printLine("[VNK] graphics: keyboard move x={d} y={d} redraw={d} pixels", .{ next.x, next.y, pixels });
