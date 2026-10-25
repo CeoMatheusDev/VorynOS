@@ -49,14 +49,7 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     const contract_address = window_base - sdk.compositor.contract_below;
     const contract: *const sdk.compositor.Contract =
         @ptrFromInt(@as(usize, @intCast(contract_address)));
-    if (contract.version != sdk.compositor.contract_version or
-        contract.channel_id != sdk.compositor.channel_id or
-        contract.surface_width != sdk.compositor.surface_width or
-        contract.surface_height != sdk.compositor.surface_height or
-        contract.surface_stride != sdk.compositor.surface_stride or
-        contract.surface_bytes != sdk.compositor.surface_size or
-        contract.frame_ready_kind != sdk.compositor.frame_ready_kind or
-        contract.surface_address == 0)
+    if (!sdk.compositor.validContract(contract.*))
     {
         sdk.exit(4);
     }
