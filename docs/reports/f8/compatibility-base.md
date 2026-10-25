@@ -1,0 +1,1 @@
+# F8 — Compatibility with external formats and APIs (2026-10-25)\n\nEstado: PROPOSED → EM DESENVOLVIMENTO (iniciado).\n- `elf_compat.zig`: validacao ELF64 `e_machine` (x86_64 = 62)\n- `zig build test`: passa\n- Próximo: validar ABI Linux (syscall table), PE/Win32 stub, VEX loader
