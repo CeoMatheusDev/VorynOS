@@ -360,6 +360,19 @@ test "invalid pointer metadata cannot change focus" {
     try std.testing.expectEqual(@as(?u64, 11), stack.keyboardFocus());
 }
 
+test "input recipients identify owner and selected window" {
+    var stack: WindowStack(2) = .{};
+    try stack.addOwned(7, 11, .{ .x = 0, .y = 0, .width = 2, .height = 2, .color = 1 });
+    try stack.addOwned(8, 22, .{ .x = 1, .y = 0, .width = 2, .height = 2, .color = 2 });
+    const pointer = stack.pointerRecipient(1, 0).?;
+    try std.testing.expectEqual(@as(u64, 22), pointer.window_id);
+    try std.testing.expectEqual(@as(u64, 8), pointer.owner_id);
+    try stack.setKeyboardFocus(11);
+    const keyboard = stack.keyboardRecipient().?;
+    try std.testing.expectEqual(@as(u64, 11), keyboard.window_id);
+    try std.testing.expectEqual(@as(u64, 7), keyboard.owner_id);
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
