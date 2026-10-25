@@ -373,6 +373,15 @@ test "input recipients identify owner and selected window" {
     try std.testing.expectEqual(@as(u64, 7), keyboard.owner_id);
 }
 
+test "recipient resolution returns null without a target" {
+    var stack: WindowStack(1) = .{};
+    try std.testing.expect(stack.pointerRecipient(0, 0) == null);
+    try std.testing.expect(stack.keyboardRecipient() == null);
+    try stack.addOwned(7, 11, .{ .x = 0, .y = 0, .width = 2, .height = 2, .color = 1 });
+    try std.testing.expect(stack.pointerRecipient(9, 9) == null);
+    try std.testing.expect(stack.keyboardRecipient() == null);
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
