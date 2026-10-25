@@ -67,8 +67,9 @@ test "securityLimitsRejectOversize" {
     try std.testing.expectError(error.ModelTooLarge, validateModelSize(2048, l));
     // Tensor com dimensão grande
     try std.testing.expectError(error.TensorTooLarge, validateTensorShape(20, 2, 2, l));
-    // Overflow de dimensão
-    try std.testing.expectError(error.DimensionOverflow, validateTensorShape(100_000, 100_000, 100_000, .{}));
+    // Overflow de dimensão (limite elevado para permitir valores grandes)
+    const big_limits = Limits{ .max_tensor_elements = 10_000_000_000, .max_model_bytes = 1024 * 1024 * 1024 };
+    try std.testing.expectError(error.DimensionOverflow, validateTensorShape(5_000_000_000, 5_000_000_000, 2, big_limits));
     // Workspace acima do limite
     try std.testing.expectError(error.WorkspaceTooLarge, validateWorkspace(2048, l));
     // Total acima do limite
