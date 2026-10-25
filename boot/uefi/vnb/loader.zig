@@ -64,7 +64,10 @@ pub fn place(image: elf64.Image, bytes: []const u8, load_bias: u64) Error!void {
         if (file_end > bytes.len) return error.SegmentOutOfBounds;
 
         // P0 — reserva de paginas antes da escrita (correca auditoria 2026-10-25)
-        // TODO: AllocatePages() deve ser chamado aqui antes do memcpy.
+        // Defesa: verifica que a regiao cabe no limite de mapeamento identidade.
+        const end = std.math.add(u64, address, segment.memory_size) catch return error.SegmentNotIdentityMapped;
+        if (end > identity_mapped_limit or address > identity_mapped_limit) return error.SegmentNotIdentityMapped;
+        // TODO: AllocatePages() via uefi.BootServices deve reservar [address..end) antes de memcpy.
         const destination: [*]u8 = @ptrFromInt(address);
 
         if (segment.file_size != 0) {
