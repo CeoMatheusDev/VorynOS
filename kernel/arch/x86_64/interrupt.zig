@@ -29,6 +29,7 @@ const serial = voryn.serial;
 const port = voryn.port;
 
 const cpu = @import("cpu.zig");
+const smp = @import("smp.zig");
 const apic = @import("apic.zig");
 const frame_layout = @import("frame.zig");
 
@@ -178,11 +179,6 @@ pub fn install() void {
         setGate(vector, unexpected);
     }
 
-    // Vector 64 is the IPI of rescheduling: every CPU that receives it
-    // runs one tick of the scheduler. The stub is the normal hardware
-    // interrupt stub, so the frame and the return follow the usual path.
-    setGate(64, @intFromPtr(&voryn_interrupt_64));
-
     table_pointer = .{
         .limit = @intCast(entry_count * @sizeOf(Gate) - 1),
         .base = @intFromPtr(&table),
@@ -256,12 +252,6 @@ pub const first_hardware_vector: u8 = 32;
 
 /// The number of hardware interrupts.
 pub const hardware_interrupt_count: u8 = 16;
-
-/// The vector of the rescheduling inter-processor interrupt.
-///
-/// A CPU that receives this interrupt runs one tick of the scheduler, so
-/// that a task woken on another CPU can be chosen promptly.
-pub const reschedule_vector: u64 = 64;
 
 /// Returns the address of the entry point of a hardware interrupt.
 fn interruptStubFor(index: usize) u64 {
@@ -349,7 +339,7 @@ export fn voryn_exception_handler(vector: u64, frame: *const Registers) callconv
         // that the kernel does not know how to handle: without the task
         // there is no kernel stack to rewrite the frame to, and the machine
         // stops.
-        const task = scheduler.scheduler.currentTask() orelse {
+        const task = scheduler.scheduler.current[smp.cpuId()] orelse {
             serial.printLine("[VNK] FATAL: an exception of the user mode without a current task", .{});
             port.haltForever();
         };
@@ -445,17 +435,6 @@ export fn voryn_interrupt_handler(vector: u64, frame: *const Registers) callconv
         return if (must_switch) 1 else 0;
     }
 
-    // IPI de reescalonamento: uma CPU pediu que esta CPU reexecute o
-    // escalonador. O tick com um quantum esgotado força a troca se for o
-    // caso. A IPI não tem EOI no PIC; o EOI vai para o APIC local.
-    if (vector == reschedule_vector) {
-        const syscall = @import("syscall.zig");
-        const scheduler = @import("../../task/scheduler.zig");
-        _ = scheduler.scheduler.tick(syscall.failure(syscall.Error.timeout));
-        if (apic.isMapped()) apic.eoi();
-        return 1;
-    }
-
     return 0;
 }
 
@@ -517,4 +496,3 @@ extern var voryn_interrupt_44: u8;
 extern var voryn_interrupt_45: u8;
 extern var voryn_interrupt_46: u8;
 extern var voryn_interrupt_47: u8;
-extern var voryn_interrupt_64: u8;

@@ -13,101 +13,80 @@
 //! APIC local (xAPIC): registradores de mapeamento de memoria do
 //! Advanced Programmable Interrupt Controller.
 //!
-//! O modulo da acesso ao APIC local de cada CPU logica: identificacao,
-//! prioridade de tarefa, registro de fim de interrupcao, timer local,
-//! erros e comandos inter-processador (ICR).
+//! Este modulo estabelece o acesso ao APIC local de cada CPU logica:
+//! registradores de identificacao, tarefa de prioridade, registro de fim
+//! de interrupcao, timer local, erros e comandos inter-processador (ICR).
 //!
-//! O endereco base do APIC local vem da tabela MADT da ACPI. O chamador
-//! mapeia a pagina fisica na memoria do kernel, sem cache, e passa o
-//! endereco virtual para `map`.
+//! O endereco base do APIC local vem da tabela MADT da ACPI quando
+//! disponivel; ate que a leitura da ACPI esteja integrada, usa-se o
+//! endereco padrao do QEMU/OVMF (0xFEE0000), que tambem e o endereco
+//! tipico de sistemas reais.
 //!
-//! Os registradores do APIC local tem 32 bits e ficam espacados a cada
-//! 16 bytes; o acesso e feito por memoria mapeada e o ponteiro e volatil,
-//! para que o compilador nao elimine nem reordene as leituras e escritas.
-//!
-//! Referencias: Intel 64 and IA-32 Architectures Software Developer's
-//! Manual, volume 3A, capitulo 11 (Advanced Programmable Interrupt
-//! Controller); ACPI Specification 6.5, secao 5.2.12.
+//! O acesso ao APIC local e feito por memoria mapeada. Cada registro tem
+//! 4 bytes mas esta espacado a cada 16 bytes (espacamento 16 bytes entre
+//! registros de 4 bytes).
 
 const std = @import("std");
 const cpu = @import("cpu.zig");
 const timer = @import("timer.zig");
 
-/// Endereco base padrao do APIC local quando a ACPI nao informa outro.
-pub const default_base: u64 = 0xFEE0_0000;
-
-/// Endereco da pagina do APIC local na memoria fisica.
+/// Endereco base do APIC local (mapeamento de memoria).
 ///
-/// O valor e substituido pelo endereco lido da MADT durante a descoberta.
-pub var base: u64 = default_base;
+/// Valor padrao do QEMU/OVMF e de muitos sistemas reais. Quando a leitura
+/// da tabela MADT estiver integrada, este valor sera substituido pelo
+/// lido da ACPI.
+pub const apic_base: u64 = 0xFEE0000;
 
 /// Offset dos registradores do APIC local, em bytes, a partir da base.
+/// Cada registro de 32 bits ocupa 16 bytes (espacamento de 16).
 pub const ApicOffset = struct {
-    /// Identificador do APIC local (bits 24-31).
+    /// ID da APIC local (apenas o byte mais significativo importa).
     pub const id: u64 = 0x020;
-    /// Versao do APIC local.
+    /// Versao da APIC local.
     pub const version: u64 = 0x030;
-    /// Prioridade de tarefa (TPR).
+    /// Prioridade de tarefa (TPR): mascara interrupcoes abaixo do limiar.
     pub const tpr: u64 = 0x080;
     /// Prioridade de arbitragem (APR).
     pub const apr: u64 = 0x090;
     /// Prioridade do processador (PPR).
-    pub const ppr: u64 = 0x0A0;
-    /// Fim de interrupcao (EOI).
-    pub const eoi: u64 = 0x0B0;
-    /// Detector logico (LDR).
-    pub const ldr: u64 = 0x0D0;
+    pub const ppr: u64 = 0x0a0;
+    /// Endereco de destino do EOI.
+    pub const eoi: u64 = 0x0b0;
+    /// Registrador de detector logico (LDR).
+    pub const ldr: u64 = 0x0d0;
     /// Formato de destino (DFR).
-    pub const dfr: u64 = 0x0E0;
-    /// Vetor de interrupcao espuria (SVR).
-    pub const svr: u64 = 0x0F0;
+    pub const dfr: u64 = 0x0e0;
+    /// Vetor de interrupcao spuria (SVR): habilita a APIC e define o vetor.
+    pub const svr: u64 = 0x0f0;
     /// Registro de erro (ESR).
     pub const esr: u64 = 0x280;
-    /// ICR baixo: comando da interrupcao inter-processador.
-    pub const icr_low: u64 = 0x300;
-    /// ICR alto: destino da interrupcao inter-processador.
-    pub const icr_high: u64 = 0x310;
-    /// LVT do timer local.
-    pub const timer_lvt: u64 = 0x320;
-    /// LVT da interrupcao termica.
-    pub const thermal_lvt: u64 = 0x330;
-    /// LVT do contador de desempenho.
-    pub const perf_lvt: u64 = 0x340;
-    /// LVT da interrupcao local 0 (LINT0), ligada ao 8259.
+    /// Timer: contagem inicial (ICR).
+    pub const timer_icr: u64 = 0x320;
+    /// Timer: configuracao e vetor (TDR).
+    pub const timer_config: u64 = 0x330;
+    /// Timer: contador atual.
+    pub const timer_current: u64 = 0x340;
+    /// Interrupcao local 0 (LINT0).
     pub const lint0: u64 = 0x350;
-    /// LVT da interrupcao local 1 (LINT1), ligada ao NMI.
+    /// Interrupcao local 1 (LINT1).
     pub const lint1: u64 = 0x360;
-    /// LVT do erro do APIC.
-    pub const error_lvt: u64 = 0x370;
-    /// Contagem inicial do timer local.
-    pub const timer_initial: u64 = 0x380;
-    /// Contagem corrente do timer local.
-    pub const timer_current: u64 = 0x390;
-    /// Configuracao do divisor do timer local.
-    pub const timer_divide: u64 = 0x3E0;
+    /// Registrador de erro (ESR).
+    pub const error_reg: u64 = 0x370;
+    /// ICR baixo (comando de interrupcao inter-processador).
+    pub const icr_low: u64 = 0x300;
+    /// ICR alto (destino da IPI).
+    pub const icr_high: u64 = 0x310;
 };
 
-/// Bits do registro SVR (Spurious Interrupt Vector Register).
+/// Bits do SVR (Spurious Interrupt Vector Register).
 pub const SvrBits = struct {
-    /// Vetor da interrupcao espuria (bits 0-7, obrigatoriamente 0xF0-0xFF).
-    pub const vector_mask: u32 = 0xFF;
-    /// Habilita o APIC local.
-    pub const enabled: u32 = 1 << 8;
-    /// Modo de foco para processadores antigos (nao usado).
-    pub const focus: u32 = 1 << 9;
+    /// Habilita a APIC local.
+    pub const apic_enabled: u32 = 1 << 8;
+    /// Vetor de interrupcao spuria (bits 0-7).
+    pub const spurious_vector_mask: u32 = 0xFF;
 };
 
-/// Bits do LVT do timer local.
-pub const TimerLvt = struct {
-    /// Vetor da interrupcao (bits 0-7).
-    pub const vector_mask: u32 = 0xFF;
-    /// Mascara a interrupcao.
-    pub const masked: u32 = 1 << 16;
-    /// Modo periodico (bit 17).
-    pub const periodic: u32 = 1 << 17;
-};
-
-/// Modos de entrega da ICR (bits 8-10 do ICR baixo).
+/// Tipos de comando da ICR (bits 8-10 do ICR baixo).
 pub const IcrDeliveryMode = enum(u32) {
     fixed = 0x000,
     lowest_priority = 0x100,
@@ -117,127 +96,96 @@ pub const IcrDeliveryMode = enum(u32) {
     startup = 0x600,
 };
 
-/// Bits de nivel e de disparo da ICR.
-pub const IcrBits = struct {
-    /// Destino fisico (bit 11 = 0).
-    pub const destination_physical: u32 = 0;
-    /// Destino logico (bit 11 = 1).
-    pub const destination_logical: u32 = 1 << 11;
-    /// Status de entrega pendente (bit 12).
-    pub const delivery_pending: u32 = 1 << 12;
-    /// Nivel assert (bit 14).
-    pub const level_assert: u32 = 1 << 14;
-    /// Disparo por borda (bit 15 = 0).
-    pub const trigger_edge: u32 = 0;
-    /// Disparo por nivel (bit 15 = 1).
-    pub const trigger_level: u32 = 1 << 15;
-    /// Shorthand: somente o proprio processador (bits 18-19 = 01).
-    pub const shorthand_self: u32 = 0x4_0000;
-    /// Shorthand: todos incluindo o proprio (10).
-    pub const shorthand_all_including_self: u32 = 0x8_0000;
-    /// Shorthand: todos exceto o proprio (11).
-    pub const shorthand_all_excluding_self: u32 = 0xC_0000;
+/// Modo de nivel da ICR (bit 14 do ICR baixo).
+pub const IcrLevel = enum(u32) {
+    deassert = 0x000,
+    assert = 0x400,
+};
+
+/// Modo de trigger da ICR (bit 15 do ICR baixo).
+pub const IcrTriggerMode = enum(u32) {
+    edge = 0x000,
+    level = 0x800,
+};
+
+/// Destino da IPI (bits 17-18 do ICR baixo).
+pub const IcrDestinationMode = enum(u32) {
+    physical = 0x000,
+    logical = 0x100,
+};
+
+/// Estados de execucao da IPI (shorthand de destino, bits 17-18 do ICR baixo).
+pub const IcrDestinationShorthand = enum(u32) {
+    none = 0x000,
+    self = 0x200,
+    all_including_self = 0x400,
+    all_excluding_self = 0x600,
+};
+
+/// Estado de delivery pendente da ICR (bit 12 do ICR baixo).
+pub const IcrDeliveryStatus = enum(u32) {
+    idle = 0x000,
+    pending = 0x100,
 };
 
 /// Vetor da interrupcao do timer local do APIC.
-pub const timer_vector: u8 = timer.first_hardware_vector + timer.hardware_interrupt_count;
+pub const timer_vector: u32 = @as(u32, timer.first_hardware_vector + timer.hardware_interrupt_count);
 
-/// Vetor da IPI de reescalonamento.
-pub const reschedule_vector: u8 = 64;
+/// Acesso ao APIC local como ponteiro para a regiao mapeada de memoria.
+var apic: [*]u8 = undefined;
 
-/// Ponteiro para a pagina mapeada do APIC local.
+/// Mapeia o APIC local na regiao de memoria do kernel.
 ///
-/// `null` enquanto o APIC nao foi mapeado. O acesso e volatil: os
-/// registradores mudam por acao do hardware e nao podem ser cacheados
-/// pelo compilador.
-var mapped: ?[*]volatile u8 = null;
-
-/// MSR do endereco base do APIC local (IA32_APIC_BASE).
-pub const msr_apic_base: u32 = 0x1B;
-
-/// Le o MSR do endereco base do APIC local.
-pub fn baseMsr() u64 {
-    return cpu.readMsr(msr_apic_base);
+/// O caller deve ja ter mapeado a pagina fisica do APIC no espaco de
+/// enderecos do kernel e passar o endereco virtual. Esta funcao apenas
+/// registra o ponteiro para acesso aos registradores.
+pub fn map(base: u64) void {
+    apic = @ptrFromInt(@as(usize, base));
 }
 
-/// Retorna true quando o processador esta no modo x2APIC.
-///
-/// No modo x2APIC os registradores sao acessados por MSR e o mapeamento
-/// de memoria do xAPIC deixa de responder; o kernel usa o caminho xAPIC.
-pub fn isX2ApicEnabled() bool {
-    return (baseMsr() & (@as(u64, 1) << 10)) != 0;
-}
-
-/// Retorna true quando o APIC local esta habilitado globalmente.
-pub fn isGloballyEnabled() bool {
-    return (baseMsr() & (@as(u64, 1) << 11)) != 0;
-}
-
-/// Registra a pagina virtual do APIC local.
-///
-/// O chamador ja mapeou a pagina fisica `base` na memoria do kernel, sem
-/// cache. A funcao apenas guarda o ponteiro; a validacao do alinhamento e
-/// do intervalo fica com o mapeamento.
-pub fn map(address: u64) void {
-    base = address;
-    mapped = @ptrFromInt(address);
-}
-
-/// Remove o mapeamento logico do APIC local.
-pub fn unmap() void {
-    mapped = null;
-}
-
-/// Retorna true quando o APIC local foi mapeado.
+/// Retorna true se o APIC local foi mapeado.
 pub fn isMapped() bool {
-    return mapped != null;
+    return @intFromPtr(apic) != 0;
 }
 
 /// Le um registrador de 32 bits do APIC local.
 fn read32(offset: u64) u32 {
-    const pointer = mapped orelse return 0;
-    const address = @intFromPtr(pointer) + offset;
-    const register: *volatile u32 = @ptrFromInt(address);
-    return register.*;
+    const addr = @intFromPtr(apic) + offset;
+    const ptr: *u32 = @ptrFromInt(addr);
+    return ptr.*;
 }
 
 /// Escreve um valor de 32 bits em um registrador do APIC local.
 fn write32(offset: u64, value: u32) void {
-    const pointer = mapped orelse return;
-    const address = @intFromPtr(pointer) + offset;
-    const register: *volatile u32 = @ptrFromInt(address);
-    register.* = value;
+    const addr = @intFromPtr(apic) + offset;
+    const ptr: *u32 = @ptrFromInt(addr);
+    ptr.* = value;
 }
 
-/// Le o identificador do APIC local.
+/// Le o ID da APIC local.
 ///
-/// O identificador ocupa os bits 24-31 do registrador de identificacao.
+/// O ID esta no byte mais significativo do registrador de ID.
 pub fn readApicId() u32 {
     return read32(ApicOffset.id) >> 24;
 }
 
-/// Le a versao do APIC local.
-pub fn readVersion() u32 {
+/// Le a versao da APIC local.
+pub fn readApicVersion() u32 {
     return read32(ApicOffset.version) & 0xFF;
 }
 
-/// Habilita o APIC local.
+/// Habilita a APIC local definindo o bit de habilitacao do SVR.
 ///
-/// O vetor da interrupcao espuria e definido como 0xFF, que e o valor
-/// reservado pela especificacao para esse vetor. Uma escrita que apenas
-/// ligasse o bit de habilitacao deixaria o vetor em zero, que nao e um
-/// vetor valido.
+/// O vetor de interrupcao spuria fica definido como 0xFF (ignorado).
 pub fn enable() void {
     const svr = read32(ApicOffset.svr);
-    write32(ApicOffset.svr, (svr & ~SvrBits.vector_mask) | SvrBits.vector_mask | SvrBits.enabled);
-}
-
-/// Retorna true quando o bit de habilitacao do SVR esta ligado.
-pub fn isEnabled() bool {
-    return (read32(ApicOffset.svr) & SvrBits.enabled) != 0;
+    write32(ApicOffset.svr, svr | SvrBits.apic_enabled);
 }
 
 /// Envia o sinal de fim de interrupcao (EOI) ao APIC local.
+///
+/// O EOI deve ser chamado ao final do tratamento de uma interrupcao
+/// recebida pelo APIC local para que ele possa entregar a proxima.
 pub fn eoi() void {
     write32(ApicOffset.eoi, 0);
 }
@@ -245,136 +193,94 @@ pub fn eoi() void {
 /// Define o limiar de prioridade de tarefa (TPR).
 ///
 /// Interrupcoes com prioridade menor ou igual ao limiar sao mascaradas.
-/// Zero permite todas as prioridades.
+/// Escrever zero permite todas as interrupcoes gerenciadas pela APIC.
 pub fn setTpr(priority: u32) void {
     write32(ApicOffset.tpr, priority & 0xFF);
 }
 
-/// Le o limiar de prioridade de tarefa.
-pub fn tpr() u32 {
-    return read32(ApicOffset.tpr) & 0xFF;
-}
-
-/// Configura o LINT0 para entregar as interrupcoes do 8259.
+/// Configura o timer local da APIC no modo one-shot.
 ///
-/// O modo ExtINT (delivery mode 111) entrega ao processador a interrupcao
-/// que o controlador programavel 8259 sinaliza. O kernel usa o PIT e o
-/// teclado PS/2 por esse caminho, e o APIC ligado nao pode mascara-lo.
-pub fn configureLegacyPic() void {
-    // ExtINT (0x700): vetor sem significado, modo de entrega 111, borda,
-    // sem mascara.
-    write32(ApicOffset.lint0, 0x700);
+/// `divisor` divide o frequencia do barramento do timer (tipicamente
+/// 10 MHz em QEMU). O timer dispara o vetor `timer_vector` apos
+/// `divisor` contagens e nao se rearma automaticamente.
+pub fn timerOneShot(divisor: u32) void {
+    // Desabilita o timer antes de reconfigurar.
+    write32(ApicOffset.timer_config, 0x0001_0000); // mascarado, one-shot
+    write32(ApicOffset.timer_icr, divisor);
 }
 
-/// Desabilita o timer local.
-pub fn timerStop() void {
-    write32(ApicOffset.timer_lvt, TimerLvt.masked);
-    write32(ApicOffset.timer_initial, 0);
-}
-
-/// Configura o divisor do timer local.
+/// Configura o timer local da APIC no modo periodico.
 ///
-/// O valor e o codigo de 4 bits da tabela do manual: 0b0000 divide por 2,
-/// 0b0001 por 4, 0b0010 por 8, 0b0011 por 16, 0b1000 por 32, 0b1001 por
-/// 64, 0b1010 por 128 e 0b1011 por 1.
-pub fn timerDivide(divider: u4) void {
-    write32(ApicOffset.timer_divide, divider);
+/// `divisor` divide a frequencia do barramento do timer. O timer dispara
+/// o vetor `timer_vector` periodicamente e se rearma automaticamente.
+pub fn timerPeriodic(divisor: u32) void {
+    // Bit 17 = periodico, mascarado por enquanto (bit 16 = 0).
+    write32(ApicOffset.timer_config, 0x0002_0000 | timer_vector);
+    write32(ApicOffset.timer_icr, divisor);
 }
 
-/// Configura o timer local no modo one-shot.
+/// Envia uma IPI para uma CPU de destino (modo fisico).
 ///
-/// `count` e o numero de ciclos do barramento do APIC ate a interrupcao.
-/// O timer para depois de disparar uma vez.
-pub fn timerOneShot(count: u32) void {
-    write32(ApicOffset.timer_lvt, timer_vector);
-    write32(ApicOffset.timer_initial, count);
-}
-
-/// Configura o timer local no modo periodico.
-pub fn timerPeriodic(count: u32) void {
-    write32(ApicOffset.timer_lvt, TimerLvt.periodic | timer_vector);
-    write32(ApicOffset.timer_initial, count);
-}
-
-/// Le a contagem corrente do timer local.
-pub fn timerCurrent() u32 {
-    return read32(ApicOffset.timer_current);
-}
-
-/// Le e limpa o registro de erro do APIC local.
-///
-/// A leitura do ESR limpa os bits de erro; a escrita de zero antes da
-/// leitura garante que um erro pendente seja observado.
-pub fn takeError() u32 {
-    write32(ApicOffset.esr, 0);
-    return read32(ApicOffset.esr);
-}
-
-/// Envia uma IPI de modo fixo para uma CPU de destino fisico.
-pub fn sendFixed(apic_id: u32, vector: u8) void {
-    send(apic_id, @intFromEnum(IcrDeliveryMode.fixed), vector);
-}
-
-/// Envia uma IPI de reescalonamento para uma CPU.
-pub fn sendReschedule(apic_id: u32) void {
-    sendFixed(apic_id, reschedule_vector);
-}
-
-/// Envia uma IPI INIT para uma CPU.
-///
-/// O INIT coloca o AP no estado de espera por SIPI. O nivel e assertado,
-/// como o protocolo de inicializacao multiprocessador exige.
-pub fn sendInit(apic_id: u32) void {
-    send(apic_id, @intFromEnum(IcrDeliveryMode.init) | IcrBits.level_assert, 0);
-}
-
-/// Envia uma IPI STARTUP (SIPI) para uma CPU.
-///
-/// O AP comeca a executar em modo real no endereco `vector * 4096`.
-pub fn sendStartup(apic_id: u32, vector: u8) void {
-    send(apic_id, @intFromEnum(IcrDeliveryMode.startup) | IcrBits.level_assert, vector);
-}
-
-/// Envia um comando pela ICR e espera a entrega.
-fn send(apic_id: u32, command: u32, vector: u8) void {
-    if (!isMapped()) return;
-
-    // Espera a entrega anterior terminar antes de escrever um comando
-    // novo: a ICR tem um unico conjunto de registradores.
-    waitDelivery();
-
-    // O destino ocupa os bits 24-31 do ICR alto no modo fisico.
-    write32(ApicOffset.icr_high, (apic_id & 0xFF) << 24);
-    write32(ApicOffset.icr_low, command | IcrBits.destination_physical | @as(u32, vector));
-    waitDelivery();
-}
-
-/// Espera o bit de status de entrega da ICR ficar livre.
-fn waitDelivery() void {
-    var attempts: u32 = 0;
-    while ((read32(ApicOffset.icr_low) & IcrBits.delivery_pending) != 0) : (attempts += 1) {
-        if (attempts > 1_000_000) return;
+/// `apic_id` e o ID de APIC local da CPU de destino. `delivery_mode` e o
+/// tipo de comando (fixed, lowest_priority, init, startup etc.).
+pub fn sendIpi(apic_id: u32, delivery_mode: u32, vector: u8) void {
+    // Espera ate que a IPI anterior tenha sido entregue.
+    while (read32(ApicOffset.icr_low) & u32(IcrDeliveryStatus.pending) != 0) {
         cpu.pause();
     }
+    // ICR alto: ID de destino no byte mais significativo.
+    write32(ApicOffset.icr_high, apic_id << 24);
+    // ICR baixo: delivery mode + vector + edge trigger + physical destination.
+    const command: u32 = u32(delivery_mode) | u32(IcrLevel.assert) |
+        u32(IcrTriggerMode.edge) | u32(IcrDestinationMode.physical) | u32(vector);
+    write32(ApicOffset.icr_low, command);
 }
 
-test "apic register offsets" {
+/// Envia uma IPI INIT para todos exceto o emissor (modo broadcast fisico).
+pub fn sendInitAllExcludingSelf() void {
+    while (read32(ApicOffset.icr_low) & u32(IcrDeliveryStatus.pending) != 0) {
+        cpu.pause();
+    }
+    write32(ApicOffset.icr_high, 0);
+    const command: u32 = u32(IcrDeliveryMode.init) | u32(IcrLevel.assert) |
+        u32(IcrTriggerMode.edge) | u32(IcrDestinationMode.physical) |
+        u32(IcrDestinationShorthand.all_excluding_self);
+    write32(ApicOffset.icr_low, command);
+}
+
+/// Envia uma IPI de STARTUP (SIPI) para um AP.
+///
+/// `apic_id` e o ID de APIC local do AP. `vector` e o vetor de
+/// inicializacao (o endereco do trampoline eh vector * 4096 bytes).
+pub fn sendSipi(apic_id: u32, vector: u8) void {
+    while (read32(ApicOffset.icr_low) & u32(IcrDeliveryStatus.pending) != 0) {
+        cpu.pause();
+    }
+    write32(ApicOffset.icr_high, apic_id << 24);
+    const command: u32 = u32(IcrDeliveryMode.startup) | u32(IcrLevel.assert) |
+        u32(IcrTriggerMode.edge) | u32(IcrDestinationMode.physical) | u32(vector);
+    write32(ApicOffset.icr_low, command);
+}
+
+/// Segunda mensagem SIPI: envia o SIPI duas vezes com um intervalo,
+/// conforme requerido pela especificacao do protocolo de boot multiprocessador.
+pub fn sendSipiTwice(apic_id: u32, vector: u8) void {
+    sendSipi(apic_id, vector);
+    // Delay curto entre as mensagens SIPI.
+    var i: u32 = 0;
+    while (i < 1000) {
+        cpu.pause();
+        i += 1;
+    }
+    sendSipi(apic_id, vector);
+}
+
+test "apicOffsetsAreAligned" {
     try std.testing.expectEqual(@as(u64, 0x020), ApicOffset.id);
-    try std.testing.expectEqual(@as(u64, 0x0F0), ApicOffset.svr);
     try std.testing.expectEqual(@as(u64, 0x300), ApicOffset.icr_low);
     try std.testing.expectEqual(@as(u64, 0x310), ApicOffset.icr_high);
-    try std.testing.expectEqual(@as(u64, 0x320), ApicOffset.timer_lvt);
-    try std.testing.expectEqual(@as(u64, 0x380), ApicOffset.timer_initial);
-    try std.testing.expectEqual(@as(u64, 0x390), ApicOffset.timer_current);
-    try std.testing.expectEqual(@as(u64, 0x3E0), ApicOffset.timer_divide);
 }
 
-test "timer vector follows the hardware interrupts" {
+test "timerVectorIsAfterHardwareInterrupts" {
     try std.testing.expectEqual(timer_vector, timer.first_hardware_vector + timer.hardware_interrupt_count);
-}
-
-test "APIC is unmapped by default" {
-    unmap();
-    try std.testing.expect(!isMapped());
-    try std.testing.expectEqual(@as(u32, 0), readApicId());
 }

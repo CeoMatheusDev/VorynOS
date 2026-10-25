@@ -410,7 +410,7 @@ pub const Scheduler = struct {
 
         // EEVDF: avanca vruntime pela fatia/weight (1024 = peso unitario).
         if (next.weight != 0) {
-            next.vruntime += @as(i64, @intCast(next.slice)) * 1024 / @as(i64, @intCast(next.weight));
+            next.vruntime += @divTrunc(@as(i64, @intCast(next.slice)) * 1024, @as(i64, @intCast(next.weight)));
         }
 
         // The processor loads the stack pointer of the task state segment
