@@ -172,6 +172,19 @@ test "window owner prevents cross-client modification" {
     try std.testing.expectEqual(@as(usize, 1), stack.len);
 }
 
+test "hit testing prioritizes topmost window" {
+    var stack: WindowStack(2) = .{};
+    const w: Window = .{ .x = 0, .y = 0, .width = 2, .height = 2, .color = 1 };
+    try std.testing.expectEqual(@as(?u64, null), stack.focused());
+    try stack.add(1, w);
+    try stack.add(2, w);
+    try std.testing.expectEqual(@as(?u64, 2), stack.focused());
+    try std.testing.expectEqual(@as(?u64, 2), stack.hitTest(0, 0));
+    try std.testing.expectEqual(@as(?u64, null), stack.hitTest(2, 2));
+    try stack.raise(1);
+    try std.testing.expectEqual(@as(?u64, 1), stack.hitTest(0, 0));
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
