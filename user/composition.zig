@@ -133,6 +133,12 @@ pub fn WindowStack(comptime capacity: usize) type {
             return self.keyboard_focus;
         }
 
+        pub fn pointerTarget(self: *const Self, x: u32, y: u32) ?u64 {
+            const id = self.hitTest(x, y) orelse return null;
+            const index = self.indexOf(id) orelse return null;
+            return self.entries[index].owner;
+        }
+
         pub fn keyboardTarget(self: *const Self) ?u64 {
             const id = self.keyboard_focus orelse return null;
             const index = self.indexOf(id) orelse return null;
