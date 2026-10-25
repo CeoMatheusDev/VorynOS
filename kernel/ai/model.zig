@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const tensor = @import("tensor.zig");
+const security = @import("security.zig");
 
 /// Cabeçalho binário: magic (4B), version (2B), type (1B = f32), layers (2B),
 /// dims (3 x 4B), offset (8B), size (8B), CRC (4B) = 58 bytes totais mínimos.
@@ -85,6 +86,20 @@ pub fn fromBytes(buf: []const u8) !Info {
         .bias_size = bias_size,
         .crc32 = crc32,
     };
+}
+
+pub fn fromBuffer(buf: []const u8) !Model {
+    const limits = security.Limits{
+        .max_model_bytes = 256 * 1024 * 1024,
+        .max_tensor_elements = 1024 * 1024,
+        .max_layers = 16,
+        .max_workspace_bytes = 512 * 1024 * 1024,
+        .max_total_bytes = 512 * 1024 * 1024,
+    };
+    try security.validateModelSize(buf.len, limits);
+    const info = try fromBytes(buf);
+    try security.validateTensorShape(info.input_dims, info.hidden_dims, info.output_dims, limits);
+    return .{ .info = info, .data = buf };
 }
 
 pub fn validate(buf: []const u8) !void {

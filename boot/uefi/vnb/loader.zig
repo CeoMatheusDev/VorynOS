@@ -68,7 +68,7 @@ pub fn place(image: elf64.Image, bytes: []const u8, load_bias: u64, boot_service
 
         // P0 — reserva de paginas via AllocatePages (correca auditoria)
         const pages: u64 = @intCast((end - address + 0x1000 - 1) / 0x1000);
-        const status = boot_services.allocatePages(uefi.tables.MemoryType.Conventional, 1, @intCast(pages));
+        const status = boot_services.allocatePages(uefi.tables.AllocateType.any, uefi.tables.MemoryType.conventional_memory, @intCast(pages), null);
         if (status != .Success) return error.AllocatePagesFailed;
 
         // Defensiva: verifica limite de mapeamento identidade
