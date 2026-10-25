@@ -102,6 +102,34 @@ pub const VRingDesc = struct {
     flags: u16 = 0,
 };
 
+/// VRING — fila circular Virtio com descritores, available e used.
+pub const VRing = struct {
+    /// Array de descritores (cada um aponta para um chunk de memoria).
+    descriptors: [16]VRingDesc = @splat(.{ .addr = 0, .len = 0, .flags = 0 }),
+    /// Indice disponivel (escrito pelo driver, lido pelo dispositivo).
+    avail_idx: u16 = 0,
+    /// Indice usado (escrito pelo dispositivo, lido pelo driver).
+    used_idx: u16 = 0,
+};
+
+/// Inicializa uma fila Virtio para um dispositivo de bloco/rede.
+/// Nenhuma alocacao dinamica: usa array fixo de 16 descritores.
+pub fn initVRing() VRing {
+    return .{};
+}
+
+/// Configura um descritor para apontar para um endereco de memoria.
+pub fn setupDescriptor(ring: *VRing, index: usize, addr: u64, len: u32, flags: u16) void {
+    if (index >= ring.descriptors.len) return;
+    ring.descriptors[index] = .{ .addr = addr, .len = len, .flags = flags };
+}
+
+/// PCI base — endereço base do espaço de configuração PCI para Virtio.
+/// Em QEMU/OVMF, o VirtIO block/net está tipicamente em 0xFE000000
+/// ou detectado via PCI config space (vendor 0x1AF4).
+/// Este valor e um placeholder para o driver completo (F7 completo).
+pub const pci_virtio_base: u64 = 0xFE_0000_00;
+
 test "virtioDeviceStatusBitsDefined" {
     try std.testing.expectEqual(@as(u8, 1), DeviceStatus.acknowledge);
     try std.testing.expectEqual(@as(u8, 4), DeviceStatus.features_ok);
