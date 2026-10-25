@@ -45,6 +45,8 @@ pub const Desktop = struct {
     pub const StageTiming = struct {
         movement_cycles: u64 = 0,
         composition_cycles: u64 = 0,
+        geometry_cycles: u64 = 0,
+        paint_cycles: u64 = 0,
     };
 
     pub fn moveFrontAndPresent(self: *Desktop, mapping: bridge.Mapping, x: usize, y: usize) (bridge.Error || wm.Error)!usize {
@@ -97,6 +99,8 @@ pub const Desktop = struct {
         const iy = @max(oy, ny);
         const iright = @min(oright, nright);
         const ibottom = @min(obottom, nbottom);
+        const paint_start: u64 = if (clock) |read| read() else 0;
+        if (timing) |result| result.geometry_cycles = paint_start - composition_start;
         var pixels: usize = 0;
         if (ix < iright and iy < ibottom) {
             pixels +|= self.frame.presentDirty(&surface, .{ .x = ox, .y = oy, .width = oright - ox, .height = iy - oy });
@@ -108,7 +112,11 @@ pub const Desktop = struct {
         }
         pixels +|= self.frame.presentDirty(&surface, new_rect);
         self.frame.dirty = false;
-        if (timing) |result| result.composition_cycles = if (clock) |read| read() - composition_start else 0;
+        const paint_end: u64 = if (clock) |read| read() else 0;
+        if (timing) |result| {
+            result.paint_cycles = paint_end - paint_start;
+            result.composition_cycles = paint_end - composition_start;
+        }
         return pixels;
     }
 
