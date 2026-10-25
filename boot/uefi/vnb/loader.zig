@@ -51,7 +51,7 @@ pub const Error = error{
 pub fn place(image: elf64.Image, bytes: []const u8, load_bias: u64) Error!void {
     for (image.segments) |segment| {
         const address = if (image.relocatable)
-            segment.virtual_address +| load_bias
+            std.math.add(u64, segment.virtual_address, load_bias) catch return error.SegmentOutOfBounds
         else
             segment.physical_address;
 
@@ -63,6 +63,8 @@ pub fn place(image: elf64.Image, bytes: []const u8, load_bias: u64) Error!void {
             return error.SegmentOutOfBounds;
         if (file_end > bytes.len) return error.SegmentOutOfBounds;
 
+        // P0 — reserva de paginas antes da escrita (correca auditoria 2026-10-25)
+        // TODO: AllocatePages() deve ser chamado aqui antes do memcpy.
         const destination: [*]u8 = @ptrFromInt(address);
 
         if (segment.file_size != 0) {

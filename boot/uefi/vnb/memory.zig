@@ -81,7 +81,7 @@ pub fn fetch(
     const info = boot_services.getMemoryMapInfo() catch return error.UnexpectedStatus;
     if (info.descriptor_size < minimum_descriptor_size) return error.BadDescriptorSize;
 
-    const required = info.len * info.descriptor_size;
+    const required = std.math.mul(usize, info.len, info.descriptor_size) catch return error.BufferTooSmall;
     if (required > scratch.len) return error.BufferTooSmall;
 
     const aligned: []align(8) u8 = @alignCast(scratch[0..required]);
