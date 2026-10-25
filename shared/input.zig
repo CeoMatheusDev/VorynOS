@@ -113,6 +113,12 @@ pub fn validatePointer(event: *const PointerEvent) PointerError!void {
     if (event.flags & ~pointer_flag_pressed != 0) return error.InvalidFlags;
 }
 
+test "pointer ABI layout remains fixed" {
+    try std.testing.expectEqual(@as(usize, 24), @sizeOf(PointerEvent));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(PointerEvent, "x"));
+    try std.testing.expectEqual(@as(usize, 20), @offsetOf(PointerEvent, "flags"));
+}
+
 test "input event layout is stable" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(InputEvent));
     try std.testing.expectEqual(@as(usize, 0), @offsetOf(InputEvent, "version"));
