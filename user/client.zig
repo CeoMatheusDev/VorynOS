@@ -64,6 +64,21 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     ) catch sdk.exit(5);
     surface.compose(frame_background, &frame_windows);
 
+    // Posiciona a janela no compositor antes de avisar que o quadro está pronto.
+    const placement = sdk.compositor.packWindow(
+        sdk.compositor.client_x,
+        sdk.compositor.client_y,
+        sdk.compositor.client_width,
+        sdk.compositor.client_height,
+    );
+    const placed = sdk.send(
+        contract.channel_id,
+        sdk.compositor.compositor_side,
+        sdk.compositor.window_place_kind,
+        placement,
+    );
+    if (sdk.syscall.isError(placed) or placed != 0) sdk.exit(7);
+
     // Copia cada linha da janela (16 rows x 64 bytes) da região (8,8) do
     // quadro local para a superfície do compositor na posição (8,8).
     var row: u32 = 0;
@@ -106,21 +121,6 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     hash_text[16] = '\n';
     _ = sdk.write("client checksum=0x");
     _ = sdk.write(&hash_text);
-
-    // Posiciona a janela no compositor antes de avisar que o quadro está pronto.
-    const placement = sdk.compositor.packWindow(
-        sdk.compositor.client_x,
-        sdk.compositor.client_y,
-        sdk.compositor.client_width,
-        sdk.compositor.client_height,
-    );
-    const placed = sdk.send(
-        contract.channel_id,
-        sdk.compositor.compositor_side,
-        sdk.compositor.window_place_kind,
-        placement,
-    );
-    if (sdk.syscall.isError(placed) or placed != 0) sdk.exit(7);
 
     // Avisa o compositor com o kind FRAME1 e o checksum da região.
     const sent = sdk.send(
