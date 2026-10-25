@@ -138,6 +138,18 @@ test "pointer validator rejects malformed motion" {
     try std.testing.expectError(error.InvalidFlags, validatePointer(&event));
 }
 
+test "pointer validator rejects unsupported button events" {
+    var event: PointerEvent = .{ .kind = pointer_kind_button, .button = pointer_button_primary };
+    try validatePointer(&event);
+    event.button = 0;
+    try std.testing.expectError(error.InvalidButton, validatePointer(&event));
+    event.button = pointer_button_primary;
+    event.flags = 2;
+    try std.testing.expectError(error.InvalidFlags, validatePointer(&event));
+    event = .{ .kind = 99 };
+    try std.testing.expectError(error.InvalidKind, validatePointer(&event));
+}
+
 test "input event layout is stable" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(InputEvent));
     try std.testing.expectEqual(@as(usize, 0), @offsetOf(InputEvent, "version"));
