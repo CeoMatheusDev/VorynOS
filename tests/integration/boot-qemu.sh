@@ -439,6 +439,32 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 
+# F15.6: require four bounded RAM/GOP trials and exact framebuffer restoration.
+if python3 - "$SERIAL_LOG" <<'PY'
+import re
+import sys
+
+log = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+trials = re.findall(
+    r"\[VNK\] graphics: memory benchmark trial=(\d+) bytes=(\d+) "
+    r"ram_cycles=(\d+) framebuffer_cycles=(\d+)", log,
+)
+if len(trials) != 4:
+    sys.exit(f"F15.6 requires four benchmark trials, got {len(trials)}")
+for index, (trial, size, ram, video) in enumerate(trials, 1):
+    if (int(trial), int(size)) != (index, 65536) or int(ram) <= 0 or int(video) <= 0:
+        sys.exit(f"invalid F15.6 benchmark record {index}")
+if re.findall(r"\[VNK\] graphics: memory benchmark restore_mismatches=(\d+)", log) != ["0"]:
+    sys.exit("F15.6 framebuffer restore verification failed")
+print("ok: F15.6 four RAM/framebuffer trials and lossless restore")
+PY
+then
+    :
+else
+    echo "FAIL: F15.6 RAM/framebuffer benchmark verification failed" >&2
+    FAILURES=$((FAILURES + 1))
+fi
+
 # F14.2: verify latency counters and pixel savings from the actual QEMU log.
 # Independently recompute exact nearest-rank percentiles for every available sample.\n# F15.3 requires at least 16 measured redraws from real PS/2 events.
 if python3 - "$SERIAL_LOG" <<'PY'
