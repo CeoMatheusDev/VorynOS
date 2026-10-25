@@ -103,8 +103,8 @@ Development is organized into incremental milestones, each with technical accept
 | F5 | Runtime, SDK, and native applications | 🟢 Locally Tested |
 | M0.5 | SMP / APIC / EEVDF / spinlocks / APs (`smp.zig`, `apic.zig`, `scheduler.zig`, `installSmp`) | ✅ Completed — `main` (`53dc842`) |
 | F6 | Graphics subsystem and desktop environment | 🚧 Experimental — F6.30 `input_wait` (syscall 23, ABI v13) verified |
-| F7 | Virtio drivers / PCI / block / net (`virtio.zig`, `virtio_blk.zig`, `virtio_net.zig`, `pci.zig`) | 🟢 Base completo — F7 base + PCI + blk + net verificado, estande corrido |
-| F8 | Compatibility with external formats and APIs | ✅ F8 concluído — `vex.zig` funcional + `elf_compat.zig` + ABI v13 (`12ac3a2`) |
+| F7 | Virtio drivers / PCI / block / net (`virtio.zig`, `virtio_blk.zig`, `virtio_net.zig`, `pci.zig`) | 🟢 Base complete — F7 base + PCI + blk + net verified, build passes |
+| F8 | Compatibility with external formats and APIs | ✅ F8 completed — `vex.zig` functional + `elf_compat.zig` + ABI v13 (`12ac3a2`) |
 | F9 | Artificial intelligence infrastructure | 🟢 Completed — `tensor.zig` + `model.zig` (real inference, aligned CRC) + `security.zig` (overflow verified) + F9.4 audit (`fe34196`) |
 | F10 | Installation, security, recovery, and production readiness | 📋 Proposed |
 
@@ -782,7 +782,7 @@ A full-repository audit was performed on the current `main` working tree (Zig 0.
 - **Fixed:** `kernel/ai/model.zig` — test `modelBinaryFormatValidatesAndRejectsCorrupt` had incorrect `magic_bytes`; corrected for `MAGIC = 0x564F5259`.
 - **Fixed:** `kernel/ai/security.zig` — `DimensionOverflow` test required `Limits` with elevated `max_tensor_elements`; corrected.
 - **Verified:** `loader.zig` (P0 audit TODO only — no functional error); `scheduler.zig`, `window_manager.zig`, `compositor.zig`, `session.zig` pass all tests; `syscall.zig` paths validated; no untracked secrets.
-- **Fixed:** `kernel/arch/x86_64/virtio_blk.zig` / `virtio_net.zig` — métodos entre campos corrigidos; `detectVirtioDevice(0)` e `submitDescriptor` corrigidos; build passa.
+- **Fixed:** `kernel/arch/x86_64/virtio_blk.zig` / `virtio_net.zig` — methods between fields corrected; `detectVirtioDevice(0)` and `submitDescriptor` fixed; build passes.
 - **Status:** `zig build` OK; `main` publicado (`d648ebf`); desenvolvimento permitido; proposta F4 (`ADR-F04`) iniciada (`phys_blk.zig`); bugs corrigidos documentados (`Bug Analysis & Fix Log`).
 
 ---
@@ -873,7 +873,7 @@ The live PS/2 input loop, framebuffer mapping, and QEMU desktop integration rema
 
 O módulo `kernel/graphics/frame.zig` agora possui captura do ponteiro após clique aceito, movimentação relativa por `pointerMove` e liberação por `pointerUp`. A aritmética de coordenadas é saturada; a destruição de uma janela cancela a captura, evitando movimentar janelas que reutilizem o mesmo slot. Dois novos testes verificam o arrasto, o limite inferior das coordenadas e a liberação da captura.
 
-**Validação pendente:** esta alteração ainda não foi compilada no Fedora. O último resultado confirmado foi de 24 testes aprovados para `frame.zig`, antes deste incremento. A integração com eventos físicos do mouse e a execução gráfica no QEMU ainda não foram realizadas.
+**Pending validation:** this change has not yet been compiled on Fedora. The last confirmed result was 24 passing tests for `frame.zig`, before this increment. Integration with physical mouse events and real kernel graphics execution have not yet been performed.
 
 ```sh
 zig test kernel/graphics/frame.zig
