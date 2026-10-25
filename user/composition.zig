@@ -37,6 +37,83 @@ pub const Window = struct {
     color: u32,
 };
 
+/// Fixed-capacity z-ordered window registry. No heap allocation or syscalls.
+/// The last registered window is the topmost; IDs are stable across raises.
+pub fn WindowStack(comptime capacity: usize) type {
+    return struct {
+        const Self = @This();
+        pub const Error = error{ Full, Duplicate, NotFound };
+        const Entry = struct { id: u64, window: Window };
+        entries: [capacity]Entry = undefined,
+        len: usize = 0,
+
+        pub fn add(self: *Self, id: u64, window: Window) Error!void {
+            if (self.indexOf(id) != null) return error.Duplicate;
+            if (self.len == capacity) return error.Full;
+            self.entries[self.len] = .{ .id = id, .window = window };
+            self.len += 1;
+        }
+
+        pub fn remove(self: *Self, id: u64) Error!void {
+            const index = self.indexOf(id) orelse return error.NotFound;
+            var i = index;
+            while (i + 1 < self.len) : (i += 1) self.entries[i] = self.entries[i + 1];
+            self.len -= 1;
+        }
+
+        pub fn raise(self: *Self, id: u64) Error!void {
+            const index = self.indexOf(id) orelse return error.NotFound;
+            const selected = self.entries[index];
+            var i = index;
+            while (i + 1 < self.len) : (i += 1) self.entries[i] = self.entries[i + 1];
+            self.entries[self.len - 1] = selected;
+        }
+
+        pub fn move(self: *Self, id: u64, x: u32, y: u32) Error!void {
+            const index = self.indexOf(id) orelse return error.NotFound;
+            self.entries[index].window.x = x;
+            self.entries[index].window.y = y;
+        }
+
+        pub fn compose(self: *const Self, surface: *Surface, background: u32) void {
+            surface.fillBackground(background);
+            for (self.entries[0..self.len]) |entry| surface.paint(entry.window);
+        }
+
+        fn indexOf(self: *const Self, id: u64) ?usize {
+            for (self.entries[0..self.len], 0..) |entry, index| {
+                if (entry.id == id) return index;
+            }
+            return null;
+        }
+    };
+}
+
+test "window stack maintains z order and stable IDs" {
+    var pixels: [4]u32 = @splat(0);
+    var surface = try Surface.init(&pixels, 2, 2, 2);
+    var stack: WindowStack(2) = .{};
+    const back: Window = .{ .x = 0, .y = 0, .width = 2, .height = 2, .color = 0x11 };
+    const front: Window = .{ .x = 0, .y = 0, .width = 1, .height = 1, .color = 0x22 };
+    try stack.add(100, back);
+    try stack.add(200, front);
+    try std.testing.expectError(error.Duplicate, stack.add(100, front));
+    try std.testing.expectError(error.Full, stack.add(300, front));
+    stack.compose(&surface, 0);
+    try std.testing.expectEqual(@as(u32, 0x22), pixels[0]);
+    try stack.raise(100);
+    stack.compose(&surface, 0);
+    try std.testing.expectEqual(@as(u32, 0x11), pixels[0]);
+    try stack.move(100, 1, 1);
+    stack.compose(&surface, 0);
+    try std.testing.expectEqual(@as(u32, 0x22), pixels[0]);
+    try stack.remove(200);
+    stack.compose(&surface, 0);
+    try std.testing.expectEqual(@as(u32, 0), pixels[0]);
+    try std.testing.expectError(error.NotFound, stack.remove(200));
+    try std.testing.expectError(error.NotFound, stack.raise(200));
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
