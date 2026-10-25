@@ -2847,11 +2847,17 @@ fn verifyFsLifecycleProbe() void {
     // file after the lifecycle baseline. Remove only that known test artifact
     // after the native task exits, before comparing resource counters.
     // Unexpected files or leaked descriptors still fail the strict baseline.
+    var truncate_cleanup_ok = true;
     fs.unlink("/apps/truncate-probe.txt") catch |err| {
+        truncate_cleanup_ok = false;
         // A failed ring-3 probe may never create the file. Report the
         // missing artifact without suppressing subsequent diagnostics.
         serial.printLine("[VNK] fs: truncate probe cleanup failed: {s}", .{@errorName(err)});
     };
+    if (!truncate_cleanup_ok) {
+        serial.printLine("[VNK] fs: lifecycle probe incomplete (truncate artifact missing)", .{});
+        return;
+    }
     if (fs.freeBlockCount() != lifecycle_blocks_before or
         fs.freeInodeCount() != lifecycle_inodes_before)
     {
