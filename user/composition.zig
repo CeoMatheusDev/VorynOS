@@ -307,6 +307,14 @@ test "pointer motion leaves keyboard focus unchanged" {
     try std.testing.expectEqual(@as(?u64, null), stack.keyboardFocus());
 }
 
+test "pointer press focuses registered window" {
+    var stack: WindowStack(1) = .{};
+    try stack.addOwned(7, 11, .{ .x = 0, .y = 0, .width = 2, .height = 2, .color = 1 });
+    const press: input.PointerEvent = .{ .kind = input.pointer_kind_button, .button = input.pointer_button_primary, .flags = input.pointer_flag_pressed };
+    try std.testing.expectEqual(@as(?u64, 11), try stack.focusPointerEvent(&press, 4, 4));
+    try std.testing.expectEqual(@as(?u64, 7), stack.keyboardTarget());
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
