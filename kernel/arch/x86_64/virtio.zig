@@ -25,6 +25,7 @@
 //! when the physical driver is implemented.
 
 const std = @import("std");
+const pci = @import("pci.zig");
 
 /// Device status bits.
 pub const DeviceStatus = struct {
@@ -179,19 +180,28 @@ pub const PciVirtioInfo = struct {
 /// configuration space (port 0xCF8 / 0xCFC for x86, or MMIO for QEMU/OVMF)
 /// is implemented in the PCI driver layer. This function validates the
 /// contract: it checks the vendor and returns the appropriate device type.
-pub fn detectVirtioDevice(config_addr: u32) PciVirtioInfo {
-    // Placeholder: real PCI MMIO read would access config_addr + offset 0x00 (vendor)
-    // and config_addr + offset 0x02 (device). For F7 planning, we return the
-    // expected structure with the standard VirtIO identifiers.
-    // This allows storage/network drivers to prepare their initialization
-    // without blocking on the full PCI driver implementation.
-    _ = config_addr;
-    return .{
-        .base = 0,
-        .vendor = 0x1AF4,
-        .device_id = 0,
-        .device_type = 0,
-    };
+pub fn detectVirtioDevice() PciVirtioInfo {
+    // Bus scanning no espaco de configuracao PCI via portas 0xCF8 / 0xCFC.
+    // Procura pelo vendor 0x1AF4 (Red Hat / VirtIO).
+    for (bus in 0..u8(255)) : for (dev in 0..u8(255)) : for (func in 0..u8(1)) {
+        // Offset do vendor: byte 0x00.
+        const vendor: u16 = pci.readConfigWord(bus, dev, func, 0x00);
+        if (vendor == 0x1AF4) {
+            return .{
+                .base = 0, // setado posteriormente pelo driver PCI
+                .vendor = vendor,
+                .device_id = pci.readConfigWord(bus, dev, func, 0x02),
+                .device_type = computeType(bus, dev, func),
+            };
+        }
+    }
+    return .{}; // none found — retorna zero struct
+}
+
+/// Converte device ID em tipo de dispositivo (block=1, net=2, scsi=3, console=4).
+fn computeType(bus: u8, dev: u8, func: u8) u8 {
+    const device_id: u16 = pci.readConfigWord(bus, dev, func, 0x02);
+    return if (device_id == 0x1001) 1 else if (device_id == 0x1000) 2 else if (device_id == 0x1002) 3 else if (device_id == 0x1003) 4 else 0;
 }
 
 /// Registers a Virtio block device driver interface (F7 — PROPOSTO).
@@ -208,6 +218,6 @@ pub const BlockDriverInterface = struct {
 };
 
 test "virtioDetectVirtioReturnsStandardVendor" {
-    const info = detectVirtioDevice(0);
+    const info = detectVirtioDevice();
     try std.testing.expectEqual(@as(u16, 0x1AF4), info.vendor);
 }
