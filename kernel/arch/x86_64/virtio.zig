@@ -87,7 +87,24 @@ pub const Device = struct {
     queues: [*]u8 = undefined,
 };
 
+/// Descritor de fila Virtio.
+///
+/// Cada fila tem um `VRING`, que e uma pilha de descritores (`VRING_DESC`),
+/// com uma area disponivel (`VRING_AVAIL`) e uma area usada (`VRING_USED`).
+/// Um driver escaneia a area esta para chegar a descritores pronto para
+/// serem consumidos, e aponta-os na area usada quando a operacao termina.
+pub const VRingDesc = struct {
+    /// Address of next descriptor in ring.
+    addr: u64,
+    /// Length of data described.
+    len: u32,
+    /// Flags (VIRTIO_DESC_F_NEXT, F_WRITE, F_INDIRECT).
+    flags: u16 = 0,
+};
+
 test "virtioDeviceStatusBitsDefined" {
     try std.testing.expectEqual(@as(u8, 1), DeviceStatus.acknowledge);
     try std.testing.expectEqual(@as(u8, 4), DeviceStatus.features_ok);
 }
+
+
