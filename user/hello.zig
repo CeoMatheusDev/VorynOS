@@ -225,7 +225,12 @@ fn presentComposition(window_base: u64, pixel_format: u32) bool {
         composition_stride,
     ) catch return false;
 
-    surface.compose(composition_background, &composition_windows);
+    // F6: the same screenshot now passes through the managed z-order registry.
+    var windows: composition.WindowStack(composition_windows.len) = .{};
+    for (composition_windows, 0..) |window, index| {
+        windows.add(@as(u64, @intCast(index + 1)), window) catch return false;
+    }
+    windows.compose(&surface, composition_background);
     if (!presentSurface(&surface, surface_address, pixel_format)) return false;
 
     if (!receiveClientFrame(&surface, surface_address, pixel_format)) return false;
