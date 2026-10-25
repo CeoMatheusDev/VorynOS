@@ -83,6 +83,7 @@ pub fn WindowStack(comptime capacity: usize) type {
             var i = index;
             while (i + 1 < self.len) : (i += 1) self.entries[i] = self.entries[i + 1];
             self.len -= 1;
+            if (self.keyboard_focus == id) self.keyboard_focus = null;
         }
 
         pub fn raise(self: *Self, id: u64) Error!void {
