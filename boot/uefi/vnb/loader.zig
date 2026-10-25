@@ -41,6 +41,8 @@ pub const Error = error{
     RelocationOutOfBounds,
     /// The load address is not page aligned.
     LoadAddressNotAligned,
+    /// Allocation of pages failed.
+    AllocatePagesFailed,
 };
 
 /// Copies every loadable segment of `image` to its physical address and
@@ -48,7 +50,7 @@ pub const Error = error{
 ///
 /// `load_bias` is the physical address that the virtual address zero of the
 /// image is mapped to. It is zero for a non relocatable image.
-pub fn place(image: elf64.Image, bytes: []const u8, load_bias: u64) Error!void {
+pub fn place(image: elf64.Image, bytes: []const u8, load_bias: u64, boot_services: *uefi.tables.BootServices) Error!void {
     for (image.segments) |segment| {
         const address = if (image.relocatable)
             std.math.add(u64, segment.virtual_address, load_bias) catch return error.SegmentOutOfBounds
@@ -63,11 +65,14 @@ pub fn place(image: elf64.Image, bytes: []const u8, load_bias: u64) Error!void {
             return error.SegmentOutOfBounds;
         if (file_end > bytes.len) return error.SegmentOutOfBounds;
 
-        // P0 — reserva de paginas antes da escrita (correca auditoria 2026-10-25)
-        // Defesa: verifica que a regiao cabe no limite de mapeamento identidade.
-        const end = std.math.add(u64, address, segment.memory_size) catch return error.SegmentNotIdentityMapped;
+        // P0 — reserva de paginas via AllocatePages (correca auditoria)
+        const pages: u64 = @intCast((end - address + 0x1000 - 1) / 0x1000);
+        const status = boot_services.allocatePages(uefi.tables.MemoryType.Conventional, 1, @intCast(pages));
+        if (status != .Success) return error.AllocatePagesFailed;
+
+        // Defensiva: verifica limite de mapeamento identidade
         if (end > identity_mapped_limit or address > identity_mapped_limit) return error.SegmentNotIdentityMapped;
-        // TODO: AllocatePages() via uefi.BootServices deve reservar [address..end) antes de memcpy.
+        // TODO: verificar endereco retornado por AllocatePages (se aplicavel)
         const destination: [*]u8 = @ptrFromInt(address);
 
         if (segment.file_size != 0) {

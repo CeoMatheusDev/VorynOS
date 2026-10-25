@@ -202,7 +202,7 @@ fn boot(out: *console.Console) !void {
     else
         0;
 
-    try loader.place(image, kernel_buffer[0..kernel_size], load_bias);
+    try loader.place(image, kernel_buffer[0..kernel_size], load_bias, boot_services);
     flags |= handoff.flag_kernel_from_disk;
 
     const kernel_base = image.base + load_bias;
