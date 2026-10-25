@@ -252,6 +252,16 @@ test "input target resolution respects focus and z order" {
     try std.testing.expectEqual(@as(?u64, 22), stack.pointerTarget(0, 0));
 }
 
+test "focus authorization rejects foreign owner" {
+    var stack: WindowStack(1) = .{};
+    const window: Window = .{ .x = 0, .y = 0, .width = 1, .height = 1, .color = 1 };
+    try stack.addOwned(10, 100, window);
+    try std.testing.expectError(error.Unauthorized, stack.setKeyboardFocusOwned(20, 100));
+    try std.testing.expectEqual(@as(?u64, null), stack.keyboardFocus());
+    try stack.setKeyboardFocusOwned(10, 100);
+    try std.testing.expectEqual(@as(?u64, 10), stack.keyboardTarget());
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
