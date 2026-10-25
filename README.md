@@ -103,8 +103,8 @@ Development is organized into incremental milestones, each with technical accept
 | F5 | Runtime, SDK, and native applications | 🟢 Locally Tested |
 | M0.5 | SMP / APIC / EEVDF / spinlocks / APs (`smp.zig`, `apic.zig`, `scheduler.zig`, `installSmp`) | ✅ Completed — `main` (`53dc842`) |
 | F6 | Graphics subsystem and desktop environment | 🚧 Experimental — F6.30 `input_wait` (syscall 23, ABI v13) verified |
-| F7 | Virtio drivers / PCI / block / net (`virtio.zig`, `virtio_blk.zig`, `virtio_net.zig`, `pci.zig`) | 🟢 Em desenvolvimento — base + VRing + PCI scan + BlockDevice + NetworkDevice (`f7adcf5`) |
-| F8 | Compatibility with external formats and APIs | 🟢 Iniciado — `elf_compat.zig` (ELF64 x86_64 val), `docs/reports/f8/abi-v13-vs-linux.md`, `docs/reports/f8/compatibility-base.md` (`6c44116`, `00558c6`) |
+| F7 | Virtio drivers / PCI / block / net (`virtio.zig`, `virtio_blk.zig`, `virtio_net.zig`, `pci.zig`) | 🟢 Base completo (`f7adcf5` + loader P0 `7fc34e3`) — F7 base + PCI + blk + net verificado |
+| F8 | Compatibility with external formats and APIs | ✅ F8 concluído — `vex.zig` funcional + `elf_compat.zig` + ABI v13 (`12ac3a2`) |
 | F9 | Artificial intelligence infrastructure | 📋 Proposed |
 | F10 | Installation, security, recovery, and production readiness | 📋 Proposed |
 
