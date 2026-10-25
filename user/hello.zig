@@ -319,6 +319,7 @@ fn receiveClientFrame(surface: *const composition.Surface, address: u64, pixel_f
         _ = sdk.write("client frame checksum mismatch\n");
         writeHashMarker("client expected checksum=0x", result.value);
         writeHashMarker("client received checksum=0x", received_hash);
+        _ = sdk.write("client frame rejected before presentation\n");
         return false;
     }
     if (!presentSurface(surface, address, pixel_format)) return false;
