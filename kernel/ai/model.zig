@@ -88,6 +88,11 @@ pub fn fromBytes(buf: []const u8) !Info {
     };
 }
 
+pub const Model = struct {
+    info: Info,
+    data: []const u8,
+};
+
 pub fn fromBuffer(buf: []const u8) !Model {
     const limits = security.Limits{
         .max_model_bytes = 256 * 1024 * 1024,
@@ -121,6 +126,7 @@ pub fn validate(buf: []const u8) !void {
 /// Carrega um modelo e executa uma inferencia deterministica com testes.
 /// Nenhum mock substitui execucao real; o resultado numerico e verificavel.
     pub fn infer(buf: []const u8, input: []const f32, output: []f32) !void {
+        _ = input; // reserved for full linear layer in F9.4
         try validate(buf);
         const info = try fromBytes(buf);
         const out_len = info.output_dims;
