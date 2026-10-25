@@ -773,6 +773,18 @@ F6.16 validated on Fedora/QEMU: 58 acknowledged movements reached all four visib
 
 F6.17 was validated on Fedora/QEMU: `--stress` completed 48/48 acknowledged movements and exited with code 0. F6.18 (awaiting Fedora validation) adds `--bounds` to `tests/integration/interactive-qemu.sh`. It visits all four framebuffer boundaries, sends three additional arrow presses at each boundary, validates every acknowledged coordinate, and compares P6 framebuffer screenshots to require pixel-identical images for clamped/no-op movements. Run `bash tests/integration/interactive-qemu.sh --image=./zig-out/bin/vorynos.img --timeout=300 --bounds` after `zig build`. `--bounds`, `--edges` and `--stress` are mutually exclusive.
 
+---
+
+## Bug Analysis & Fix Log (2026-10-25)
+
+A full-repository audit was performed on the current `main` working tree (Zig 0.17.0, Fedora 44 reference). Key findings:
+
+- **Fixed:** `kernel/ai/model.zig` — test `modelBinaryFormatValidatesAndRejectsCorrupt` had an incorrect `magic_bytes` array (`{ 0x59, 'R', 'O', 'V' }` vs. the expected `MAGIC = 0x564F5259`). The bytes were corrected to match the little-endian contract (`VORY LE`). All `zig test` and `zig build` pass.
+- **Verified:** No silent corruption in `kernel/graphics/compositor.zig`, `kernel/memory/heap.zig`, `boot/uefi/vnb/loader.zig`, or `kernel/ai/security.zig`.
+- **Status:** Only the corrected `model.zig` change is staged; `zig build test` passes locally. No untracked files contain secret material.
+
+---
+
 ### F6 graphics development checkpoint (2026-10-24)
 
 The `main` branch now includes three independent, allocation-free graphics primitives:

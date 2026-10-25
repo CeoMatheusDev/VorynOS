@@ -164,7 +164,7 @@ test "modelBinaryFormatValidatesAndRejectsCorrupt" {
     var package: [128]u8 = undefined;
     @memset(&package, 0);
     // Magic
-    const magic_bytes = [4]u8{ 'V', 'O', 'R', 'Y' }; // VORY LE = 0x564F5259
+    const magic_bytes = [4]u8{ 0x59, 'R', 'O', 'V' }; // VORY LE = 0x564F5259
     @memcpy(package[0..4], &magic_bytes);
     // Version 1
     package[4] = 0x01; package[5] = 0x00;
