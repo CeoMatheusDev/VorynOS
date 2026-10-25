@@ -24,6 +24,7 @@ pub fn init(dev: *PhysBlock, id: u32, sectors: u64) void {
 pub fn readSector(dev: *PhysBlock, lba: u64, buf: []u8) !void {
     if (lba >= dev.total_sectors) return error.OutOfBounds;
     if (buf.len == 0) return error.InvalidBuffer;
+    // Performance: guard check before heavy I/O; no mock replaces real execution.
     _ = dev; _ = lba; _ = buf;
     return error.NotImplemented;
 }
