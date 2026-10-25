@@ -145,6 +145,11 @@ pub fn WindowStack(comptime capacity: usize) type {
             return self.entries[index].owner;
         }
 
+        pub fn ownerOf(self: *const Self, id: u64) ?u64 {
+            const index = self.indexOf(id) orelse return null;
+            return self.entries[index].owner;
+        }
+
         pub fn keyboardTarget(self: *const Self) ?u64 {
             const id = self.keyboard_focus orelse return null;
             const index = self.indexOf(id) orelse return null;
