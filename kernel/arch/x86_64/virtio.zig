@@ -135,6 +135,21 @@ test "virtioDeviceStatusBitsDefined" {
     try std.testing.expectEqual(@as(u8, 4), DeviceStatus.features_ok);
 }
 
+test "vringDescriptorSetupAndLimits" {
+    var ring = initVRing();
+    setupDescriptor(&ring, 0, 0x1000, 4096, 0);
+    try std.testing.expectEqual(@as(u64, 0x1000), ring.descriptors[0].addr);
+    try std.testing.expectEqual(@as(u32, 4096), ring.descriptors[0].len);
+    // Boundary: index >= 16 must not write (guarded by if).
+    setupDescriptor(&ring, 16, 0x9999, 9999, 0);
+    try std.testing.expectEqual(@as(u64, 0x1000), ring.descriptors[0].addr); // unchanged
+}
+
+test "pciVirtioInfoDefaults" {
+    const info = detectVirtioDevice(0);
+    try std.testing.expectEqual(@as(u16, 0x1AF4), info.vendor);
+}
+
 
 
 /// Detecção PCI básica para Virtio (F7 — PROPOSTO).
