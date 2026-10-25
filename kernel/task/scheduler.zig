@@ -98,6 +98,19 @@ pub const Task = struct {
     /// ready queue, and the scheduler chooses the next task. A quantum of
     /// zero means that the task is not subject to time-slicing.
     quantum: u16 = 0,
+    /// Peso da tarefa para o EEVDF (virtual runtime).
+    ///
+    /// Um peso maior significa mais tempo de CPU por tick. O valor padrao
+    /// 1024 corresponde ao peso unitario (nice 0). O runtime virtual
+    /// avanca em `1024 / weight` por tick.
+    weight: u32 = 1024,
+    /// Runtime virtual acumulado da tarefa (EEVDF).
+    vruntime: i64 = 0,
+    /// Prazo virtual da tarefa (EEVDF): o escalonador escolhe, entre as
+    /// tarefas elegiveis, a que tem o menor prazo.
+    deadline: i64 = 0,
+    /// Fatia de tempo da tarefa, em ticks, usada para calcular o prazo.
+    slice: u16 = 10,
 };
 
 /// Maximum number of tasks that the kernel supports.
@@ -265,6 +278,23 @@ pub const Scheduler = struct {
         task.state = .ready;
         task.priority = priority;
 
+        // O EEVDF herda o menor vruntime das tarefas prontas, para que a
+        // tarefa nova nao seja adiada indefinidamente.
+        var min_vruntime: i64 = 0;
+        var has_ready = false;
+        for (self.tasks) |slot| {
+            const other = slot orelse continue;
+            if (other == task) continue;
+            if (other.state != .ready) continue;
+            if (!has_ready or other.vruntime < min_vruntime) {
+                min_vruntime = other.vruntime;
+                has_ready = true;
+            }
+        }
+        task.vruntime = if (has_ready) min_vruntime else 0;
+        const quantum_vtime: i64 = @divTrunc(@as(i64, task.slice) * 1024, @as(i64, @intCast(task.weight)));
+        task.deadline = task.vruntime + @max(@as(i64, 1), quantum_vtime);
+
         return task;
     }
 
@@ -332,6 +362,7 @@ pub const Scheduler = struct {
     pub fn tick(self: *Scheduler, timeout_result: u64) bool {
         self.statistics.ticks += 1;
         _ = channel.expireAll(self.statistics.ticks, timeout_result);
+
         return self.prepareNext();
     }
 
@@ -343,6 +374,7 @@ pub const Scheduler = struct {
     /// tick of the timer, and therefore the tick counter does not move.
     fn prepareNext(self: *Scheduler) bool {
         const current = self.current[smp.cpuId()] orelse return false;
+
 
         // Decrement the quantum of the current task, and preempt it if it
         // has expired. A quantum of zero means the task is not subject to
