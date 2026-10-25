@@ -115,6 +115,7 @@ pub fn build(b: *std.Build) void {
         .pic = true,
     });
     user_module.addImport("voryn_sdk", sdk_module);
+    user_module.addImport("voryn_input", input_contract);
     user_module.addAssemblyFile(b.path("user/start.s"));
     const user_executable = b.addExecutable(.{
         .name = "voryn-native-hello",
@@ -130,6 +131,7 @@ pub fn build(b: *std.Build) void {
         .pic = true,
     });
     client_module.addImport("voryn_sdk", sdk_module);
+    client_module.addImport("voryn_input", input_contract);
     client_module.addAssemblyFile(b.path("user/start.s"));
     const client_executable = b.addExecutable(.{
         .name = "voryn-native-client",
@@ -313,6 +315,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    user_composition_test_module.addImport("voryn_input", input_host_module);
     const user_composition_tests = b.addTest(.{
         .name = "user-composition-tests",
         .root_module = user_composition_test_module,
