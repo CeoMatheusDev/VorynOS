@@ -2848,8 +2848,9 @@ fn verifyFsLifecycleProbe() void {
     // after the native task exits, before comparing resource counters.
     // Unexpected files or leaked descriptors still fail the strict baseline.
     fs.unlink("/apps/truncate-probe.txt") catch |err| {
-        serial.printLine("[VNK] FATAL: truncate probe cleanup: {s}", .{@errorName(err)});
-        port.haltForever();
+        // A failed ring-3 probe may never create the file. Report the
+        // missing artifact without suppressing subsequent diagnostics.
+        serial.printLine("[VNK] fs: truncate probe cleanup failed: {s}", .{@errorName(err)});
     };
     if (fs.freeBlockCount() != lifecycle_blocks_before or
         fs.freeInodeCount() != lifecycle_inodes_before)
