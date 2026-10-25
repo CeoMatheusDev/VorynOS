@@ -42,16 +42,39 @@ pub const Window = struct {
 pub fn WindowStack(comptime capacity: usize) type {
     return struct {
         const Self = @This();
-        pub const Error = error{ Full, Duplicate, NotFound };
-        const Entry = struct { id: u64, window: Window };
+        pub const Error = error{ Full, Duplicate, NotFound, Unauthorized };
+        const Entry = struct { id: u64, owner: u64, window: Window };
         entries: [capacity]Entry = undefined,
         len: usize = 0,
 
         pub fn add(self: *Self, id: u64, window: Window) Error!void {
             if (self.indexOf(id) != null) return error.Duplicate;
             if (self.len == capacity) return error.Full;
-            self.entries[self.len] = .{ .id = id, .window = window };
+            self.entries[self.len] = .{ .id = id, .owner = 0, .window = window };
             self.len += 1;
+        }
+
+        pub fn addOwned(self: *Self, owner: u64, id: u64, window: Window) Error!void {
+            try self.add(id, window);
+            self.entries[self.len - 1].owner = owner;
+        }
+
+        pub fn moveOwned(self: *Self, owner: u64, id: u64, x: u32, y: u32) Error!void {
+            const index = self.indexOf(id) orelse return error.NotFound;
+            if (self.entries[index].owner != owner) return error.Unauthorized;
+            try self.move(id, x, y);
+        }
+
+        pub fn removeOwned(self: *Self, owner: u64, id: u64) Error!void {
+            const index = self.indexOf(id) orelse return error.NotFound;
+            if (self.entries[index].owner != owner) return error.Unauthorized;
+            try self.remove(id);
+        }
+
+        pub fn raiseOwned(self: *Self, owner: u64, id: u64) Error!void {
+            const index = self.indexOf(id) orelse return error.NotFound;
+            if (self.entries[index].owner != owner) return error.Unauthorized;
+            try self.raise(id);
         }
 
         pub fn remove(self: *Self, id: u64) Error!void {
