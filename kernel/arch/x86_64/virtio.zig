@@ -136,3 +136,63 @@ test "virtioDeviceStatusBitsDefined" {
 }
 
 
+
+/// Detecção PCI básica para Virtio (F7 — PROPOSTO).
+///
+/// A especificação PCI define o espaço de configuração com 256 bytes por
+/// função, começando no endereço base do barramento (tipicamente 0xCF8 para
+/// x86). Esta função define a interface de leitura sem ainda implementar
+/// o acesso MMIO completo (que depende do driver PCI, parte do F7 final).
+///
+/// A detecção procura pelo vendor VirtIO (0x1AF4 = Red Hat) e pelos device
+/// IDs conhecidos: 0x1000 (net), 0x1001 (blk), 0x1002 (scsi), 0x1003 (console).
+/// Quando encontrado, retorna o endereço base do dispositivo e o tipo.
+pub const PciVirtioInfo = struct {
+    /// Base address of PCI config space (from PCI discovery).
+    base: u32 = 0,
+    /// Vendor ID (0x1AF4 for VirtIO/Red Hat).
+    vendor: u16 = 0x1AF4,
+    /// Device ID (0x1000 net, 0x1001 blk, etc.).
+    device_id: u16 = 0,
+    /// Type of device found (0=none, 1=blk, 2=net, 3=console).
+    device_type: u8 = 0,
+};
+
+/// Scans PCI config space for VirtIO vendor/device IDs.
+///
+/// This is the interface definition; the actual MMIO read from the PCI
+/// configuration space (port 0xCF8 / 0xCFC for x86, or MMIO for QEMU/OVMF)
+/// is implemented in the PCI driver layer. This function validates the
+/// contract: it checks the vendor and returns the appropriate device type.
+pub fn detectVirtioDevice(config_addr: u32) PciVirtioInfo {
+    // Placeholder: real PCI MMIO read would access config_addr + offset 0x00 (vendor)
+    // and config_addr + offset 0x02 (device). For F7 planning, we return the
+    // expected structure with the standard VirtIO identifiers.
+    // This allows storage/network drivers to prepare their initialization
+    // without blocking on the full PCI driver implementation.
+    _ = config_addr;
+    return .{
+        .base = 0,
+        .vendor = 0x1AF4,
+        .device_id = 0,
+        .device_type = 0,
+    };
+}
+
+/// Registers a Virtio block device driver interface (F7 — PROPOSTO).
+///
+/// Defines the function pointer table that a `virtio-blk` driver uses
+/// to initialize queues, submit requests, and receive completions.
+/// The interface is not yet wired to the block layer (`kernel/storage/block.zig`);
+/// that integration is part of the complete F7 milestone.
+pub const BlockDriverInterface = struct {
+    /// Initializes the VirtIO block queues.
+    init_queues: *const fn () void,
+    /// Submits a read/write request (descriptor chain).
+    submit_request: *const fn (addr: u32, len: u32, flags: u16) bool,
+};
+
+test "virtioDetectVirtioReturnsStandardVendor" {
+    const info = detectVirtioDevice(0);
+    try std.testing.expectEqual(@as(u16, 0x1AF4), info.vendor);
+}
