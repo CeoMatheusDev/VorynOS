@@ -119,6 +119,19 @@ pub fn WindowStack(comptime capacity: usize) type {
             return self.entries[self.len - 1].id;
         }
 
+        pub fn setKeyboardFocus(self: *Self, id: u64) Error!void {
+            if (self.indexOf(id) == null) return error.NotFound;
+            self.keyboard_focus = id;
+        }
+
+        pub fn clearKeyboardFocus(self: *Self) void {
+            self.keyboard_focus = null;
+        }
+
+        pub fn keyboardFocus(self: *const Self) ?u64 {
+            return self.keyboard_focus;
+        }
+
         pub fn compose(self: *const Self, surface: *Surface, background: u32) void {
             surface.fillBackground(background);
             for (self.entries[0..self.len]) |entry| surface.paint(entry.window);
