@@ -98,6 +98,11 @@ pub fn WindowStack(comptime capacity: usize) type {
             self.entries[index].window.y = y;
         }
 
+        pub fn focused(self: *const Self) ?u64 {
+            if (self.len == 0) return null;
+            return self.entries[self.len - 1].id;
+        }
+
         pub fn compose(self: *const Self, surface: *Surface, background: u32) void {
             surface.fillBackground(background);
             for (self.entries[0..self.len]) |entry| surface.paint(entry.window);
