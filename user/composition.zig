@@ -300,6 +300,13 @@ test "focusAt selects visible window without changing z order" {
     try std.testing.expectEqual(@as(?u64, null), stack.keyboardFocus());
 }
 
+test "pointer motion leaves keyboard focus unchanged" {
+    var stack: WindowStack(1) = .{};
+    const event: input.PointerEvent = .{ .x = 0, .y = 0 };
+    try std.testing.expectEqual(@as(?u64, null), try stack.focusPointerEvent(&event, 4, 4));
+    try std.testing.expectEqual(@as(?u64, null), stack.keyboardFocus());
+}
+
 /// Superfície linear de pixels de 32 bits.
 ///
 /// `stride` é o número de pixels entre o início de duas linhas. Ele pode
