@@ -46,6 +46,7 @@ pub fn WindowStack(comptime capacity: usize) type {
         const Entry = struct { id: u64, owner: u64, window: Window };
         entries: [capacity]Entry = undefined,
         len: usize = 0,
+        keyboard_focus: ?u64 = null,
 
         pub fn add(self: *Self, id: u64, window: Window) Error!void {
             if (self.indexOf(id) != null) return error.Duplicate;
