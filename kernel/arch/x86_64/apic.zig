@@ -257,11 +257,11 @@ pub fn sendSipi(apic_id: u32, vector: u8) void {
         cpu.pause();
     }
     write32(ApicOffset.icr_high, apic_id << 24);
-    const command: u32 = IcrDeliveryMode.startup |
-        IcrLevel.assert |
-        IcrTriggerMode.edge |
-        IcrDestinationMode.physical |
-        vector;
+    const command: u32 = @as(u32, @intFromEnum(IcrDeliveryMode.startup)) |
+        @as(u32, @intFromEnum(IcrLevel.assert)) |
+        @as(u32, @intFromEnum(IcrTriggerMode.edge)) |
+        @as(u32, @intFromEnum(IcrDestinationMode.physical)) |
+        @as(u32, vector);
     write32(ApicOffset.icr_low, command);
 }
 

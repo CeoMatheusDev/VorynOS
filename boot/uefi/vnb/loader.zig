@@ -23,6 +23,7 @@
 //! instead of relying on it.
 
 const std = @import("std");
+const uefi = @import("uefi.zig");
 const voryn = @import("voryn_shared");
 
 const elf64 = voryn.elf64;
