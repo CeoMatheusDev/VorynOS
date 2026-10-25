@@ -119,6 +119,13 @@ test "pointer ABI layout remains fixed" {
     try std.testing.expectEqual(@as(usize, 20), @offsetOf(PointerEvent, "flags"));
 }
 
+test "pointer validator accepts motion and primary press" {
+    const motion: PointerEvent = .{ .x = 10, .y = 20 };
+    try validatePointer(&motion);
+    const press: PointerEvent = .{ .kind = pointer_kind_button, .button = pointer_button_primary, .flags = pointer_flag_pressed };
+    try validatePointer(&press);
+}
+
 test "input event layout is stable" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(InputEvent));
     try std.testing.expectEqual(@as(usize, 0), @offsetOf(InputEvent, "version"));
