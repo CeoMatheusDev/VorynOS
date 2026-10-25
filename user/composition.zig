@@ -168,6 +168,24 @@ pub fn WindowStack(comptime capacity: usize) type {
             return self.entries[index].owner;
         }
 
+        /// Resolve both window and owner from one registry lookup.
+        /// Owner IDs are compositor metadata, not authenticated IPC senders.
+        pub const Recipient = struct { window_id: u64, owner_id: u64 };
+
+        pub fn pointerRecipient(self: *const Self, x: u32, y: u32) ?Recipient {
+            const id = self.hitTest(x, y) orelse return null;
+            const index = self.indexOf(id) orelse return null;
+            const entry = self.entries[index];
+            return .{ .window_id = entry.id, .owner_id = entry.owner };
+        }
+
+        pub fn keyboardRecipient(self: *const Self) ?Recipient {
+            const id = self.keyboard_focus orelse return null;
+            const index = self.indexOf(id) orelse return null;
+            const entry = self.entries[index];
+            return .{ .window_id = entry.id, .owner_id = entry.owner };
+        }
+
         pub fn keyboardTarget(self: *const Self) ?u64 {
             const id = self.keyboard_focus orelse return null;
             const index = self.indexOf(id) orelse return null;
