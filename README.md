@@ -292,13 +292,15 @@ The VNX message channel delivers messages between processes, and responses retur
 
 Interprocess memory copying performs an actual data copy: the calling process's address space remains unchanged.
 
+Features verified (M0.5): SMP boot via SIPI, per-CPU data, APIC local timer, spinlocks, EEVDF scheduler, IPI reschedule.
+
 Features that do not yet exist include:
 
 - Threads.
 - A physical block driver (NVMe/AHCI) and automatic boot mounting from VNV.
-- SMP support and EEVDF scheduler.
 - VLIB (native runtime libraries), VPK package manager and on-device toolchain.
 - Physical hardware validation.
+- On-device toolchain and VPK package manager.
 
 These features belong to upcoming development increments.
 
