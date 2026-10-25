@@ -73,6 +73,27 @@ pub fn unpackWindow(value: u64) WindowGeometry {
     };
 }
 
+/// Reject empty or out-of-bounds rectangles without overflowing x + width.
+/// Use this for every untrusted WNDPLACE message before reading pixels.
+pub fn validWindow(geometry: WindowGeometry, surface_w: u32, surface_h: u32) bool {
+    const x: u32 = geometry.x;
+    const y: u32 = geometry.y;
+    const w: u32 = geometry.width;
+    const h: u32 = geometry.height;
+    return w != 0 and h != 0 and x < surface_w and y < surface_h and
+        w <= surface_w - x and h <= surface_h - y;
+}
+
+test "window placement rejects empty, clipped and overflowing rectangles" {
+    const std = @import("std");
+    try std.testing.expect(validWindow(unpackWindow(packWindow(8, 8, 16, 16)), 32, 24));
+    try std.testing.expect(validWindow(unpackWindow(packWindow(0, 0, 32, 24)), 32, 24));
+    try std.testing.expect(!validWindow(unpackWindow(packWindow(0, 0, 0, 1)), 32, 24));
+    try std.testing.expect(!validWindow(unpackWindow(packWindow(31, 0, 2, 1)), 32, 24));
+    try std.testing.expect(!validWindow(unpackWindow(packWindow(0, 23, 1, 2)), 32, 24));
+    try std.testing.expect(!validWindow(unpackWindow(packWindow(65535, 0, 65535, 1)), 32, 24));
+}
+
 /// Largura da superfície do compositor, em pixels.
 pub const surface_width: u32 = 32;
 
