@@ -192,6 +192,21 @@ pub fn mapUserPage(virtual: u64, physical: u64) Error!void {
     return mapPage(virtual, physical, Flags.present | Flags.writable | Flags.user);
 }
 
+/// Maps a page of a device.
+///
+/// The page is writable and is not cached: a device register that the
+/// processor keeps in the cache would not observe the updates that the
+/// hardware makes, and a write could be merged with a later one. The page
+/// is also marked as not executable, because a device register is data and
+/// never an instruction stream.
+pub fn mapDevicePage(virtual: u64, physical: u64) Error!void {
+    return mapPage(
+        virtual,
+        physical,
+        Flags.present | Flags.writable | Flags.cache_disabled | Flags.no_execute,
+    );
+}
+
 /// Maps a page.
 ///
 /// The entries of the upper levels always carry the bit that allows the

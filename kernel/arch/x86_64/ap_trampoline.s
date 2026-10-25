@@ -13,56 +13,101 @@
 /*
  * Trampoline de inicializacao de AP (Application Processor).
  *
- * O trampoline e copiado pelo BSP para um endereco fisico abaixo de 1 MiB
- * (o endereco SIPI eh vetor * 4096 bytes) e recebido pelo AP via IPI
- * STARTUP. O AP comeca a executar em modo real nesse endereco.
+ * O BSP copia este bloco para uma pagina fisica abaixo de 1 MiB e envia
+ * uma IPI STARTUP (SIPI) para cada AP. O AP comeca a executar em modo real
+ * no endereco `vetor * 4096`, que e o inicio deste bloco.
  *
- * O trampoline:
- *   1. Monta uma GDT temporaria para modo protegido (32 bits).
- *   2. Entra em modo protegido (CR0.PE).
- *   3. Habilita PAE (CR4.PAE) e carregue PDPT para identidade mapeamento.
- *   4. Habilitacao de paginacao (CR0.PG).
- *   5. Ativa modo longo (EFER.LME) com far jump para segmento de codigo 64 bits.
- *   6. Salta para voryn_ap_entry no kernel, passando o ID da CPU em RDI.
+ * O bloco e independente da posicao: todos os enderecos internos sao
+ * diferencas entre rotulos do proprio bloco, e os enderecos absolutos que
+ * o hardware precisa (base da GDT, alvo do salto distante, CR3 e pilha)
+ * sao preenchidos pelo BSP na copia antes da SIPI.
  *
- * Todas as constantes de endereco sao relativas ao inicio do trampoline,
- * porque ele pode ser copiado para qualquer endereco fisico abaixo de 1 MiB.
+ * Sequencia:
+ *   1. modo real: DS = ES = SS = CS, calcula a base de execucao;
+ *   2. espera o BSP terminar de preencher a copia (palavra `ready`);
+ *   3. carrega a GDT temporaria e liga o modo protegido (CR0.PE);
+ *   4. modo protegido (32 bits): carrega o CR3 do kernel, liga PAE e
+ *      EFER.LME, liga a paginacao e salta para o modo longo;
+ *   5. modo longo (64 bits): carrega a pilha do AP, habilita FPU/SSE,
+ *      passa o numero logico da CPU em RDI e chama `voryn_ap_entry`.
+ *
+ * O AP nunca retorna: o laco final e uma salvaguarda.
+ *
+ * ABI no modo longo:
+ *   RDI - numero logico da CPU (inteiro de 32 bits, zero estendido).
+ *   RSP - topo da pilha de kernel do AP, alinhado a 16 bytes.
+ *
+ * Registradores: o codigo de modo real e de modo protegido usa EAX, EBX,
+ * ECX, ESI e EDX como temporarios; nenhum valor do BSP e preservado,
+ * porque o AP comeca com o estado do processador que a SIPI define.
  */
 
 .section .text
-.code16
 
-/* O trampoline comeca aqui (endereco real = vetor_SIPI * 4096). */
+/* --------------------------------------------------------------------- */
+/* Modo real (16 bits).                                                   */
+/* --------------------------------------------------------------------- */
+
+.code16
 .global voryn_ap_trampoline_start
 .type voryn_ap_trampoline_start, @function
 voryn_ap_trampoline_start:
-    /* Aguarda ate que o BSP libere a variavel de sincronizacao.
-       O BSP escreve 1 em ap_ready quando o trampoline ja foi copiado
-       e o AP pode comecar a inicializacao. */
-    .await_ready:
-        movw $0x0000, %ax
-        movw %ax, %es
-        movw $ap_ready, %di
-        cmpw $1, %es:(%di)
-        je .setup_gdt
-        jmp .await_ready
+.Lstart:
+.Lbase:
+    cli
 
-    /* Monta a GDT temporaria para modo protegido. */
-    .setup_gdt:
-        lgdt gdt_descriptor(%rip)
+    /* A SIPI define CS = vetor << 8 e IP = 0. Os demais segmentos sao
+       carregados com o mesmo valor, de modo que todo acesso a dados use
+       um deslocamento relativo ao inicio do bloco. */
+    movw %cs, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %ss
+    movw $(stack_top - .Lstart), %sp
 
-        /* Habilita modo protegido (CR0.PE). */
-        movl %cr0, %eax
-        orl $0x1, %eax
-        movl %eax, %cr0
+    /* ESI = base linear da copia (CS << 4). O valor sobrevive a troca de
+       modo e e usado pelo codigo de 32 bits para acessar os campos. */
+    xorl %esi, %esi
+    movw %cs, %si
+    shll $4, %esi
 
-        /* Far jump para segmento de codigo 32 bits para esvaziar a fila. */
-        ljmp $0x08, $protected_mode_start
+    /* Espera o BSP preencher a copia. A escrita de `ready` e a ultima,
+       depois de todos os outros campos; o x86 mantem a ordem das
+       escritas, portanto ver 1 garante que o resto esta pronto. */
+.Lwait_ready:
+    movw $(ready - .Lstart), %bx
+    cmpw $1, (%bx)
+    je .Lgdt
+    pause
+    jmp .Lwait_ready
 
-/* Codigo de 32 bits (modo protegido). */
+.Lgdt:
+    /* Carrega a GDT temporaria. O prefixo 0x66 seleciona o formato de
+       32 bits do operando (limite de 16 bits e base de 32 bits). */
+    movw $(gdt_descriptor - .Lstart), %bx
+    .byte 0x66
+    lgdt (%bx)
+
+    /* Liga o modo protegido. */
+    movl %cr0, %eax
+    orl $1, %eax
+    movl %eax, %cr0
+
+    /* Salto distante para o codigo de 32 bits, pelo ponteiro preenchido
+       pelo BSP. O prefixo 0x66 seleciona o ponteiro de 4 bytes de offset
+       e 2 bytes de seletor. */
+    movw $(far32 - .Lstart), %bx
+    .byte 0x66
+    ljmp *(%bx)
+
+/* --------------------------------------------------------------------- */
+/* Modo protegido (32 bits).                                              */
+/* --------------------------------------------------------------------- */
+
 .code32
+.global voryn_ap_trampoline_protected_mode
+voryn_ap_trampoline_protected_mode:
 protected_mode_start:
-    /* Segmentos de dados para modo protegido. */
     movw $0x10, %ax
     movw %ax, %ds
     movw %ax, %es
@@ -70,40 +115,43 @@ protected_mode_start:
     movw %ax, %gs
     movw %ax, %ss
 
-    /* Cria uma pilha temporaria abaixo do trampoline. */
-    movl $stack_top, %esp
+    /* EBX = base linear da copia. */
+    movl %esi, %ebx
 
-    /* Habilita PAE (CR4 bit 5). */
+    /* Habilita PAE (CR4.PAE), requisito do modo longo. */
     movl %cr4, %eax
     orl $0x20, %eax
     movl %eax, %cr4
 
-    /* Define o endereco fisico da PDPT (Page Directory Pointer Table).
-       Usamos uma tabela fixa no final do trampoline. */
-    movl $pdpt, %eax
+    /* Carrega as tabelas de paginas do kernel, preenchidas pelo BSP. */
+    movl (cr3_value - .Lstart)(%ebx), %eax
     movl %eax, %cr3
 
-    /* Habilita paginacao (CR0.PG) mantendo PE. */
-    movl %cr0, %eax
-    orl $0x80000000, %eax
-    movl %eax, %cr0
-
-    /* Habilita modo longo (EFER.LME, bit 8). */
+    /* Liga EFER.LME. */
     movl $0xC0000080, %ecx
     rdmsr
     orl $0x100, %eax
     wrmsr
 
-    /* Habilita paginacao novamente para ativar modo longo (CR0.PG ja esta setado). */
+    /* Liga a paginacao. Com PAE e LME ja ligados, o processador entra no
+       modo longo; o salto distante abaixo carrega um seletor de 64 bits. */
+    movl %cr0, %eax
+    orl $0x80000000, %eax
+    movl %eax, %cr0
 
-    /* Far jump para segmento de codigo 64 bits (seleletor 0x18). */
-    ljmp $0x18, $long_mode_start
+    /* Preenche o ponteiro do salto para o modo longo com o endereco
+       linear de `long_mode_start` e salta. */
+    leal (long_mode_start - .Lstart)(%ebx), %eax
+    movl %eax, (far64 - .Lstart)(%ebx)
+    movw $0x18, (far64 - .Lstart + 4)(%ebx)
+    ljmp *(far64 - .Lstart)(%ebx)
 
-/* Codigo de 64 bits (modo longo). */
+/* --------------------------------------------------------------------- */
+/* Modo longo (64 bits).                                                  */
+/* --------------------------------------------------------------------- */
+
 .code64
 long_mode_start:
-    /* Segmentos de dados para modo longo (sao ignorados pelo hardware,
-       mas precisam ser validos para instrucoes de segmento). */
     movw $0x10, %ax
     movw %ax, %ds
     movw %ax, %es
@@ -111,91 +159,126 @@ long_mode_start:
     movw %ax, %gs
     movw %ax, %ss
 
-    /* Estabelece a pilha temporaria para modo longo. */
-    lea ap_long_stack_end(%rip), %rsp
-    and $-16, %rsp
+    /* Habilita a FPU e as extensoes SSE para o codigo do kernel. O estado
+       de reset do AP nao garante CR0.EM = 0 nem CR4.OSFXSR. */
+    movq %cr0, %rax
+    andq $~((1 << 2) | (1 << 3)), %rax
+    orq $(1 << 1), %rax
+    movq %rax, %cr0
+    movq %cr4, %rax
+    orq $((1 << 9) | (1 << 10)), %rax
+    movq %rax, %cr4
 
-    /* O ID da CPU ja foi gravado pelo BSP no byte de marcador
-       logo apos o trampoline (offset AP_CPU_ID_OFFSET). */
-    movb $0, %edi  /* placeholder: substituido pelo BSP antes de copiar */
+    /* A base do bloco e obtida por RIP; os campos abaixo sao acessados
+       por deslocamento constante a partir dela. */
+    leaq .Lbase(%rip), %rbx
 
-    /* Chama o ponto de entrada do AP no kernel. */
-    call voryn_ap_entry
+    /* Pilha de kernel do AP, preenchida pelo BSP. */
+    movq (stack_top_value - .Lbase)(%rbx), %rsp
+    andq $-16, %rsp
 
-    /* Defensive: o AP nunca deve voltar daqui. */
-1:
+    /* Numero logico da CPU, preenchido pelo BSP. */
+    movl (cpu_id_value - .Lbase)(%rbx), %edi
+
+    call *(entry_value - .Lbase)(%rbx)
+
+    /* O ponto de entrada nao retorna; o laco e uma salvaguarda. */
+.Lhalt:
     cli
     hlt
-    jmp 1b
+    jmp .Lhalt
 
 /* --------------------------------------------------------------------- */
-/* Estruturas de dados do trampoline.                                    */
+/* Dados do trampoline.                                                   */
 /* --------------------------------------------------------------------- */
 
-/* GDT temporaria para modo protegido (32 bits). */
-/*   Descritor nulo (8 bytes) */
-/*   Descritor de codigo 32 bits (base=0, limite=4 GiB, presente, ring 0) */
-/*   Descritor de dados 32 bits (base=0, limite=4 GiB, presente, ring 0) */
+/* GDT temporaria. Os descritores de codigo e dados de 32 bits usam base
+   zero e limite de 4 GiB; o de 64 bits usa o bit L e limite zero. */
 .align 8
+.global voryn_ap_trampoline_gdt_table
+voryn_ap_trampoline_gdt_table:
 gdt_table:
-    .quad 0                               /* nulo */
-    .quad 0x00CF9A000000FFFF              /* codigo 32 bits */
-    .quad 0x00CF92000000FFFF              /* dados 32 bits */
-
-/* Descritor de codigo 64 bits (base=0, limite=0, presente, ring 0, long mode). */
-    .quad 0x00209A0000000000              /* codigo 64 bits */
-
+    .quad 0x0000000000000000
+    .quad 0x00CF9A000000FFFF
+    .quad 0x00CF92000000FFFF
+    .quad 0x00209A0000000000
 gdt_end:
 
-/* Descritor da GDT (limite + endereco base). */
+/* Pseudo-descritor da GDT: limite de 16 bits e base de 32 bits. A base e
+   preenchida pelo BSP. */
+.align 8
+.global voryn_ap_trampoline_gdt_descriptor
+voryn_ap_trampoline_gdt_descriptor:
 gdt_descriptor:
-    .word gdt_end - gdt_table - 1         /* limite */
-    .long gdt_table                       /* base linear */
+    .word gdt_end - gdt_table - 1
+    .long 0
 
-/* Pilha temporaria de 32 bits para o trampoline. */
-.align 16
-stack_space:
-    .skip 4096
-stack_top:
-
-/* PDPT para modo longo: identidade mapeamento dos primeiros 4 GiB.
-   Cada entrada da PDPT cobre 1 GiB (4 entradas de PD, cada uma cobre 256 MiB
-   com paginas de 2 MiB, ou usamos entries diretas). Para simplicidade,
-   mapeamos apenas o que precisamos para chegar ao kernel. */
-.align 4096
-pdpt:
-    .quad pdp_table                       /* PDPT[0] aponta para a tabela de paginas de diretorio */
-    .quad 0                               /* PDPT[1] */
-    .quad 0                               /* PDPT[2] */
-    .quad 0                               /* PDPT[3] */
-
-/* Tabela de paginas de diretorio (cobre 4 GiB com paginas de 2 MiB). */
-.align 4096
-pdp_table:
-    /* Entrada 0: 0 - 2 MiB (codigo do trampoline, mapeado identidade) */
-    .quad 0x00000083                      /* presente, escrita, pagina de 2 MiB (PS bit) */
-    /* Entradas 1-511: zeradas (511 entradas de 8 bytes cada = 4088 bytes) */
-    .zero 4088
-
-/* Variavel de sincronizacao: BSP escreve 1 quando o AP pode comecar. */
+/* Ponteiro do salto distante para o codigo de 32 bits. O BSP preenche o
+   offset; o seletor e fixo. */
 .align 4
-ap_ready:
+.global voryn_ap_trampoline_far32
+voryn_ap_trampoline_far32:
+far32:
+    .long 0
+    .word 0x08
+
+/* Ponteiro do salto distante para o codigo de 64 bits. O offset e
+   preenchido pelo proprio trampoline em modo protegido. */
+.align 4
+far64:
+    .long 0
+    .word 0x18
+
+/* CR3 do kernel (endereco fisico da PML4), preenchido pelo BSP. */
+.align 4
+.global voryn_ap_trampoline_cr3
+voryn_ap_trampoline_cr3:
+cr3_value:
+    .long 0
+
+/* Topo da pilha de kernel do AP, preenchido pelo BSP. */
+.align 8
+.global voryn_ap_trampoline_stack
+voryn_ap_trampoline_stack:
+stack_top_value:
+    .quad 0
+
+/* Numero logico da CPU, preenchido pelo BSP. */
+.align 4
+.global voryn_ap_trampoline_cpu_id
+voryn_ap_trampoline_cpu_id:
+cpu_id_value:
+    .long 0
+
+/* Endereco do ponto de entrada do AP no kernel, preenchido pelo BSP. */
+.align 8
+.global voryn_ap_trampoline_entry
+voryn_ap_trampoline_entry:
+entry_value:
+    .quad 0
+
+/* Palavra de sincronizacao: o BSP escreve 1 por ultimo. */
+.align 4
+.global voryn_ap_trampoline_ready
+voryn_ap_trampoline_ready:
+ready:
     .word 0
 
-/* Tamanho do trampoline (usado pelo BSP para copiar). */
+/* Pilha minima usada apenas ate a carga da pilha do kernel. */
+.align 16
+stack_space:
+    .skip 64
+stack_top:
+
+/* Tamanho do bloco, sem contar a propria palavra de tamanho. */
+.global voryn_ap_trampoline_end
+.type voryn_ap_trampoline_end, @object
+voryn_ap_trampoline_end:
+
 .global voryn_ap_trampoline_size
 .type voryn_ap_trampoline_size, @object
 voryn_ap_trampoline_size:
-    .quad . - voryn_ap_trampoline_start
-
-/* Simbolo de entrada do AP (definido em smp.zig). */
-.extern voryn_ap_entry
-
-/* Pilha temporaria de 64 bits para o trampoline antes de chamar voryn_ap_entry. */
-.align 16
-ap_long_stack_space:
-    .skip 4096
-ap_long_stack_end:
+    .quad voryn_ap_trampoline_end - .Lstart
 
 /* O kernel nao usa uma pilha executavel. */
 .section .note.GNU-stack,"",@progbits

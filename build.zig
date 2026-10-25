@@ -206,6 +206,7 @@ pub fn build(b: *std.Build) void {
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/interrupt.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/task.s"));
     kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/syscall.s"));
+    kernel_module.addAssemblyFile(b.path("kernel/arch/x86_64/ap_trampoline.s"));
     kernel_module.addImport("voryn_shared", shared);
     kernel_module.addAnonymousImport("native_app", .{
         .root_source_file = native_app_output,

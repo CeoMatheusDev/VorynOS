@@ -41,6 +41,7 @@ const cpu = @import("arch/x86_64/cpu.zig");
 const interrupt = @import("arch/x86_64/interrupt.zig");
 const paging = @import("arch/x86_64/paging.zig");
 const segment = @import("arch/x86_64/segment.zig");
+const smp = @import("arch/x86_64/smp.zig");
 const syscall = @import("arch/x86_64/syscall.zig");
 const timer = @import("arch/x86_64/timer.zig");
 
@@ -689,6 +690,10 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // the structures that they describe are not mapped anymore.
     copyBootInformation(boot);
 
+    // Descobre os processadores pela ACPI enquanto as tabelas de paginas
+    // do firmware ainda mapeiam a memoria por identidade.
+    smp.discover(boot.acpi_rsdp_address);
+
     reportMemory();
     reportFramebuffer(boot);
 
@@ -736,6 +741,12 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
 
     installScheduler();
     installTimer();
+
+    // O SMP e inicializado depois que o timer funciona: o APIC local e
+    // mapeado como dispositivo e os APs sao inicializados com a
+    // sequencia INIT-SIPI. A falha de um AP nao interrompe o boot.
+    const map_count = @min(boot_info.memory_map_entries, max_memory_descriptors);
+    smp.install(memory_map[0..map_count]);
 
     // The main task waits until the workers have been scheduled a few
     // times, which proves that the scheduler works.

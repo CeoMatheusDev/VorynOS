@@ -80,6 +80,30 @@ var segment_storage: [max_segments]elf64.Segment = undefined;
 /// Storage for the relocations of the kernel image.
 var relocation_storage: [max_relocations]elf64.Relocation = undefined;
 
+/// Locates the ACPI root system description pointer.
+///
+/// The firmware publishes the pointer through the configuration table of
+/// the system table, with one of the two GUIDs that the UEFI specification
+/// reserves for the ACPI root pointer. The pointer is returned as the
+/// physical address that the kernel receives in the handoff; zero means
+/// that the firmware did not publish one.
+fn findAcpiRsdp() u64 {
+    const table = uefi.system_table;
+    const acpi_20 = uefi.tables.ConfigurationTable.acpi_20_table_guid;
+    const acpi_10 = uefi.tables.ConfigurationTable.acpi_10_table_guid;
+
+    var index: usize = 0;
+    while (index < table.number_of_table_entries) : (index += 1) {
+        const entry = table.configuration_table[index];
+        if (uefi.Guid.eql(entry.vendor_guid, acpi_20) or
+            uefi.Guid.eql(entry.vendor_guid, acpi_10))
+        {
+            return @intFromPtr(entry.vendor_table);
+        }
+    }
+    return 0;
+}
+
 /// Chooses the physical address the kernel image is loaded at.
 ///
 /// The address is aligned to 2 MiB when the machine offers a region that is
@@ -202,6 +226,17 @@ fn boot(out: *console.Console) !void {
         return error.HandoffOutsideIdentityMapping;
     }
 
+    // The ACPI root pointer is read before the firmware is left: after
+    // `ExitBootServices` the configuration table is not available anymore,
+    // but the table that the pointer describes stays in memory.
+    const acpi_rsdp_address = findAcpiRsdp();
+    if (acpi_rsdp_address != 0) {
+        flags |= handoff.flag_acpi_rsdp;
+        out.printLine("[VNB] acpi: rsdp at 0x{x}", .{acpi_rsdp_address});
+    } else {
+        out.printLine("[VNB] acpi: no root pointer published", .{});
+    }
+
     const target: *handoff.BootHandoff = @ptrCast(@alignCast(handoff_buffer.ptr));
 
     // --- 6. Leave the firmware ---------------------------------------------
@@ -228,7 +263,7 @@ fn boot(out: *console.Console) !void {
             .kernel_entry = kernel_entry,
             .kernel_stack_top = 0,
             .kernel_stack_bottom = 0,
-            .acpi_rsdp_address = 0,
+            .acpi_rsdp_address = acpi_rsdp_address,
             .boot_processor_id = 0,
             .processor_count = 1,
             .firmware_size = uefi.system_table.hdr.header_size,

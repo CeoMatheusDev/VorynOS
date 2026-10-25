@@ -139,15 +139,15 @@ fn writePort(port: u16, value: u8) void {
 /// 10 MHz (valor tipico do QEMU; sistemas reais devem ler isso da ACPI).
 pub fn initApicTimer(ticks_per_second: u32) void {
     if (!apic.isMapped()) return;
+    if (ticks_per_second == 0) return;
 
     // Frequencia do barramento do APIC (tipicamente 10 MHz no QEMU).
     const bus_freq: u32 = 10_000_000;
     const divisor: u32 = bus_freq / ticks_per_second;
 
-    // Desabilita o timer antes de reconfigurar.
-    apic.timerOneShot(0);
-
-    // Configura modo periodico com o vetor do timer local.
+    // Para o timer, seleciona o divisor de 16 e arma o modo periodico.
+    apic.timerStop();
+    apic.timerDivide(0b0011);
     apic.timerPeriodic(divisor);
 
     frequency = ticks_per_second;
