@@ -467,6 +467,15 @@ timing = re.findall(
 )
 if len(timing) != len(benchmark):
     sys.exit("missing or unmatched F15.4 redraw timing records")
+detail = re.findall(
+    r"\[VNK\] graphics: redraw detail geometry_cycles=(\d+) paint_cycles=(\d+)",
+    log,
+)
+if len(detail) != len(benchmark):
+    sys.exit("missing or unmatched F15.5 redraw detail records")
+for geometry, paint in detail:
+    if int(paint) <= 0:
+        sys.exit("F15.5 painting must consume positive cycles")
 if not summary or len(summary) != len(window) or len(summary) != len(benchmark):
     sys.exit("missing or unmatched F14 latency/redraw records")
 if len(summary) < 16:
