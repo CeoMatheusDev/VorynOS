@@ -150,6 +150,11 @@ test "pointer validator rejects unsupported button events" {
     try std.testing.expectError(error.InvalidKind, validatePointer(&event));
 }
 
+/// Reject pointer coordinates outside the active surface.
+pub fn pointerInBounds(event: *const PointerEvent, width: u32, height: u32) bool {
+    return event.x < width and event.y < height;
+}
+
 test "input event layout is stable" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(InputEvent));
     try std.testing.expectEqual(@as(usize, 0), @offsetOf(InputEvent, "version"));
