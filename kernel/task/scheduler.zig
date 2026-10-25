@@ -408,6 +408,11 @@ pub const Scheduler = struct {
         self.current[smp.cpuId()] = next;
         next.schedules += 1;
 
+        // EEVDF: avanca vruntime pela fatia/weight (1024 = peso unitario).
+        if (next.weight != 0) {
+            next.vruntime += @as(i64, @intCast(next.slice)) * 1024 / @as(i64, @intCast(next.weight));
+        }
+
         // The processor loads the stack pointer of the task state segment
         // whenever the privilege level changes, in both directions. The
         // stack of the task that is going to run is therefore the one that
@@ -603,7 +608,7 @@ pub const Scheduler = struct {
         const start = self.indexOf(current) + 1;
 
         var best_task: ?*Task = null;
-        var best_priority: u8 = 0;
+        var best_vruntime: i64 = std.math.maxInt(i64);
 
         var offset: usize = 0;
         while (offset < self.tasks.len) : (offset += 1) {
@@ -611,12 +616,9 @@ pub const Scheduler = struct {
             const task = self.tasks[index] orelse continue;
             if (task == current) continue;
             if (task.state != .ready) continue;
-            // Choose the task with the highest priority.
-            // If priorities are equal, the first task encountered wins.
-            if (task.priority > best_priority or
-                (task.priority == best_priority and best_task == null))
-            {
-                best_priority = task.priority;
+            // EEVDF: escolhe a tarefa elegivel com menor vruntime.
+            if (best_task == null or task.vruntime < best_vruntime) {
+                best_vruntime = task.vruntime;
                 best_task = task;
             }
         }
