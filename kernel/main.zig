@@ -361,6 +361,18 @@ const vpk_pack_buffer_size: usize = 512;
 var vpk_pack_buffer: [vpk_pack_buffer_size]u8 align(16) = undefined;
 var vpk_packed_length: usize = 0;
 
+// ----------------------------------------------------------------------
+// F4: arquivo grande (> 48 KiB) para exercitar a tabela indireta.
+// 102400 bytes = 25 blocos: 12 diretos + 13 via tabela indireta.
+// ----------------------------------------------------------------------
+const large_file_size: usize = 100 * 1024;
+var large_file_buffer: [large_file_size]u8 align(16) = undefined;
+
+/// Byte determinístico do arquivo grande, na posição `index`.
+fn largeFileByte(index: usize) u8 {
+    return @truncate(@as(u64, @intCast(index)) *% 31 +% 7);
+}
+
 /// The virtual address of the program of the task that runs in user mode.
 fn userCodeAddress() u64 {
     return user_window_base + usermode.code_offset;
@@ -1468,6 +1480,28 @@ fn installFs() void {
     };
     serial.printLine("[VNK] vpk: packed {d} entries, {d} bytes", .{ vpk_sources.len, vpk_packed_length });
     serial.printLine("[VNK] fs: /apps/sample.vpk installed ({d} bytes)", .{vpk_packed_length});
+
+    // F4: arquivo maior que os 12 blocos diretos. A gravação atravessa a
+    // tabela indireta; o arquivo é verificado de novo depois da
+    // persistência/recuperação VNV.
+    for (&large_file_buffer, 0..) |*byte, index| byte.* = largeFileByte(index);
+    const large_descriptor = fs.create(0, "/apps/large.bin", 0o644) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/large.bin could not be created: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    const large_written = fs.write(0, large_descriptor, &large_file_buffer) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/large.bin could not be written: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (large_written != large_file_size) {
+        serial.printLine("[VNK] FATAL: the file /apps/large.bin accepted {d} bytes", .{large_written});
+        port.haltForever();
+    }
+    fs.close(0, large_descriptor) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /apps/large.bin could not be closed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    serial.printLine("[VNK] fs: /apps/large.bin installed ({d} bytes, indirect blocks)", .{large_file_size});
 }
 
 /// Creates the capability of the channel of the VNX and gives it to the
@@ -3015,9 +3049,140 @@ fn verifyFsPersistence() void {
     verifyRecoveredSize("/apps/toolchain.elf", toolchain_app.bytes.len);
     verifyRecoveredSize("/apps/client.elf", client_app.bytes.len);
     verifyRecoveredSize("/apps/sample.vpk", vpk_packed_length);
-    serial.printLine("[VNK] fs: persistence round trip ok (hello.txt + 4 files, {d} blocks free)", .{
+    verifyRecoveredSize("/apps/large.bin", large_file_size);
+    verifyLargeFileContent();
+    verifyDirectoryRename();
+    serial.printLine("[VNK] fs: persistence round trip ok (hello.txt + 5 files, {d} blocks free)", .{
         fs.freeBlockCount(),
     });
+}
+
+/// F4: rename de diretórios end-to-end, com subárvore e recusa de ciclo.
+fn verifyDirectoryRename() void {
+    _ = fs.mkdir("/apps/work") catch |err| {
+        serial.printLine("[VNK] FATAL: work directory create: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    _ = fs.mkdir("/apps/work/sub") catch |err| {
+        serial.printLine("[VNK] FATAL: work subdirectory create: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    const fd = fs.create(0, "/apps/work/sub/file.txt", 0o644) catch |err| {
+        serial.printLine("[VNK] FATAL: work file create: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    _ = fs.write(0, fd, "renamed") catch |err| {
+        serial.printLine("[VNK] FATAL: work file write: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    fs.close(0, fd) catch |err| {
+        serial.printLine("[VNK] FATAL: work file close: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    fs.rename("/apps/work", "/apps/workspace") catch |err| {
+        serial.printLine("[VNK] FATAL: directory rename failed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    var buffer: [8]u8 = undefined;
+    const count = fs.readFile("/apps/workspace/sub/file.txt", &buffer) catch |err| {
+        serial.printLine("[VNK] FATAL: renamed subtree lost the file: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (count != 7 or !std.mem.eql(u8, buffer[0..count], "renamed")) {
+        serial.printLine("[VNK] FATAL: renamed subtree holds the wrong content", .{});
+        port.haltForever();
+    }
+
+    // Ciclo: mover o diretório para dentro da própria subárvore é recusado.
+    if (fs.rename("/apps/workspace", "/apps/workspace/sub/loop")) |_| {
+        serial.printLine("[VNK] FATAL: a directory cycle was accepted", .{});
+        port.haltForever();
+    } else |err| {
+        if (err != error.InvalidDirectory) {
+            serial.printLine("[VNK] FATAL: cycle rejection answered {s}, expected InvalidDirectory", .{@errorName(err)});
+            port.haltForever();
+        }
+    }
+
+    fs.unlink("/apps/workspace/sub/file.txt") catch |err| {
+        serial.printLine("[VNK] FATAL: rename work file cleanup: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    serial.printLine("[VNK] fs: directory rename round trip ok", .{});
+}
+
+/// Verifica o conteúdo do arquivo grande recuperado, nas três regiões: o
+/// primeiro bloco direto, o primeiro byte da tabela indireta e o fim.
+fn verifyLargeFileContent() void {
+    const descriptor = fs.open(0, "/apps/large.bin", 0) catch |err| {
+        serial.printLine("[VNK] FATAL: the recovered volume lost /apps/large.bin: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    defer fs.close(0, descriptor) catch {};
+    var window: [16]u8 = undefined;
+
+    fs.seek(0, descriptor, 0) catch |err| {
+        serial.printLine("[VNK] FATAL: large file seek failed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    const first = fs.read(0, descriptor, &window) catch |err| {
+        serial.printLine("[VNK] FATAL: large file read failed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (first != window.len) {
+        serial.printLine("[VNK] FATAL: large file read {d} bytes at the start", .{first});
+        port.haltForever();
+    }
+    for (window, 0..) |byte, index| {
+        if (byte != largeFileByte(index)) {
+            serial.printLine("[VNK] FATAL: large file byte {d} is 0x{x}, expected 0x{x}", .{
+                index, byte, largeFileByte(index),
+            });
+            port.haltForever();
+        }
+    }
+
+    // Primeiro byte alcançado pela tabela indireta: o fim dos 12 diretos.
+    const indirect_offset: usize = ramfs.direct_blocks * ramfs.block_size;
+    fs.seek(0, descriptor, indirect_offset) catch |err| {
+        serial.printLine("[VNK] FATAL: large file seek to indirect failed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    const mid = fs.read(0, descriptor, &window) catch |err| {
+        serial.printLine("[VNK] FATAL: large file indirect read failed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (mid != window.len) {
+        serial.printLine("[VNK] FATAL: large file read {d} bytes at the indirect boundary", .{mid});
+        port.haltForever();
+    }
+    for (window, 0..) |byte, index| {
+        if (byte != largeFileByte(indirect_offset + index)) {
+            serial.printLine("[VNK] FATAL: large file indirect byte {d} is 0x{x}", .{ index, byte });
+            port.haltForever();
+        }
+    }
+
+    fs.seek(0, descriptor, large_file_size - window.len) catch |err| {
+        serial.printLine("[VNK] FATAL: large file seek to end failed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    const tail = fs.read(0, descriptor, &window) catch |err| {
+        serial.printLine("[VNK] FATAL: large file tail read failed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (tail != window.len) {
+        serial.printLine("[VNK] FATAL: large file read {d} bytes at the end", .{tail});
+        port.haltForever();
+    }
+    for (window, 0..) |byte, index| {
+        if (byte != largeFileByte(large_file_size - window.len + index)) {
+            serial.printLine("[VNK] FATAL: large file tail byte {d} is 0x{x}", .{ index, byte });
+            port.haltForever();
+        }
+    }
+    serial.printLine("[VNK] fs: large file round trip ok (indirect blocks)", .{});
 }
 
 /// Confere o tamanho de um arquivo recuperado do dispositivo de blocos.

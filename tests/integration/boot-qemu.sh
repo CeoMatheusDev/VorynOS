@@ -357,6 +357,12 @@ require_pattern '\[VNK\] vpk: packed [1-9][0-9]* entries, [1-9][0-9]* bytes' 'th
 require_marker "[VNK] fs: /apps/sample.vpk installed"
 require_pattern '\[VNK\] vpk: /apps/sample.vpk validated and unpacked \([1-9][0-9]* entries' 'the VPK validation and unpack'
 require_marker "[VNK] vpk: pack/persist/recover/unpack round trip ok"
+# F4: o arquivo grande (100 KiB) usa a tabela indireta e sobrevive ao ciclo
+# de persistência; o conteúdo é conferido no início, na fronteira indireta
+# e no fim.
+require_marker "[VNK] fs: /apps/large.bin installed"
+require_marker "[VNK] fs: large file round trip ok"
+require_marker "[VNK] fs: directory rename round trip ok"
 require_marker "[VNK] tasks: 9 created"
 require_marker "[VNK] native: /apps/hello.elf entry="
 require_marker "[VNK] native: process"

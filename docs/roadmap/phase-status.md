@@ -266,14 +266,15 @@ Objectives: RamFS, block layer, VNV, VFSX, persistence and recovery.
 | Persistence and block driver | IN DEVELOPMENT | `kernel/storage/block.zig` (device interface), `kernel/storage/ramdisk.zig` (RAM backend) and `kernel/fs/vnv_volume.zig` (commit/recover) are verified: the root volume is committed to a block device, wiped and recovered during the boot self-test; a physical driver (virtio-blk/ATA) and automatic boot mounting remain pending |
 | VNV and VFSX | IN DEVELOPMENT | `kernel/fs/vfsx.zig` provides bounded mount routing and generation checks; `kernel/fs/vnv.zig` provides a validated host/kernel codec and `vnv_volume.zig` the block-device commit/recovery; durable physical storage remains pending |
 | Per-process descriptors | COMPLETED (host/QEMU) | `fs.zig` keeps independent descriptor tables, offsets, lifecycle cleanup and generation-checked internal handles per process |
-| Unlink, rename, indirect blocks | PARTIALLY IMPLEMENTED | regular-file unlink/rename and deferred inode reclamation are tested; indirect blocks and directory rename remain absent |
+| Unlink, rename, indirect blocks | COMPLETED (host/QEMU) | regular-file unlink/rename, deferred inode reclamation, single indirect blocks (files beyond 12 direct blocks, up to 524 blocks per the format) and directory rename with subtree preservation and cycle rejection are all tested; double indirect blocks remain absent |
 
 Known limits of the verified core:
 
 - the RamFS is fixed at 1 MiB (256 blocks of 4 KiB), with 32 inodes and 64
   directory entries;
-- a file is limited to 48 KiB, because only the 12 direct block pointers
-  exist;
+- a file uses the 12 direct block pointers plus a single indirect table
+  (up to 524 blocks per the format, bounded by the 1 MiB volume in
+  practice); the double indirect table is not implemented;
 - there are no `.` and `..` entries, and `..` is refused by the resolver;
 - each process has a fixed table of 16 descriptors; internal checked handles
   add generation validation, while the public syscall ABI still uses `u32` FDs;
@@ -366,7 +367,7 @@ Known limitations of the verified F6 core:
 
 | Milestone | Content | State |
 |-------|----------|--------|
-| F4 | Block drivers, VNV, initial VFSX, persistence, recovery | IN PROGRESS — RamFS/VFSX, per-process descriptors and the block-device commit/wipe/recovery cycle are verified (ramdisk backend); a physical driver and automatic boot mounting are pending |
+| F4 | Block drivers, VNV, initial VFSX, persistence, recovery | IN PROGRESS — RamFS/VFSX, per-process descriptors, single indirect blocks, file/directory rename with cycle rejection and the block-device commit/wipe/recovery cycle are verified (ramdisk backend); a physical driver and automatic boot mounting are pending |
 | F5 | VEX, VLIB, VPK, runtime, SDK, native applications | IN PROGRESS — SDK, native ELF, compositor client and the VPK container are verified (pack/persist/recover/unpack in the boot test); VEX loader integration and VLIB are pending |
 | F6 | Input, rasterizer, compositor, windows, VSH | IN DEVELOPMENT — framebuffer, input, damage, capabilities, user-space composition, screenshot validation and the F6.29 client→compositor frame handshake are verified; focus, cursor, surface sharing and the desktop shell are pending |
 | F7 | Virtio, network, audio, physical hardware, GPU | PROPOSED |

@@ -59,8 +59,15 @@ pub const max_name_len: usize = 64;
 /// Número de blocos diretos de um inode.
 pub const direct_blocks: usize = 12;
 
+/// Número de ponteiros que cabem em um bloco indireto (u64 por entrada).
+pub const indirect_per_block: usize = block_size / @sizeOf(u64);
+
+/// Número máximo de blocos de dados de um arquivo: os diretos mais os
+/// blocos alcançados pela tabela indireta única.
+pub const max_blocks: usize = direct_blocks + indirect_per_block;
+
 /// Tamanho máximo de um arquivo, em bytes.
-pub const max_file_size: usize = direct_blocks * block_size;
+pub const max_file_size: usize = max_blocks * block_size;
 
 /// Inode do diretório raiz.
 pub const root_inode: u32 = 0;
@@ -185,6 +192,45 @@ fn blockUsed(block: usize) bool {
 fn blockIndex(block: u64) Error!usize {
     if (block == 0 or block >= block_count) return error.InvalidBlock;
     return @intCast(block);
+}
+
+/// Devolve a tabela de blocos indiretos de um inode (visão somente leitura).
+///
+/// A tabela vive em um bloco de dados do próprio RamFS (`state.memory`),
+/// alocado pelo bitmap como qualquer outro bloco. Um arquivo que cresce
+/// além dos blocos diretos ganha a tabela no primeiro acesso indireto.
+fn indirectTableFor(state: *const State, inode_num: u32) Error![]align(1) const u64 {
+    const table_block = state.inodes[inode_num].i_indirect;
+    const index = try blockIndex(table_block);
+    const bytes = state.memory[@as(usize, index) * block_size ..][0..block_size];
+    return std.mem.bytesAsSlice(u64, bytes);
+}
+
+/// Devolve a tabela de blocos indiretos de um inode (visão mutável).
+///
+/// O estado precisa ser mutável porque o escritor instala novas entradas
+/// (extensão) ou as zera (truncate e rollback).
+fn indirectTableMutFor(state: *State, inode_num: u32) Error![]align(1) u64 {
+    const table_block = state.inodes[inode_num].i_indirect;
+    const index = try blockIndex(table_block);
+    const bytes = state.memory[@as(usize, index) * block_size ..][0..block_size];
+    return std.mem.bytesAsSlice(u64, bytes);
+}
+
+/// Endereço em `state.memory` do bloco de dados `block_index` de um arquivo.
+///
+/// Os primeiros `direct_blocks` índices são os ponteiros diretos do inode;
+/// os demais são lidos da tabela indireta. Ponteiros inválidos (zero ou
+/// fora do volume) são rejeitados antes de qualquer acesso à memória.
+fn blockAddressFor(state: *const State, inode_num: u32, block_index: usize) Error!usize {
+    if (block_index < direct_blocks) {
+        const block = try blockIndex(state.inodes[inode_num].i_block[block_index]);
+        return block * block_size;
+    }
+    if (block_index >= max_blocks) return error.InvalidBlock;
+    const table = try indirectTableFor(state, inode_num);
+    const entry = try blockIndex(table[block_index - direct_blocks]);
+    return entry * block_size;
 }
 
 /// Updates a bitmap bit for one volume.
@@ -335,6 +381,7 @@ pub fn audit() AuditError!void {
         if (entry.i_links_count == 0) continue;
         if (entry.i_type == .file) {
             if (entry.i_size > max_file_size) return error.InvalidFileLayout;
+            if (entry.i_double_indirect != 0) return error.InvalidFileLayout;
             const expected: usize = if (entry.i_size == 0) 0 else
                 (@as(usize, @intCast(entry.i_size)) - 1) / block_size + 1;
             for (entry.i_block, 0..) |block, index| {
@@ -342,6 +389,32 @@ pub fn audit() AuditError!void {
                     (index >= expected and block != 0))
                     return error.InvalidFileLayout;
             }
+            if (expected > direct_blocks) {
+                // A tabela indireta única existe, é referenciada uma vez e
+                // cobre exatamente os blocos além dos diretos.
+                if (entry.i_indirect == 0 or entry.i_indirect >= block_count)
+                    return error.InvalidFileLayout;
+                const table_index: usize = @intCast(entry.i_indirect);
+                if (referenced[table_index]) return error.DuplicateBlockReference;
+                referenced[table_index] = true;
+                const table = std.mem.bytesAsSlice(u64, default_state.memory[table_index * block_size ..][0..block_size]);
+                const indirect_used = expected - direct_blocks;
+                for (table, 0..) |entry_ptr, slot| {
+                    if (slot < indirect_used) {
+                        if (entry_ptr == 0 or entry_ptr >= block_count)
+                            return error.InvalidFileLayout;
+                        const entry_index: usize = @intCast(entry_ptr);
+                        if (referenced[entry_index]) return error.DuplicateBlockReference;
+                        referenced[entry_index] = true;
+                    } else {
+                        if (entry_ptr != 0) return error.InvalidFileLayout;
+                    }
+                }
+            } else if (entry.i_indirect != 0) {
+                return error.InvalidFileLayout;
+            }
+        } else if (entry.i_indirect != 0 or entry.i_double_indirect != 0) {
+            return error.InvalidFileLayout;
         }
         for (entry.i_block) |block| {
             if (block == 0) continue;
@@ -440,11 +513,7 @@ pub fn releaseInodeFor(state: *State, inode_num: u32) void {
     if (inode_num == root_inode or inode_num >= inode_count) return;
     const entry = &state.inodes[inode_num];
     if (entry.i_links_count == 0) return;
-    for (entry.i_block) |block| {
-        if (block == 0) continue;
-        const index = blockIndex(block) catch continue;
-        _ = freeBlockFor(state, @intCast(index));
-    }
+    releaseBlocksFor(state, inode_num);
     entry.* = .{
         .i_type = .file,
         .i_permissions = 0o755,
@@ -524,9 +593,33 @@ pub fn renameFileFor(state: *State, source_parent: u32, source_name: []const u8,
     if (!validName(source_name) or !validName(target_name)) return error.InvalidName;
 
     const source_inode = lookupFor(state, source_parent, source_name) orelse return error.EntryNotFound;
-    if (inodeKindFor(state, source_inode) != .file) return error.NotAFile;
+    if (inodeKindFor(state, source_inode) == null) return error.EntryNotFound;
+    // O diretório raiz não pode ser renomeado nem movido.
+    if (source_inode == root_inode) return error.InvalidDirectory;
     if (source_parent == target_parent and std.mem.eql(u8, source_name, target_name)) return;
     if (lookupFor(state, target_parent, target_name) != null) return error.NameExists;
+
+    const is_directory = inodeKindFor(state, source_inode) == .directory;
+    if (is_directory) {
+        // Ciclo: mover um diretório para dentro da própria subárvore (ou
+        // para si mesmo) criaria um ciclo de pais. Caminha a cadeia de
+        // pais do destino com limite de profundidade; se o diretório
+        // movido aparecer na cadeia, o movimento é recusado.
+        if (source_inode == target_parent) return error.InvalidDirectory;
+        var cursor = target_parent;
+        var depth: usize = 0;
+        while (cursor != root_inode) : (depth += 1) {
+            if (depth >= inode_count or cursor == source_inode) return error.InvalidDirectory;
+            var next: ?u32 = null;
+            for (state.dir_entries) |candidate| {
+                if (candidate.used and candidate.inode == cursor) {
+                    next = candidate.parent;
+                    break;
+                }
+            }
+            cursor = next orelse break;
+        }
+    }
 
     for (&state.dir_entries) |*entry| {
         if (!entry.used or entry.parent != source_parent or entry.inode != source_inode) continue;
@@ -639,40 +732,96 @@ fn blocksFor(length: usize) Error!usize {
 }
 
 /// Garante que o inode tenha pelo menos `required` blocos alocados.
+///
+/// Os primeiros `direct_blocks` são ponteiros diretos; o restante vive na
+/// tabela indireta única (`i_indirect`), que é alocada e zerada no
+/// primeiro acesso. A extensão é transacional: se a alocação falhar no
+/// meio, os blocos e a tabela novos são liberados e o arquivo permanece
+/// como estava.
 fn ensureBlocksFor(state: *State, inode_num: u32, required: usize) Error!void {
-    if (required > direct_blocks) return error.FileTooLarge;
+    if (required > max_blocks) return error.FileTooLarge;
 
-    // Preserve existing blocks if allocation fails partway through extension.
-    var new_indices: [direct_blocks]usize = undefined;
-    var new_count: usize = 0;
+    var new_direct: [direct_blocks]usize = undefined;
+    var new_direct_count: usize = 0;
+    var new_indirect: ?u32 = null;
+    var new_slots: [indirect_per_block]usize = undefined;
+    var new_slots_count: usize = 0;
     errdefer {
-        for (new_indices[0..new_count]) |index| {
+        for (new_direct[0..new_direct_count]) |index| {
             const block = state.inodes[inode_num].i_block[index];
-            _ = freeBlockFor(state, @as(u32, @intCast(block)));
+            _ = freeBlockFor(state, @intCast(block));
             state.inodes[inode_num].i_block[index] = 0;
+        }
+        if (new_slots_count > 0) {
+            if (indirectTableMutFor(state, inode_num)) |table| {
+                for (new_slots[0..new_slots_count]) |slot| {
+                    const block = table[slot];
+                    if (block != 0) {
+                        _ = freeBlockFor(state, @intCast(block));
+                        table[slot] = 0;
+                    }
+                }
+            } else |_| {}
+        }
+        if (new_indirect) |table_block| {
+            _ = freeBlockFor(state, @intCast(table_block));
+            state.inodes[inode_num].i_indirect = 0;
         }
     }
 
     var count: usize = 0;
     while (count < required) : (count += 1) {
-        if (state.inodes[inode_num].i_block[count] != 0) {
-            _ = try blockIndex(state.inodes[inode_num].i_block[count]);
-            continue;
+        if (count < direct_blocks) {
+            if (state.inodes[inode_num].i_block[count] != 0) {
+                _ = try blockIndex(state.inodes[inode_num].i_block[count]);
+                continue;
+            }
+            const block = allocateBlockFor(state) orelse return error.NoSpace;
+            state.inodes[inode_num].i_block[count] = block;
+            new_direct[new_direct_count] = count;
+            new_direct_count += 1;
+        } else {
+            if (state.inodes[inode_num].i_indirect == 0) {
+                const table_block = allocateBlockFor(state) orelse return error.NoSpace;
+                state.inodes[inode_num].i_indirect = table_block;
+                new_indirect = table_block;
+                @memset(state.memory[@as(usize, table_block) * block_size ..][0..block_size], 0);
+            }
+            const table = try indirectTableMutFor(state, inode_num);
+            const slot = count - direct_blocks;
+            if (table[slot] != 0) {
+                _ = try blockIndex(table[slot]);
+                continue;
+            }
+            const block = allocateBlockFor(state) orelse return error.NoSpace;
+            table[slot] = block;
+            new_slots[new_slots_count] = slot;
+            new_slots_count += 1;
         }
-        const block = allocateBlockFor(state) orelse return error.NoSpace;
-        state.inodes[inode_num].i_block[count] = block;
-        new_indices[new_count] = count;
-        new_count += 1;
     }
 }
 
-/// Libera todos os blocos de um inode e zera os ponteiros.
+/// Libera todos os blocos de um inode e zera os ponteiros, incluindo a
+/// tabela indireta e as suas entradas.
 fn releaseBlocksFor(state: *State, inode_num: u32) void {
     for (&state.inodes[inode_num].i_block) |*block| {
         if (block.* != 0) {
             if (blockIndex(block.*)) |index| _ = freeBlockFor(state, @intCast(index)) else |_| {}
             block.* = 0;
         }
+    }
+    const indirect = state.inodes[inode_num].i_indirect;
+    if (indirect != 0) {
+        if (blockIndex(indirect)) |table_index| {
+            const table = std.mem.bytesAsSlice(u64, state.memory[@as(usize, table_index) * block_size ..][0..block_size]);
+            for (table) |entry| {
+                if (entry != 0) {
+                    if (blockIndex(entry)) |entry_index| _ = freeBlockFor(state, @intCast(entry_index)) else |_| {}
+                }
+            }
+            _ = freeBlockFor(state, @intCast(table_index));
+        } else |_| {}
+        state.inodes[inode_num].i_indirect = 0;
     }
 }
 
@@ -685,39 +834,72 @@ fn releaseBlocks(inode_num: u32) void {
 }
 
 /// Substitui o conteúdo de um arquivo.
+///
+/// Os blocos novos (diretos e indiretos) são alocados e preenchidos antes
+/// de os antigos serem liberados, para que uma falha no meio do caminho
+/// não destrua o conteúdo atual.
 pub fn writeFileFor(state: *State, inode_num: u32, data: []const u8) Error!void {
     if (inodeKindFor(state, inode_num) == null) return error.InvalidInode;
     if (state.inodes[inode_num].i_type != .file) return error.NotAFile;
 
     const required = try blocksFor(data.len);
 
-    // Os blocos novos são alocados antes de os antigos serem liberados,
-    // para que uma falha no meio do caminho não destrua o conteúdo atual.
-    var new_blocks: [direct_blocks]u32 = @splat(0);
-    var allocated: usize = 0;
+    var new_direct: [direct_blocks]u32 = @splat(0);
+    var new_indirect: ?u32 = null;
+    var new_entries: [indirect_per_block]u64 = @splat(0);
+    var direct_allocated: usize = 0;
+    var entries_allocated: usize = 0;
     errdefer {
-        for (new_blocks[0..allocated]) |block| {
+        for (new_direct[0..direct_allocated]) |block| {
             _ = freeBlockFor(state, block);
+        }
+        for (new_entries[0..entries_allocated]) |block| {
+            if (block != 0) _ = freeBlockFor(state, @intCast(block));
+        }
+        if (new_indirect) |table_block| {
+            _ = freeBlockFor(state, @intCast(table_block));
         }
     }
 
-    while (allocated < required) : (allocated += 1) {
-        new_blocks[allocated] = allocateBlockFor(state) orelse return error.NoSpace;
+    var count: usize = 0;
+    while (count < required) : (count += 1) {
+        if (count < direct_blocks) {
+            new_direct[count] = allocateBlockFor(state) orelse return error.NoSpace;
+            direct_allocated += 1;
+        } else {
+            if (new_indirect == null) {
+                const table_block = allocateBlockFor(state) orelse return error.NoSpace;
+                new_indirect = table_block;
+                @memset(state.memory[@as(usize, table_block) * block_size ..][0..block_size], 0);
+            }
+            new_entries[count - direct_blocks] = allocateBlockFor(state) orelse return error.NoSpace;
+            entries_allocated += 1;
+        }
     }
 
     var offset: usize = 0;
-    for (new_blocks[0..required]) |block| {
-        const count = @min(block_size, data.len - offset);
-        const start = @as(usize, block) * block_size;
-        @memcpy(state.memory[start..][0..count], data[offset..][0..count]);
-        offset += count;
+    var block_index: usize = 0;
+    while (block_index < required) : (block_index += 1) {
+        const block: usize = if (block_index < direct_blocks)
+            @intCast(new_direct[block_index])
+        else
+            @intCast(new_entries[block_index - direct_blocks]);
+        const chunk = @min(block_size, data.len - offset);
+        @memcpy(state.memory[block * block_size ..][0..chunk], data[offset..][0..chunk]);
+        offset += chunk;
     }
 
-    for (state.inodes[inode_num].i_block) |old_block| {
-        if (old_block != 0) _ = freeBlockFor(state, @intCast(old_block));
-    }
+    releaseBlocksFor(state, inode_num);
+
     for (&state.inodes[inode_num].i_block, 0..) |*slot, index| {
-        slot.* = if (index < required) new_blocks[index] else 0;
+        slot.* = if (index < direct_blocks) new_direct[index] else 0;
+    }
+    if (new_indirect) |table_block| {
+        const table_bytes = std.mem.sliceAsBytes(new_entries[0..]);
+        @memcpy(state.memory[@as(usize, table_block) * block_size ..][0..table_bytes.len], table_bytes);
+        state.inodes[inode_num].i_indirect = table_block;
+    } else {
+        state.inodes[inode_num].i_indirect = 0;
     }
     state.inodes[inode_num].i_size = data.len;
 }
@@ -746,9 +928,9 @@ pub fn writeFileAtFor(state: *State, inode_num: u32, offset: usize, data: []cons
         const block_index = position / block_size;
         const inside = position % block_size;
         const count = @min(block_size - inside, data.len - source);
-        const block = try blockIndex(state.inodes[inode_num].i_block[block_index]);
+        const block_address = try blockAddressFor(state, inode_num, block_index);
         @memcpy(
-            state.memory[block * block_size + inside ..][0..count],
+            state.memory[block_address + inside ..][0..count],
             data[source..][0..count],
         );
         source += count;
@@ -760,6 +942,10 @@ pub fn writeFileAtFor(state: *State, inode_num: u32, offset: usize, data: []cons
 }
 
 /// Encolhe um arquivo para `new_size` bytes.
+///
+/// Blocos diretos e entradas indiretas acima do novo tamanho são
+/// liberados; quando o arquivo encolhe para dentro dos blocos diretos, a
+/// tabela indireta inteira é liberada e o ponteiro é zerado.
 pub fn truncateFor(state: *State, inode_num: u32, new_size: usize) Error!void {
     if (inodeKindFor(state, inode_num) == null) return error.InvalidInode;
     if (state.inodes[inode_num].i_type != .file) return error.NotAFile;
@@ -777,12 +963,37 @@ pub fn truncateFor(state: *State, inode_num: u32, new_size: usize) Error!void {
         }
     }
 
+    if (required > direct_blocks) {
+        const table = try indirectTableMutFor(state, inode_num);
+        var slot = required - direct_blocks;
+        while (slot < indirect_per_block) : (slot += 1) {
+            const entry = table[slot];
+            if (entry != 0) {
+                const entry_index = blockIndex(entry) catch return error.InvalidBlock;
+                _ = freeBlockFor(state, @intCast(entry_index));
+                table[slot] = 0;
+            }
+        }
+    } else if (state.inodes[inode_num].i_indirect != 0) {
+        // O arquivo encolheu para dentro dos blocos diretos: libera a
+        // tabela indireta inteira e zera o ponteiro.
+        const table_index = blockIndex(state.inodes[inode_num].i_indirect) catch return error.InvalidBlock;
+        const table = std.mem.bytesAsSlice(u64, state.memory[@as(usize, table_index) * block_size ..][0..block_size]);
+        for (table) |entry| {
+            if (entry != 0) {
+                const entry_index = blockIndex(entry) catch return error.InvalidBlock;
+                _ = freeBlockFor(state, @intCast(entry_index));
+            }
+        }
+        _ = freeBlockFor(state, @intCast(table_index));
+        state.inodes[inode_num].i_indirect = 0;
+    }
+
     // O restante do último bloco fica inacessível pelo tamanho, mas é
     // zerado para que uma futura extensão não exponha dados antigos.
     if (new_size % block_size != 0 and required > 0) {
-        const block = @as(usize, @intCast(state.inodes[inode_num].i_block[required - 1]));
-        const start = block * block_size + (new_size % block_size);
-        @memset(state.memory[start..][0 .. block_size - (new_size % block_size)], 0);
+        const block_address = try blockAddressFor(state, inode_num, required - 1);
+        @memset(state.memory[block_address + (new_size % block_size) ..][0 .. block_size - (new_size % block_size)], 0);
     }
 
     state.inodes[inode_num].i_size = new_size;
@@ -813,10 +1024,10 @@ pub fn readFileAtFor(state: *const State, inode_num: u32, offset: usize, buffer:
         const block_index = position / block_size;
         const inside = position % block_size;
         const chunk = @min(block_size - inside, count - destination);
-        const block = try blockIndex(state.inodes[inode_num].i_block[block_index]);
+        const block_address = try blockAddressFor(state, inode_num, block_index);
         @memcpy(
             buffer[destination..][0..chunk],
-            state.memory[block * block_size + inside ..][0..chunk],
+            state.memory[block_address + inside ..][0..chunk],
         );
         destination += chunk;
         position += chunk;
@@ -1050,20 +1261,93 @@ test "directory lookup, nesting and listing" {
     try testing.expectError(error.InvalidName, createFile(docs, ".."));
 }
 
-test "a file larger than the direct blocks is refused without data loss" {
+test "a file larger than the direct blocks uses the indirect table" {
     init();
 
     const file = try createFile(root_inode, "large.bin");
     try writeFile(file, "original");
 
-    var large: [max_file_size + 1]u8 = undefined;
-    @memset(&large, 0xAA);
+    // 13 blocos: os 12 diretos e um via tabela indireta.
+    const payload: [direct_blocks * block_size + 1]u8 = @splat(0xAA);
+    try writeFile(file, &payload);
 
-    try testing.expectError(error.FileTooLarge, writeFile(file, &large));
+    try testing.expectEqual(@as(u64, payload.len), sizeOf(file).?);
+    try testing.expect(default_state.inodes[file].i_indirect != 0);
+    for (default_state.inodes[file].i_block) |block| {
+        try testing.expect(block != 0);
+    }
 
+    var first: [1]u8 = undefined;
+    try testing.expectEqual(@as(usize, 1), try readFileAt(file, 0, &first));
+    try testing.expectEqual(@as(u8, 0xAA), first[0]);
+    // Primeiro byte do bloco indireto: o limite exato dos blocos diretos.
+    var indirect_first: [1]u8 = undefined;
+    try testing.expectEqual(@as(usize, 1), try readFileAt(file, direct_blocks * block_size, &indirect_first));
+    try testing.expectEqual(@as(u8, 0xAA), indirect_first[0]);
+    var last: [1]u8 = undefined;
+    try testing.expectEqual(@as(usize, 1), try readFileAt(file, payload.len - 1, &last));
+    try testing.expectEqual(@as(u8, 0xAA), last[0]);
+    try audit();
+
+    // Um arquivo acima do máximo teórico do formato ainda é recusado.
     var buffer: [16]u8 = undefined;
-    const count = try readFile(file, &buffer);
-    try testing.expectEqualSlices(u8, "original", buffer[0..count]);
+    try testing.expectEqual(@as(usize, 16), try readFileAt(file, 0, &buffer));
+    try testing.expectEqualSlices(u8, payload[0..16], buffer[0..16]);
+    const oversized: [max_file_size + 1]u8 = @splat(0xBB);
+    try testing.expectError(error.FileTooLarge, writeFileAt(file, max_file_size + 1, &oversized));
+}
+
+test "truncate from indirect to direct frees the table and its entries" {
+    init();
+    const file = try createFile(root_inode, "shrink");
+    // 14 blocos: 12 diretos + 2 via tabela indireta.
+    const payload: [direct_blocks * block_size + 2 * block_size]u8 = @splat(0x7b);
+    try writeFile(file, &payload);
+    try testing.expect(default_state.inodes[file].i_indirect != 0);
+
+    const free_before = freeBlockCount();
+    try truncate(file, direct_blocks * block_size);
+    try testing.expectEqual(@as(u64, direct_blocks * block_size), sizeOf(file).?);
+    try testing.expectEqual(@as(u32, 0), default_state.inodes[file].i_indirect);
+    // Liberou 2 blocos de dados indiretos + o bloco da tabela.
+    try testing.expectEqual(free_before + 3, freeBlockCount());
+
+    var last: [1]u8 = undefined;
+    try testing.expectEqual(@as(usize, 1), try readFileAt(file, direct_blocks * block_size - 1, &last));
+    try testing.expectEqual(@as(u8, 0x7b), last[0]);
+    try audit();
+}
+
+test "failed indirect extension rolls back table entries without data loss" {
+    init();
+    const file = try createFile(root_inode, "rollback");
+    // 14 blocos: tabela indireta existente com 2 entradas.
+    const payload: [direct_blocks * block_size + 2 * block_size]u8 = @splat(0x44);
+    try writeFile(file, &payload);
+
+    // Deixa exatamente um bloco livre: a extensão de 2 blocos falha depois
+    // de alocar o primeiro, e a tabela pré-existente não pode ficar com um
+    // ponteiro para um bloco liberado.
+    var held: [block_count - 1]u32 = undefined;
+    var held_count: usize = 0;
+    while (freeBlockCount() > 1) {
+        held[held_count] = allocateBlock() orelse return error.TestUnexpectedResult;
+        held_count += 1;
+    }
+    const before_free = freeBlockCount();
+    const extension: [block_size + 1]u8 = @splat(0x66);
+    try testing.expectError(error.NoSpace, writeFileAt(file, payload.len, &extension));
+    try testing.expectEqual(before_free, freeBlockCount());
+    try testing.expectEqual(@as(u64, payload.len), sizeOf(file).?);
+
+    var result: [payload.len]u8 = undefined;
+    const read_count = try readFileAt(file, 0, &result);
+    try testing.expectEqual(result.len, read_count);
+    for (result) |byte| try testing.expectEqual(@as(u8, 0x44), byte);
+    // O audit exige que o bitmap reflita exatamente os blocos referenciados;
+    // os blocos retidos são liberados antes da checagem.
+    for (held[0..held_count]) |block| try testing.expect(freeBlock(block));
+    try audit();
 }
 
 test "inode exhaustion is reported" {
@@ -1082,7 +1366,7 @@ test "inode exhaustion is reported" {
     try testing.expectError(error.NoFreeInode, createFile(root_inode, "overflow"));
 }
 
-test "rename regular files preserves inode and rejects collisions and directories" {
+test "rename regular files preserves inode and rejects collisions" {
     init();
     const from = try createDirectory(root_inode, "from");
     const to = try createDirectory(root_inode, "to");
@@ -1095,8 +1379,50 @@ test "rename regular files preserves inode and rejects collisions and directorie
     try renameFile(to, "renamed", to, "renamed");
     _ = try createFile(to, "exists");
     try testing.expectError(error.NameExists, renameFile(to, "renamed", to, "exists"));
-    try testing.expectError(error.NotAFile, renameFile(root_inode, "from", to, "moved"));
     try testing.expectError(error.InvalidName, renameFile(to, "renamed", to, ".."));
+}
+
+test "rename moves a directory with its subtree" {
+    init();
+    const parent = try createDirectory(root_inode, "parent");
+    const child = try createDirectory(parent, "child");
+    const grandchild = try createFile(child, "leaf");
+    try writeFile(grandchild, "x");
+    const destination = try createDirectory(root_inode, "destination");
+
+    try renameFile(root_inode, "parent", destination, "moved");
+
+    try testing.expectEqual(child, try resolvePath("/destination/moved/child"));
+    try testing.expectEqual(grandchild, try resolvePath("/destination/moved/child/leaf"));
+    try testing.expectError(error.EntryNotFound, resolvePath("/parent"));
+    var leaf: [1]u8 = undefined;
+    const count = try readFile(grandchild, &leaf);
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expectEqual(@as(u8, 'x'), leaf[0]);
+    try audit();
+}
+
+test "rename refuses cycles and protects the root directory" {
+    init();
+    const outer = try createDirectory(root_inode, "outer");
+    const inner = try createDirectory(outer, "inner");
+    const deep = try createDirectory(inner, "deep");
+
+    // Mover um diretório para dentro da própria subárvore cria um ciclo.
+    try testing.expectError(error.InvalidDirectory, renameFile(outer, "inner", inner, "self"));
+    try testing.expectError(error.InvalidDirectory, renameFile(outer, "inner", deep, "nested"));
+    // Mover um diretório para si mesmo.
+    try testing.expectError(error.InvalidDirectory, renameFile(root_inode, "outer", outer, "self"));
+    // Renomear um filho dentro da raiz é legal; mover a raiz não é.
+    try renameFile(root_inode, "outer", root_inode, "renamed");
+    try testing.expectEqual(outer, try resolvePath("/renamed"));
+    // Mover a subárvore do diretório renomeado para dentro dela continua
+    // recusado depois do rename.
+    try testing.expectError(error.InvalidDirectory, renameFile(root_inode, "renamed", inner, "cycle"));
+    // O estado permanece íntegro depois das recusas.
+    try testing.expectEqual(inner, try resolvePath("/renamed/inner"));
+    try testing.expectEqual(deep, try resolvePath("/renamed/inner/deep"));
+    try audit();
 }
 
 test "unlink detaches file and explicit release reclaims inode and blocks" {
@@ -1284,18 +1610,21 @@ test "empty writes leave inode and block allocation unchanged" {
     try testing.expectEqualStrings("data", &result);
 }
 
-test "writeFileAt maximum direct block capacity and overflow rejection" {
+test "writeFileAt maximum size and overflow rejection" {
     init();
     const file = try createFile(root_inode, "maximum");
-    const payload: [max_file_size]u8 = @splat(0x63);
-    try testing.expectEqual(max_file_size, try writeFileAt(file, 0, &payload));
+    // 20 blocos: 12 diretos + 8 via tabela indireta.
+    const payload: [direct_blocks * block_size + 8 * block_size]u8 = @splat(0x63);
+    try testing.expectEqual(payload.len, try writeFileAt(file, 0, &payload));
+    try testing.expectEqual(@as(u64, payload.len), sizeOf(file).?);
+    try testing.expect(default_state.inodes[file].i_indirect != 0);
     const before = freeBlockCount();
-    try testing.expectEqual(@as(u64, max_file_size), sizeOf(file).?);
     try testing.expectError(error.FileTooLarge, writeFileAt(file, max_file_size, "x"));
     try testing.expectEqual(before, freeBlockCount());
     var last: [1]u8 = undefined;
-    try testing.expectEqual(@as(usize, 1), try readFileAt(file, max_file_size - 1, &last));
+    try testing.expectEqual(@as(usize, 1), try readFileAt(file, payload.len - 1, &last));
     try testing.expectEqual(@as(u8, 0x63), last[0]);
+    try audit();
 }
 
 test "failed extension can be retried after blocks become available" {
@@ -1441,13 +1770,55 @@ test "audit rejects blocks beyond logical file size" {
     try audit();
 }
 
-test "audit rejects file size exceeding direct block capacity" {
+test "audit rejects file size exceeding the maximum" {
     init();
     const file = try createFile(root_inode, "oversize");
     const original = default_state.inodes[file].i_size;
     default_state.inodes[file].i_size = max_file_size + 1;
     try testing.expectError(error.InvalidFileLayout, audit());
     default_state.inodes[file].i_size = original;
+    try audit();
+}
+
+test "audit rejects a missing or dangling indirect table" {
+    init();
+    const file = try createFile(root_inode, "indirect");
+    const payload: [direct_blocks * block_size + 1]u8 = @splat(0x31);
+    try writeFile(file, &payload);
+    try testing.expect(default_state.inodes[file].i_indirect != 0);
+    try audit();
+
+    // Arquivo grande sem tabela indireta.
+    const table = default_state.inodes[file].i_indirect;
+    default_state.inodes[file].i_indirect = 0;
+    try testing.expectError(error.InvalidFileLayout, audit());
+    default_state.inodes[file].i_indirect = table;
+    try audit();
+
+    // Entrada além do tamanho deixa de ser zero.
+    const table_index: usize = @intCast(table);
+    const entries = std.mem.bytesAsSlice(u64, default_state.memory[table_index * block_size ..][0..block_size]);
+    const original_entry = entries[1];
+    entries[1] = 2;
+    try testing.expectError(error.InvalidFileLayout, audit());
+    entries[1] = original_entry;
+    try audit();
+
+    // Tabela que aponta para um bloco duplicado (bloco de dados direto).
+    const original_slot0 = entries[0];
+    entries[0] = default_state.inodes[file].i_block[0];
+    try testing.expectError(error.DuplicateBlockReference, audit());
+    entries[0] = original_slot0;
+    try audit();
+}
+
+test "audit rejects a file with a double indirect pointer" {
+    init();
+    const file = try createFile(root_inode, "double");
+    try writeFile(file, "data");
+    default_state.inodes[file].i_double_indirect = 1;
+    try testing.expectError(error.InvalidFileLayout, audit());
+    default_state.inodes[file].i_double_indirect = 0;
     try audit();
 }
 

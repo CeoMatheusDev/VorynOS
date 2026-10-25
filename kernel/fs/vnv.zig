@@ -91,9 +91,12 @@ fn validate(state: *const ramfs.State) Error!void {
         if (index == ramfs.root_inode and entry.i_type != .directory) return error.InvalidInode;
         if (entry.i_type != .file and entry.i_type != .directory) return error.InvalidInodeType;
         if (entry.i_size > ramfs.max_file_size) return error.InvalidInode;
-        if (entry.i_indirect != 0 or entry.i_double_indirect != 0) return error.InvalidBlock;
+        // O RamFS atual implementa somente a tabela indireta única; o
+        // ponteiro duplo tem de estar zerado.
+        if (entry.i_double_indirect != 0) return error.InvalidBlock;
+        if (entry.i_type == .directory and entry.i_indirect != 0) return error.InvalidBlock;
         const blocks: usize = (@as(usize, @intCast(entry.i_size)) + ramfs.block_size - 1) / ramfs.block_size;
-        if (blocks > ramfs.direct_blocks) return error.InvalidInode;
+        if (blocks > ramfs.max_blocks) return error.InvalidInode;
         for (entry.i_block, 0..) |block, block_index| {
             if (block_index >= blocks) {
                 if (block != 0) return error.InvalidBlock;
@@ -102,6 +105,28 @@ fn validate(state: *const ramfs.State) Error!void {
             if (block == 0 or block >= ramfs.block_count) return error.InvalidBlock;
             const bit = @as(u8, 1) << @intCast(block % 8);
             expected_bitmap[block / 8] |= bit;
+        }
+        if (blocks > ramfs.direct_blocks) {
+            // A tabela indireta existe, está marcada no bitmap e cada
+            // entrada usada pelo tamanho aponta para um bloco válido e
+            // marcado; as entradas além do tamanho têm de estar zeradas.
+            if (entry.i_indirect == 0 or entry.i_indirect >= ramfs.block_count) return error.InvalidBlock;
+            const table_bit = @as(u8, 1) << @intCast(entry.i_indirect % 8);
+            expected_bitmap[entry.i_indirect / 8] |= table_bit;
+            const table_index: usize = @intCast(entry.i_indirect);
+            const table = std.mem.bytesAsSlice(u64, state.memory[table_index * ramfs.block_size ..][0..ramfs.block_size]);
+            const indirect_used = blocks - ramfs.direct_blocks;
+            for (table, 0..) |entry_ptr, slot| {
+                if (slot >= indirect_used) {
+                    if (entry_ptr != 0) return error.InvalidBlock;
+                    continue;
+                }
+                if (entry_ptr == 0 or entry_ptr >= ramfs.block_count) return error.InvalidBlock;
+                const entry_bit = @as(u8, 1) << @intCast(entry_ptr % 8);
+                expected_bitmap[entry_ptr / 8] |= entry_bit;
+            }
+        } else if (entry.i_indirect != 0) {
+            return error.InvalidBlock;
         }
     }
     if (!std.mem.eql(u8, &expected_bitmap, &state.block_bitmap)) return error.BitmapMismatch;
@@ -253,4 +278,56 @@ test "VNV rejects corruption without modifying destination" {
     var scratch: ramfs.State = undefined;
     try std.testing.expectError(error.ChecksumMismatch, decode(&image, &destination, &scratch));
     try std.testing.expectEqualSlices(u8, &before, &destination.memory);
+}
+
+test "VNV round trip preserves indirect blocks" {
+    var state: ramfs.State = undefined;
+    ramfs.initState(&state);
+    const root = try ramfs.createDirectoryFor(&state, ramfs.root_inode, "apps");
+    const file = try ramfs.createFileFor(&state, root, "large.bin");
+    // 14 blocos: 12 diretos + 2 via tabela indireta.
+    const payload: [ramfs.direct_blocks * ramfs.block_size + 2 * ramfs.block_size]u8 = @splat(0x3c);
+    try ramfs.writeFileFor(&state, file, &payload);
+
+    var image: [image_size]u8 = undefined;
+    _ = try encode(&state, &image, 9);
+
+    var restored: ramfs.State = undefined;
+    var scratch: ramfs.State = undefined;
+    try decode(&image, &restored, &scratch);
+    try std.testing.expectEqual(@as(u64, payload.len), restored.inodes[file].i_size);
+    try std.testing.expect(restored.inodes[file].i_indirect != 0);
+    var buffer: [payload.len]u8 = undefined;
+    const count = try ramfs.readFileFor(&restored, file, &buffer);
+    try std.testing.expectEqual(buffer.len, count);
+    try std.testing.expectEqual(@as(u8, 0x3c), buffer[0]);
+    try std.testing.expectEqual(@as(u8, 0x3c), buffer[ramfs.direct_blocks * ramfs.block_size]);
+    try std.testing.expectEqual(@as(u8, 0x3c), buffer[buffer.len - 1]);
+}
+
+test "VNV validate rejects inconsistent indirect tables" {
+    var state: ramfs.State = undefined;
+    ramfs.initState(&state);
+    const file = try ramfs.createFileFor(&state, ramfs.root_inode, "large");
+    const payload: [ramfs.direct_blocks * ramfs.block_size + 1]u8 = @splat(0x11);
+    try ramfs.writeFileFor(&state, file, &payload);
+
+    var image: [image_size]u8 = undefined;
+    _ = try encode(&state, &image, 1);
+
+    // Entrada além do tamanho deixa de ser zero.
+    const table_index: usize = @intCast(state.inodes[file].i_indirect);
+    const table = std.mem.bytesAsSlice(u64, state.memory[table_index * ramfs.block_size ..][0..ramfs.block_size]);
+    const original = table[1];
+    table[1] = 1;
+    try std.testing.expectError(error.InvalidBlock, encode(&state, &image, 1));
+    table[1] = original;
+    _ = try encode(&state, &image, 1);
+
+    // Arquivo grande sem tabela indireta.
+    const indirect = state.inodes[file].i_indirect;
+    state.inodes[file].i_indirect = 0;
+    try std.testing.expectError(error.InvalidBlock, encode(&state, &image, 1));
+    state.inodes[file].i_indirect = indirect;
+    _ = try encode(&state, &image, 1);
 }

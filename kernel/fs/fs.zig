@@ -832,7 +832,7 @@ test "VFSX stat reports file and directory metadata" {
     try testing.expectError(error.InvalidPath, stat("/meta/../data"));
 }
 
-test "VFSX rename preserves open descriptors and rejects directory moves" {
+test "VFSX rename preserves open descriptors and moves directories" {
     init();
     _ = try mkdir("/source");
     _ = try mkdir("/destination");
@@ -846,7 +846,14 @@ test "VFSX rename preserves open descriptors and rejects directory moves" {
     const count = try read(0, fd, &buffer);
     try testing.expectEqualStrings("persistent", buffer[0..count]);
     try close(0, fd);
-    try testing.expectError(error.NotAFile, rename("/source", "/destination/moved"));
+    // Diretórios podem ser movidos; a subárvore acompanha o pai.
+    try rename("/source", "/destination/moved");
+    try testing.expectError(error.EntryNotFound, stat("/source"));
+    try testing.expectEqual(inode.InodeType.directory, (try stat("/destination/moved")).kind);
+    // O arquivo movido antes permanece no destino original.
+    try testing.expectEqual(@as(u64, 10), (try stat("/destination/new")).size);
+    // Ciclos continuam recusados sem mutação.
+    try testing.expectError(error.InvalidDirectory, rename("/destination/moved", "/destination/moved/cycle"));
     try testing.expectError(error.InvalidPath, rename("/destination/new", "/destination/../bad"));
 }
 
@@ -1223,7 +1230,8 @@ test "truncate cannot cross process descriptor tables" {
 // M0.3.19: pressure de blocos, rollback e recuperação após unlink.
 test "NoSpace during multi-block extension preserves inode and allows retry" {
     init();
-    const payload: [ramfs.max_file_size]u8 = @splat(0x5a);
+    // Vinte arquivos de 12 blocos (somente diretos) ocupam 240 blocos.
+    const payload: [ramfs.direct_blocks * ramfs.block_size]u8 = @splat(0x5a);
     // Twenty full files occupy 240 blocks. A further 11-block file
     // leaves fewer than five free blocks for the attempted extension.
     for (0..20) |index| {
@@ -1411,13 +1419,14 @@ test "rename then unlink retains inode across process handles until last close" 
     try testing.expectEqual(initial_blocks, freeBlockCount());
 }
 
-test "rename rejects noncanonical paths and directories without mutation" {
+test "rename rejects noncanonical paths and cycles without mutation" {
     init();
     _ = try mkdir("/directory");
     const fd = try open(0, "/file", O_CREAT | O_RDWR);
     const before_inodes = freeInodeCount();
     try testing.expectError(error.InvalidPath, rename("/file", "/../escape"));
-    try testing.expectError(error.NotAFile, rename("/directory", "/moved-directory"));
+    // Ciclo: mover um diretório para dentro da própria subárvore.
+    try testing.expectError(error.InvalidDirectory, rename("/directory", "/directory/self"));
     try testing.expectEqual(before_inodes, freeInodeCount());
     try testing.expect(kindOf("/file") != null);
     try testing.expect(kindOf("/directory") != null);
