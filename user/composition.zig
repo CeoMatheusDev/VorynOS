@@ -129,6 +129,15 @@ pub fn WindowStack(comptime capacity: usize) type {
             return id;
         }
 
+        /// Apply a validated primary-button press to keyboard focus.
+        /// Motion and button release never change the current focus.
+        pub fn focusPointerEvent(self: *Self, event: *const input.PointerEvent, width: u32, height: u32) (input.PointerError || error{OutOfBounds})!?u64 {
+            try input.validatePointerForSurface(event, width, height);
+            if (event.kind != input.pointer_kind_button or
+                event.flags & input.pointer_flag_pressed == 0) return null;
+            return self.focusAt(event.x, event.y);
+        }
+
         pub fn setKeyboardFocus(self: *Self, id: u64) Error!void {
             if (self.indexOf(id) == null) return error.NotFound;
             self.keyboard_focus = id;
