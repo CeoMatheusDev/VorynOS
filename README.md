@@ -103,7 +103,7 @@ Development is organized into incremental milestones, each with technical accept
 | F5 | Runtime, SDK, and native applications | 🟢 Locally Tested |
 | M0.5 | SMP / APIC / EEVDF / spinlocks / APs (`smp.zig`, `apic.zig`, `scheduler.zig`, `installSmp`) | ✅ Completed — `main` (`53dc842`) |
 | F6 | Graphics subsystem and desktop environment | 🚧 Experimental — F6.30 `input_wait` (syscall 23, ABI v13) verified |
-| F7 | Virtio drivers / PCI / block interface (`virtio.zig`, `virtio_blk.zig`) | 🟢 Em desenvolvimento — base + `VRing` + `BlockDevice` stub (`10333ee`) |
+| F7 | Virtio drivers / PCI / block / net (`virtio.zig`, `virtio_blk.zig`, `virtio_net.zig`, `pci.zig`) | 🟢 Em desenvolvimento — base + VRing + PCI scan + BlockDevice + NetworkDevice (`f7adcf5`) |
 | F8 | Compatibility with external formats and APIs | 📋 Proposed |
 | F9 | Artificial intelligence infrastructure | 📋 Proposed |
 | F10 | Installation, security, recovery, and production readiness | 📋 Proposed |
