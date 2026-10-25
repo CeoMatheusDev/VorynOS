@@ -219,6 +219,13 @@ pub fn disableInterrupts() void {
     asm volatile ("cli" ::: .{ .memory = true });
 }
 
+/// Pausa brevemente o processador: indica ao hardware que o hart está em um
+/// laço de espera ativa, reduzindo o consumo de energia e o tráfego de
+/// barramento. Usado em spinlocks.
+pub fn pause() void {
+    asm volatile ("pause" ::: .{ .memory = true });
+}
+
 /// Halts the processor until the next interrupt.
 pub fn halt() void {
     asm volatile ("hlt" ::: .{ .memory = true });

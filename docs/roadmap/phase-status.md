@@ -369,7 +369,7 @@ Known limitations of the verified F6 core:
 |-------|----------|--------|
 | F4 | Block drivers, VNV, initial VFSX, persistence, recovery | IN PROGRESS — RamFS/VFSX, per-process descriptors, single indirect blocks, file/directory rename with cycle rejection and the block-device commit/wipe/recovery cycle are verified (ramdisk backend); a physical driver and automatic boot mounting are pending |
 | F5 | VEX, VLIB, VPK, runtime, SDK, native applications | IN PROGRESS — SDK, native ELF, compositor client, the VPK container and the VEX executable container (wrap/validate/unwrap + loader integration verified in the boot test) are done; VLIB is pending |
-| F6 | Input, rasterizer, compositor, windows, VSH | IN DEVELOPMENT — framebuffer, input, damage, capabilities, user-space composition, screenshot validation and the F6.29 client→compositor frame handshake are verified; focus, cursor, surface sharing and the desktop shell are pending |
+| F6 | Input, rasterizer, compositor, windows, VSH | IN DEVELOPMENT — framebuffer, input, damage, capabilities, user-space composition, blocking input wait (F6.30, syscall 23, ABI v13), screenshot validation and the F6.29 client→compositor frame handshake are verified; focus, cursor, surface sharing and the desktop shell are pending |
 | F7 | Virtio, network, audio, physical hardware, GPU | PROPOSED |
 | F8 | ELF, Linux ABI, PE, Win32, external formats | PROPOSED |
 | F9 | VAI, backends, permissions, API, local execution | PROPOSED |
