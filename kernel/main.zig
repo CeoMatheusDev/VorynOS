@@ -50,6 +50,7 @@ const smp = @import("arch/x86_64/smp.zig");
 const apic = @import("arch/x86_64/apic.zig");
 const pci = @import("arch/x86_64/pci.zig");
 const virtio = @import("arch/x86_64/virtio.zig");
+const virtio_modern = @import("drivers/virtio/root.zig");
 
 const heap = @import("memory/heap.zig");
 const dma = @import("memory/dma.zig");
@@ -726,10 +727,11 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     probeDmaWindow();
     probeVirtqueueLayout();
 
-    // F7 Phase 3: inicializa o device VirtIO descoberto no bus PCI.
-    // O probePciBus ja scanou o bus 0 e encontrou o device 1af4:1001.
-    // Aqui colocamos o device no status DriverOk e preparamos as queues.
-    initVirtioDevice();
+    // F7/PR A: identifica as funcoes VirtIO do bus 0 e valida as
+    // capabilities do transporte PCI moderno. A sonda e apenas de leitura:
+    // nao mapeia BAR, nao escreve o registro de status, nao negocia features
+    // e nao programa virtqueue. O dispositivo NAO e inicializado aqui.
+    identifyVirtioDevices();
 
     // F7 base: leitura real do espaco de configuracao PCI no bus 0. A sonda
     // nao habilita o dispositivo nem assume um driver; ela existe para
@@ -1106,32 +1108,143 @@ fn probeVirtqueueLayout() void {
     });
 }
 
-/// Phase 3: inicializa o device VirtIO descoberto pelo PCI scan.
-/// - Coloca o device no status Acknowledge/DriverOk
-/// - Configura as VRing sizes e addresses via DeviceQueue
-/// - Ativa rx/tx no status do device
-/// - Loga informações para o console serial
-fn initVirtioDevice() void {
-    // O probePciBus ja encontrou o device 1af4:1001 (virtio) no bus 0.
-    // Aqui completamos o handshake de status e preparamos as queues.
+/// Identifica as funcoes VirtIO do barramento 0, funcao 0, e valida as
+/// capabilities modernas.
+///
+/// O escopo de barramento e funcao e o mesmo da sonda `probePciBus` que ja
+/// existia: funcoes adicionais de um dispositivo multifuncao nao sao
+/// visitadas por este incremento.
+///
+/// A sonda e somente de leitura. Ela percorre a lista de capabilities do
+/// espaco de configuracao PCI e interpreta as capabilities vendor-specific do
+/// VirtIO moderno (configuracao comum, notificacao, ISR e configuracao do
+/// dispositivo) pelos modulos `drivers/virtio/`.
+///
+/// O que esta funcao NAO faz, e nao pode ser anunciado como feito: nao mapeia
+/// BAR, nao escreve o registro de status do dispositivo, nao negocia features
+/// e nao programa virtqueue. Sem essas etapas o dispositivo nao esta pronto
+/// para uso, e a mensagem final diz exatamente isso.
+fn identifyVirtioDevices() void {
+    var device: u8 = 0;
+    var found: u32 = 0;
 
-    // Status handshake: Acknowledge -> DriverOk
-    // Em hardware real, isto seria escrito no registro device status do PCI config space.
-    // Aqui apenas registramos o estado para o test.
-    serial.printLine("[VNK] virtio: initializing device (vendor=0x1af4 bus=0 device=0)", .{});
+    while (device < 32) : (device += 1) {
+        const vendor = pci.readConfigWord(0, device, 0, 0x00);
+        if (vendor != virtio_modern.types.vendor_id) continue;
 
-    // Configura o VRing default size e prepares o DeviceQueue.
-    // O layout ja foi verificado por probeVirtqueueLayout acima.
-    // Em um sistema completo, aqui programaríamos os MMIO registers do device
-    // com os endereços físicos de descriptor/available/used.
+        found += 1;
+        const device_id = pci.readConfigWord(0, device, 0, 0x02);
+        const identification = virtio_modern.types.identify(vendor, device_id) catch |err| {
+            serial.printLine("[VNK] virtio: 00:{d}.0 device=0x{x} is not identified: {s}", .{
+                device,
+                device_id,
+                @errorName(err),
+            });
+            continue;
+        };
+        reportVirtioCapabilities(device, identification);
+    }
 
-    // Por enquanto, apenas registramos que o device foi localizado e o tipo.
-    // O device 1af4:1001 eh o controlador virtio-blk (type 0 = block).
-    // O device 1af4:1001 tambem poderia ser virtio-net, mas por enquanto focamos em block.
+    if (found == 0) {
+        serial.printLine("[VNK] virtio: no function of vendor 0x1af4 on bus 0", .{});
+    }
+}
 
-    // Registra os estados locais que os drivers block/net usam no futuro.
-    // Sem alocacao de memoria real nem MMIO writes por enquanto.
-    serial.printLine("[VNK] virtio: device init complete block_type=block", .{});
+/// Le e valida as capabilities modernas de uma funcao VirtIO ja identificada.
+fn reportVirtioCapabilities(device: u8, identification: virtio_modern.types.Identification) void {
+    const location: pci.Function = .{ .bus = 0, .device = device, .function = 0 };
+    const reader = pci.functionReader(&location);
+
+    var capabilities: [8]virtio_modern.caps.Capability = undefined;
+    var count: usize = 0;
+
+    var iterator = pci.CapabilityIterator.init(reader) catch |err| {
+        serial.printLine("[VNK] virtio: 00:{d}.0 type={s} has no capability list: {s}", .{
+            device,
+            identification.device_type.label(),
+            @errorName(err),
+        });
+        return;
+    };
+
+    while (true) {
+        const next = iterator.next() catch |err| {
+            serial.printLine("[VNK] virtio: 00:{d}.0 capability list is invalid: {s}", .{
+                device,
+                @errorName(err),
+            });
+            return;
+        };
+        const pci_capability = next orelse break;
+        if (pci_capability.id != pci.capability_vendor_specific) continue;
+        if (count == capabilities.len) {
+            serial.printLine("[VNK] virtio: 00:{d}.0 has more capabilities than the probe records", .{device});
+            break;
+        }
+        capabilities[count] = readVirtioCapability(device, pci_capability) catch |err| {
+            serial.printLine("[VNK] virtio: 00:{d}.0 capability at 0x{x} is invalid: {s}", .{
+                device,
+                pci_capability.offset,
+                @errorName(err),
+            });
+            continue;
+        };
+        count += 1;
+    }
+
+    // O validador de BAR e nulo porque descobrir o tamanho de um BAR exige
+    // escrever nele e ler a mascara de volta. O dispositivo ainda nao e
+    // tocado por este incremento; a verificacao de tamanho entra com o
+    // mapeamento do BAR, antes de qualquer acesso a memoria do dispositivo.
+    const collection = virtio_modern.caps.build(capabilities[0..count], null) catch |err| {
+        serial.printLine("[VNK] virtio: 00:{d}.0 type={s} modern capabilities are incomplete: {s}", .{
+            device,
+            identification.device_type.label(),
+            @errorName(err),
+        });
+        return;
+    };
+
+    serial.printLine(
+        "[VNK] virtio: 00:{d}.0 device=0x{x} type={s} regions={d} common=bar{d}+0x{x} notify=bar{d}+0x{x} multiplier={d}",
+        .{
+            device,
+            identification.device_id,
+            identification.device_type.label(),
+            collection.regionCount(),
+            collection.common.bar,
+            collection.common.offset,
+            collection.notify.bar,
+            collection.notify.offset,
+            collection.notify.notify_off_multiplier,
+        },
+    );
+    serial.printLine(
+        "[VNK] virtio: 00:{d}.0 identified only: no BAR mapped, no feature negotiated, no virtqueue programmed",
+        .{device},
+    );
+}
+
+/// Le o corpo de uma capability VirtIO a partir do espaco de configuracao.
+///
+/// Somente os bytes que a estrutura do VirtIO moderno usa sao lidos; o
+/// restante do `cap_len` declarado pode ser padding ou uma extensao que este
+/// incremento nao interpreta.
+fn readVirtioCapability(
+    device: u8,
+    pci_capability: pci.Capability,
+) virtio_modern.caps.Error!virtio_modern.caps.Capability {
+    var body: [virtio_modern.caps.notify_structure_size]u8 = @splat(0);
+    const length: usize = @min(@as(usize, pci_capability.length), body.len);
+
+    for (body[0..length], 0..) |*slot, index| {
+        // O percurso garantiu offset + length dentro do espaco de
+        // configuracao, e `length` nao passa do tamanho do buffer.
+        const offset: u8 = @intCast(@as(usize, pci_capability.offset) + index);
+        slot.* = pci.readConfigByte(0, device, 0, offset);
+    }
+
+    return virtio_modern.caps.parse(body[0..length]);
 }
 
 /// Builds the page tables of the kernel.

@@ -381,6 +381,11 @@ require_marker "[VNK] paging: no-execute enabled"
 require_pattern '\[VNK\] pci: bus 0 scan complete, virtio=[1-9][0-9]*' 'the PCI config scan on bus 0'
 require_marker "[VNK] dma: window map probe ok"
 require_marker "[VNK] virtio: split queue layout ok"
+# PR A do VirtIO moderno: a sonda de leitura percorre a lista de capabilities
+# do disco e valida as regioes do transporte. As duas linhas juntas provam que
+# o dispositivo foi identificado e que o kernel NAO afirma tê-lo inicializado.
+require_pattern '\[VNK\] virtio: 00:[0-9]+\.0 device=0x[0-9a-f]+ type=block regions=[0-9]+ common=bar[0-9]+\+0x[0-9a-f]+' 'the modern VirtIO PCI capability walk on the disk'
+require_pattern '\[VNK\] virtio: 00:[0-9]+\.0 identified only: no BAR mapped' 'the absence of device initialisation'
 require_marker "[VNK] timer:"
 require_marker "[VNK] keyboard: ready for PS/2 input"
 require_pattern '\[VNK\] keyboard: key scancode=0x1e extended=0 pressed=1' 'PS/2 A key press'
