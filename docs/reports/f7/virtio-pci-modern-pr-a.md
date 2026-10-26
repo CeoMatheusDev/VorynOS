@@ -241,13 +241,28 @@ utilizável, mas o driver usa a primeira instância, conforme a especificação.
 | `zig build test` | passa; `arch-tests` 76/76, `virtio-modern-tests` 27/27 |
 | `zig build` | passa; `zig-out/bin/vorynos.img` (64 MiB) gerado |
 | `git diff --check` | sem espaços em branco defeituosos |
-| `zig build qemu-test` | **não executado localmente**: o ambiente da sessão não tem QEMU nem OVMF. Entregue à CI, que instala `ovmf` e `qemu-system-x86`. |
-| `zig build check` | idem: depende do passo de boot |
+| `zig build qemu-test` | **não executado localmente**: o ambiente da sessão não tem QEMU nem OVMF. Executado na CI (`.github/workflows/ci.yml`), que instala `ovmf` e `qemu-system-x86`; o passo de boot passou depois da correção do `cap_len`. |
+| `zig build check` | idem: depende do passo de boot, e passa na CI |
 
 O teste de boot ganhou duas verificações: a linha da sonda de capabilities no
 disco (`type=block regions=... common=barN+0x...`) e a linha que declara a
 ausência de inicialização. As duas juntas provam que o percurso rodou no
 dispositivo real do QEMU e que o kernel não anuncia um dispositivo pronto.
+
+O histórico da CI neste PR, porque ele explica uma correção que só o boot
+revelaria:
+
+| Execução | Resultado | Causa |
+|----------|-----------|-------|
+| primeira | falhou antes de compilar | `Instalar OVMF`: `apt-get` estourou o limite de 5 min do próprio passo (infraestrutura) |
+| segunda a quarta | `qemu-boot-test: 2 check(s) failed` | o percurso recusava o disco do QEMU como `TruncatedCapability` — ver a seção do `cap_len` |
+| quinta em diante | passa | correção do `cap_len` e diagnóstico do script de boot |
+
+O script de boot passou a repetir, no fim do relatório, os nomes dos checks que
+falharam e as últimas linhas das sondas de PCI e VirtIO: a anotação da CI é
+truncada em 4096 caracteres e mantém o início do texto, então o diagnóstico
+tem de estar no começo da anotação. Nenhuma verificação foi enfraquecida para
+o teste passar.
 
 ## Limitações (explícitas)
 
