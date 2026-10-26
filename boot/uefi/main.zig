@@ -274,9 +274,16 @@ fn boot(out: *console.Console) !void {
         };
 
         boot_services.exitBootServices(uefi.handle, final_map.key) catch |err| {
-            if (err == error.InvalidParameter and attempt < max_exit_attempts) {
-                out.printLine("[VNB] memory map changed, retrying", .{});
-                continue;
+            if (err == error.InvalidParameter) {
+                // After a failed ExitBootServices the firmware may have
+                // partially shut down boot services. Only memory-map and
+                // transition calls are safe to rely on, so subsequent
+                // diagnostics must use the hardware serial path only.
+                out.disableFirmware();
+                if (attempt + 1 < max_exit_attempts) {
+                    out.printLine("[VNB] memory map changed, retrying", .{});
+                    continue;
+                }
             }
             return err;
         };

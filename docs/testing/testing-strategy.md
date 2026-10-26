@@ -32,7 +32,10 @@ dependency, which makes it possible to test the logic that runs inside the
 kernel and the loader:
 
 - `shared/elf64.zig`: malformed header, segment outside the file, invalid
-  entry point, segment with no RAM behind it, excessive number of segments.
+  or non-executable entry point, inconsistent fixed virtual/physical address,
+  invalid alignment, W+X segment, relocation outside writable memory,
+  symbol-based unsupported relative relocation, segment with no RAM behind
+  it and excessive number of segments.
 - `shared/memmap.zig`: region search, usable range, address overflow, map
   summary, load region with alignment and lower bound.
 - `shared/handoff.zig`: magic, version, header size, coherence of the

@@ -203,7 +203,13 @@ pub fn plan(
 
     var raw_segments: [max_segments]elf64.Segment = undefined;
     var raw_relocations: [max_relocations]elf64.Relocation = undefined;
-    const image = try elf64.parse(bytes, &raw_segments, &raw_relocations);
+    const image = elf64.parse(bytes, &raw_segments, &raw_relocations) catch |err| switch (err) {
+        // Preserve the planner's established error contract while the shared
+        // parser reports the more specific ELF validation failures.
+        error.BadSegmentAlignment => return error.SegmentNotAligned,
+        error.EntryNotExecutable => return error.EntryOutsideExecutableSegment,
+        else => return err,
+    };
 
     if (!image.relocatable and load_bias != 0) return error.BiasNotAllowed;
 

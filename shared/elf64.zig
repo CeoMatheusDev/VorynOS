@@ -136,6 +136,8 @@ pub const ParseError = error{
     SegmentOutOfBounds,
     /// A segment has a memory size smaller than its file size.
     BadSegmentSize,
+    /// A fixed-address image has different virtual and physical segment addresses.
+    BadSegmentAddress,
     /// A segment requests a page alignment that is not a power of two.
     BadSegmentAlignment,
     /// The image does not contain a single loadable segment.
@@ -144,6 +146,12 @@ pub const ParseError = error{
     TooManySegments,
     /// The image entry point is not inside any loadable segment.
     EntryOutsideSegments,
+    /// The image entry point is not inside file-backed executable code.
+    EntryNotExecutable,
+    /// A loadable segment requests write and execute permissions together.
+    WritableExecutableSegment,
+    /// A relative relocation does not target a complete word in a writable segment.
+    RelocationOutsideWritableSegment,
     /// The image overlaps a region that is not ordinary RAM.
     SegmentNotBackedByRam,
     /// The dynamic section of the image is not usable.
@@ -285,6 +293,20 @@ pub fn parse(
 
         if (phdr.memory_size < phdr.file_size) return error.BadSegmentSize;
         if (phdr.alignment != 0 and !std.math.isPowerOfTwo(phdr.alignment)) return error.BadSegmentAlignment;
+        if (phdr.alignment > 1 and
+            phdr.virtual_address % phdr.alignment != phdr.offset % phdr.alignment)
+        {
+            return error.BadSegmentAlignment;
+        }
+        if ((phdr.flags & (pf_w | pf_x)) == (pf_w | pf_x)) {
+            return error.WritableExecutableSegment;
+        }
+        // This loader uses p_paddr as the destination for ET_EXEC, while the
+        // entry point and relocation offsets are virtual addresses. Refuse an
+        // ambiguous image instead of jumping to or patching the wrong address.
+        if (header.type == type_exec and phdr.physical_address != phdr.virtual_address) {
+            return error.BadSegmentAddress;
+        }
 
         const file_end = std.math.add(u64, phdr.offset, phdr.file_size) catch
             return error.SegmentOutOfBounds;
@@ -332,6 +354,7 @@ pub fn parse(
     };
 
     if (!entryIsInsideSegments(image)) return error.EntryOutsideSegments;
+    if (!entryIsInExecutableFileSegment(image)) return error.EntryNotExecutable;
 
     return image;
 }
@@ -398,7 +421,13 @@ fn collectRelocations(
         @memcpy(std.mem.asBytes(&rela), bytes[@intCast(entry_offset)..][0..@sizeOf(Rela)]);
 
         const relocation_type: u32 = @truncate(rela.info);
-        if (relocation_type != r_x86_64_relative) return error.UnsupportedRelocation;
+        const symbol_index: u32 = @truncate(rela.info >> 32);
+        if (relocation_type != r_x86_64_relative or symbol_index != 0) {
+            return error.UnsupportedRelocation;
+        }
+        if (!relocationTargetIsWritable(segments, rela.offset)) {
+            return error.RelocationOutsideWritableSegment;
+        }
 
         relocation_buffer[index] = .{
             .offset = rela.offset,
@@ -415,6 +444,31 @@ pub fn entryIsInsideSegments(image: Image) bool {
     for (image.segments) |segment| {
         if (image.entry >= segment.virtual_address and
             image.entry < segment.virtual_address + segment.file_size) return true;
+    }
+    return false;
+}
+
+/// Returns true when the entry lies in file-backed bytes of an executable
+/// PT_LOAD segment. The parser has already checked the segment end for overflow.
+fn entryIsInExecutableFileSegment(image: Image) bool {
+    for (image.segments) |segment| {
+        if (!segment.isExecutable()) continue;
+        if (image.entry >= segment.virtual_address and
+            image.entry < segment.virtual_address + segment.file_size) return true;
+    }
+    return false;
+}
+
+/// Returns true when the full 8-byte relocation destination lies in one
+/// writable PT_LOAD segment. The checked addition makes wrapped targets fail
+/// closed; a relocation into executable code or an unmapped gap is rejected
+/// before the bootloader performs any writes.
+fn relocationTargetIsWritable(segments: []const Segment, address: u64) bool {
+    const target_end = std.math.add(u64, address, @sizeOf(u64)) catch return false;
+    for (segments) |segment| {
+        if (!segment.isWritable()) continue;
+        const segment_end = std.math.add(u64, segment.virtual_address, segment.memory_size) catch continue;
+        if (address >= segment.virtual_address and target_end <= segment_end) return true;
     }
     return false;
 }
@@ -613,4 +667,145 @@ test "planLoad requires the segments to be backed by RAM" {
         error.SegmentNotBackedByRam,
         planLoad(bytes, &bad_map, &segments, &relocations),
     );
+}
+
+/// Builds a compact ET_DYN fixture with an RX code segment, an RW data
+/// segment and one relative relocation. The parameters let negative tests
+/// mutate only the untrusted ELF field under examination.
+fn buildRelocationTestImage(
+    buffer: []u8,
+    relocation_target: u64,
+    symbol_index: u32,
+    entry: u64,
+) ![]const u8 {
+    const required_size = 0x2120;
+    if (buffer.len < required_size) return error.BufferTooSmall;
+    @memset(buffer, 0);
+
+    const header: Ehdr = .{
+        .ident = .{
+            0x7f, 'E', 'L', 'F', class_64, data_lsb, version_current, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+        },
+        .type = type_dyn,
+        .machine = machine_x86_64,
+        .version = 1,
+        .entry = entry,
+        .program_header_offset = @sizeOf(Ehdr),
+        .header_size = @sizeOf(Ehdr),
+        .program_header_entry_size = @sizeOf(Phdr),
+        .program_header_count = 3,
+    };
+    @memcpy(buffer[0..@sizeOf(Ehdr)], std.mem.asBytes(&header));
+
+    const code: Phdr = .{
+        .type = pt_load,
+        .flags = pf_r | pf_x,
+        .offset = 0x1000,
+        .virtual_address = 0x1000,
+        .file_size = 16,
+        .memory_size = 0x1000,
+        .alignment = 0x1000,
+    };
+    const data: Phdr = .{
+        .type = pt_load,
+        .flags = pf_r | pf_w,
+        .offset = 0x2000,
+        .virtual_address = 0x2000,
+        .file_size = 0x120,
+        .memory_size = 0x1000,
+        .alignment = 0x1000,
+    };
+    const dynamic: Phdr = .{
+        .type = pt_dynamic,
+        .flags = pf_r,
+        .offset = 0x2080,
+        .virtual_address = 0x2080,
+        .file_size = 3 * @sizeOf(Dyn),
+        .memory_size = 3 * @sizeOf(Dyn),
+        .alignment = @alignOf(Dyn),
+    };
+    const phdr_start = @sizeOf(Ehdr);
+    const phdr_size = @sizeOf(Phdr);
+    @memcpy(buffer[phdr_start..][0..phdr_size], std.mem.asBytes(&code));
+    @memcpy(buffer[phdr_start + phdr_size ..][0..phdr_size], std.mem.asBytes(&data));
+    @memcpy(buffer[phdr_start + 2 * phdr_size ..][0..phdr_size], std.mem.asBytes(&dynamic));
+
+    const dynamic_entries = [_]Dyn{
+        .{ .tag = DynamicTag.rela, .value = 0x2100 },
+        .{ .tag = DynamicTag.rela_size, .value = @sizeOf(Rela) },
+        .{ .tag = DynamicTag.none, .value = 0 },
+    };
+    for (dynamic_entries, 0..) |item, index| {
+        const offset = 0x2080 + index * @sizeOf(Dyn);
+        @memcpy(buffer[offset..][0..@sizeOf(Dyn)], std.mem.asBytes(&item));
+    }
+
+    const relocation: Rela = .{
+        .offset = relocation_target,
+        .info = (@as(u64, symbol_index) << 32) | @as(u64, r_x86_64_relative),
+        .addend = 0,
+    };
+    @memcpy(buffer[0x2100..][0..@sizeOf(Rela)], std.mem.asBytes(&relocation));
+    return buffer[0..required_size];
+}
+
+test "ELF64 accepts a relative relocation inside writable data" {
+    var buffer: [0x2200]u8 = undefined;
+    const bytes = try buildRelocationTestImage(&buffer, 0x2000, 0, 0x1000);
+    var segments: [4]Segment = undefined;
+    var relocations: [4]Relocation = undefined;
+    const image = try parse(bytes, &segments, &relocations);
+    try testing.expectEqual(@as(usize, 1), image.relocations.len);
+}
+
+test "ELF64 rejects relocation targets outside writable segments" {
+    const invalid_targets = [_]u64{ 0x1000, 0x3000, std.math.maxInt(u64) - 3 };
+    for (invalid_targets) |target| {
+        var buffer: [0x2200]u8 = undefined;
+        const bytes = try buildRelocationTestImage(&buffer, target, 0, 0x1000);
+        var segments: [4]Segment = undefined;
+        var relocations: [4]Relocation = undefined;
+        try testing.expectError(
+            error.RelocationOutsideWritableSegment,
+            parse(bytes, &segments, &relocations),
+        );
+    }
+}
+
+test "ELF64 rejects symbol-based relative relocations" {
+    var buffer: [0x2200]u8 = undefined;
+    const bytes = try buildRelocationTestImage(&buffer, 0x2000, 1, 0x1000);
+    var segments: [4]Segment = undefined;
+    var relocations: [4]Relocation = undefined;
+    try testing.expectError(error.UnsupportedRelocation, parse(bytes, &segments, &relocations));
+}
+
+test "ELF64 requires an executable file-backed entry and forbids W plus X" {
+    var buffer: [0x2200]u8 = undefined;
+    const data_entry = try buildRelocationTestImage(&buffer, 0x2000, 0, 0x2000);
+    var segments: [4]Segment = undefined;
+    var relocations: [4]Relocation = undefined;
+    try testing.expectError(error.EntryNotExecutable, parse(data_entry, &segments, &relocations));
+
+    const valid = try buildRelocationTestImage(&buffer, 0x2000, 0, 0x1000);
+    const code_flags_offset = @sizeOf(Ehdr) + @sizeOf(Phdr) + 4;
+    std.mem.writeInt(u32, buffer[code_flags_offset..][0..4], pf_r | pf_w | pf_x, .little);
+    try testing.expectError(error.WritableExecutableSegment, parse(valid, &segments, &relocations));
+}
+
+test "ELF64 rejects malformed alignment and inconsistent ET_EXEC addresses" {
+    var buffer: [0x2200]u8 = undefined;
+    const input = try buildTestImage(&buffer, 0x1000008, 0x1000000);
+    var segments: [4]Segment = undefined;
+    var relocations: [4]Relocation = undefined;
+
+    const virtual_address_offset = @sizeOf(Ehdr) + 16;
+    std.mem.writeInt(u64, buffer[virtual_address_offset..][0..8], 0x1000001, .little);
+    try testing.expectError(error.BadSegmentAlignment, parse(input, &segments, &relocations));
+
+    _ = try buildTestImage(&buffer, 0x1000008, 0x1000000);
+    const physical_address_offset = @sizeOf(Ehdr) + 24;
+    std.mem.writeInt(u64, buffer[physical_address_offset..][0..8], 0x1001000, .little);
+    try testing.expectError(error.BadSegmentAddress, parse(input, &segments, &relocations));
 }

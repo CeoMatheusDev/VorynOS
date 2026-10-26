@@ -188,3 +188,10 @@ page-permission line.
 - `kernel/main.zig` — boot order, installation, verification and report.
 - `tests/integration/boot-qemu.sh` — the native ELF assertions.
 - `docs/adr/ADR-0011-elf64-load-plan.md` — the planner and W^X policy.
+
+## Correction to §2.5 (2026-10-26)
+
+The process-capacity statement in §2.5 is historical. The current source
+sets `paging.max_process_spaces` to 8 (`kernel/arch/x86_64/paging.zig`), not
+4. The limit remains fixed; this change does not implement dynamic address
+space allocation.

@@ -392,7 +392,7 @@ Known limitations of the verified F6 core:
 | Absence of capabilities | High | The capability model of ADR-0001 remains open |
 | Fixed heap in the kernel image | Medium | Dynamic heap with the VNM in F3 |
 | Fatal exceptions | Medium | Resolved in F3: the exception of the user kills the process, and the one of the kernel remains fatal |
-| Fixed number of processes | Medium | Four address spaces: three embedded test processes and one native ELF; `paging.max_process_spaces` is a constant |
+| Fixed number of processes | Medium | `paging.max_process_spaces` is a fixed limit of eight address spaces in the current source; dynamic growth remains absent |
 | NX requirement | High | The kernel requires EFER.NXE and refuses to boot without it; verified in QEMU/OVMF, with no fallback |
 | Bootstrap native image | Medium | The native ELF is built in kernel memory, not by an SDK; the next increment replaces the builder |
 | Absence of a hardware test | Medium | Marked as not verified until a reference machine exists |

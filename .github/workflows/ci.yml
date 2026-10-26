@@ -13,6 +13,7 @@ jobs:
   build-and-test:
     name: Compilar e testar (x86_64, QEMU/OVMF)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Obter o código
@@ -27,9 +28,19 @@ jobs:
           version: 0.17.0
 
       - name: Instalar OVMF
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ovmf qemu-system-x86
+          sudo timeout --kill-after=15s 5m apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            update
+          sudo timeout --kill-after=15s 12m apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            install -y ovmf qemu-system-x86
 
       - name: Verificar a versão do Zig
         run: |
@@ -49,13 +60,80 @@ jobs:
             \( -name 'OVMF_CODE*' -o -name 'OVMF_VARS*' \) 2>/dev/null | sort || true
 
       - name: Testes de unidade
-        run: zig build test
+        shell: bash
+        run: |
+          log_file="$(mktemp)"
+          if zig build test >"$log_file" 2>&1; then
+            cat "$log_file"
+          else
+            status=$?
+            cat "$log_file"
+            python3 - "zig build test" "$log_file" <<'PY'
+          import pathlib, sys
+          label, path = sys.argv[1:]
+          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
+          print(f"::error title={label} failed::{text}")
+          PY
+            exit "$status"
+          fi
 
       - name: Construir
-        run: zig build
+        shell: bash
+        run: |
+          log_file="$(mktemp)"
+          if zig build >"$log_file" 2>&1; then
+            cat "$log_file"
+          else
+            status=$?
+            cat "$log_file"
+            python3 - "zig build" "$log_file" <<'PY'
+          import pathlib, sys
+          label, path = sys.argv[1:]
+          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
+          print(f"::error title={label} failed::{text}")
+          PY
+            exit "$status"
+          fi
 
       - name: Teste de boot no QEMU
-        run: zig build qemu-test
+        shell: bash
+        run: |
+          log_file="$(mktemp)"
+          if zig build qemu-test >"$log_file" 2>&1; then
+            cat "$log_file"
+          else
+            status=$?
+            cat "$log_file"
+            python3 - "zig build qemu-test" "$log_file" <<'PY'
+          import pathlib, sys
+          label, path = sys.argv[1:]
+          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
+          print(f"::error title={label} failed::{text}")
+          PY
+            exit "$status"
+          fi
+
+      - name: Verificação agregada
+        shell: bash
+        run: |
+          log_file="$(mktemp)"
+          if zig build check >"$log_file" 2>&1; then
+            cat "$log_file"
+          else
+            status=$?
+            cat "$log_file"
+            python3 - "zig build check" "$log_file" <<'PY'
+          import pathlib, sys
+          label, path = sys.argv[1:]
+          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
+          print(f"::error title={label} failed::{text}")
+          PY
+            exit "$status"
+          fi
 
       - name: Verificar os artefatos
         run: |
