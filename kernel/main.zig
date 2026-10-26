@@ -1235,7 +1235,10 @@ fn readVirtioCapability(
     pci_capability: pci.Capability,
 ) virtio_modern.caps.Error!virtio_modern.caps.Capability {
     var body: [virtio_modern.caps.notify_structure_size]u8 = @splat(0);
-    const length: usize = @min(@as(usize, pci_capability.length), body.len);
+    // O percurso recusou uma capability vendor-specific sem `cap_len`, e por
+    // isso a ausencia do campo aqui e uma violacao da mesma regra.
+    const declared = pci_capability.length orelse return error.TruncatedCapability;
+    const length: usize = @min(@as(usize, declared), body.len);
 
     for (body[0..length], 0..) |*slot, index| {
         // O percurso garantiu offset + length dentro do espaco de

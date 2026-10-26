@@ -169,6 +169,33 @@ pub const first_capability_offset: u8 = 0x40;
 /// Identificador de capability vendor-specific, usado pelo VirtIO moderno.
 pub const capability_vendor_specific: u8 = 0x09;
 
+/// True quando o byte 2 da capability e o tamanho declarado (`cap_len`).
+///
+/// O cabecalho comum de uma capability tem dois bytes: o identificador e o
+/// ponteiro para a proxima. O byte de tamanho so existe nos formatos que o
+/// definem; nos outros, o offset 2 pertence a um registrador da propria
+/// capability:
+///
+///   * 0x10 (PCI Express): inicio do PCI Express Capabilities Register. Um
+///     endpoint declara 0x00 ali;
+///   * 0x11 (MSI-X) e 0x05 (MSI): o Message Control, com o numero de vetores.
+///
+/// Ler o tamanho nesses offsets produz um valor sem significado, e foi assim
+/// que o disco do QEMU (virtio-blk transicional no q35) foi recusado como
+/// truncado antes desta correcao: a capability PCI Express declara 0x00 no
+/// offset 2.
+///
+/// A resposta e afirmativa apenas para o identificador cujo formato este
+/// modulo interpreta, a capability vendor-specific (0x09), que e a que o
+/// VirtIO moderno usa. Um identificador desconhecido e percorrido sem
+/// validacao de tamanho: validar um byte que pode ser um registrador
+/// recusaria dispositivos corretos, e o percurso continua limitado pela
+/// validacao de ponteiro, pelo mapa de offsets visitados e pelo fim do espaco
+/// de configuracao.
+pub fn declaresLength(id: u8) bool {
+    return id == capability_vendor_specific;
+}
+
 /// Bytes minimos de uma capability: identificador e ponteiro para a proxima.
 pub const capability_header_size: u8 = 2;
 
@@ -273,8 +300,9 @@ pub const Capability = struct {
     id: u8,
     /// Offset no espaco de configuracao onde a capability comeca.
     offset: u8,
-    /// Tamanho declarado pelo campo `cap_len` da capability.
-    length: u8,
+    /// Tamanho declarado pelo campo `cap_len`, ou null quando o formato da
+    /// capability nao tem esse campo (`declaresLength`).
+    length: ?u8,
 };
 
 pub const CapabilityError = error{
@@ -307,8 +335,9 @@ fn validateCapabilityPointer(pointer: u8) CapabilityError!void {
 
 /// Percurso seguro da lista de capabilities.
 ///
-/// Cada passo valida o ponteiro, o identificador e o tamanho declarado, e
-/// recusa um offset ja visitado. A deteccao de ciclo usa um mapa de bits dos
+/// Cada passo valida o ponteiro, o identificador e, quando o formato da
+/// capability declara um tamanho, o `cap_len`; um offset ja visitado e
+/// recusado. A deteccao de ciclo usa um mapa de bits dos
 /// 256 offsets, e nao uma comparacao com o passo anterior: uma lista que
 /// salta A -> B -> C -> A tambem e recusada.
 ///
@@ -356,12 +385,20 @@ pub const CapabilityIterator = struct {
         // tres bytes do cabecalho da capability estao dentro do espaco.
         const id = self.reader.readByte(offset);
         const next_pointer = self.reader.readByte(offset + 1);
-        const length = self.reader.readByte(offset + 2);
 
         if (id == 0x00 or id == 0xFF) return error.InvalidCapabilityId;
-        if (length < capability_header_size) return error.TruncatedCapability;
-        if (@as(usize, offset) + @as(usize, length) > config_space_size) {
-            return error.TruncatedCapability;
+
+        // O offset 2 so e o tamanho declarado nas capabilities que tem esse
+        // campo; nos outros ele e o primeiro byte de um registrador e nao
+        // pode ser validado como tamanho.
+        var length: ?u8 = null;
+        if (declaresLength(id)) {
+            const declared = self.reader.readByte(offset + 2);
+            if (declared < capability_header_size) return error.TruncatedCapability;
+            if (@as(usize, offset) + @as(usize, declared) > config_space_size) {
+                return error.TruncatedCapability;
+            }
+            length = declared;
         }
         if (next_pointer != 0) try validateCapabilityPointer(next_pointer);
 
@@ -652,12 +689,14 @@ test "pci capability list walk reads every entry in order" {
     const first = (try iterator.next()).?;
     try std.testing.expectEqual(capability_vendor_specific, first.id);
     try std.testing.expectEqual(@as(u8, 0x40), first.offset);
-    try std.testing.expectEqual(@as(u8, 16), first.length);
+    try std.testing.expectEqual(@as(u8, 16), first.length.?);
 
     const second = (try iterator.next()).?;
     try std.testing.expectEqual(@as(u8, 0x01), second.id);
     try std.testing.expectEqual(@as(u8, 0x50), second.offset);
-    try std.testing.expectEqual(@as(u8, 2), second.length);
+    // A capability de gerenciamento de energia nao declara tamanho: o byte 2
+    // dela e o inicio do PMCSR.
+    try std.testing.expect(second.length == null);
 
     try std.testing.expect(try iterator.next() == null);
     try std.testing.expect(try iterator.next() == null);
@@ -812,6 +851,59 @@ test "pci capability list rejects truncated and malformed entries" {
     image.writeByte(0x40, 0xFF);
     var ff_id = try CapabilityIterator.init(image.reader());
     try std.testing.expectError(error.InvalidCapabilityId, ff_id.next());
+}
+
+test "pci capabilities that have no length field are not validated as truncated" {
+    // Layout real do disco do QEMU (virtio-blk transicional no q35): a
+    // capability PCI Express declara 0x00 no offset 2, porque ali comeca o PCI
+    // Express Capabilities Register, e a capability MSI-X declara o numero de
+    // vetores. Nenhuma das duas tem `cap_len`.
+    var image = ConfigImage.zeroed();
+    image.writeWord(status_offset, status_capabilities);
+    image.writeByte(capability_pointer_offset, 0x40);
+
+    // 0x40 -> 0x80 (PCI Express) -> 0xC0 (MSI-X) -> fim.
+    image.writeByte(0x40, 0x10);
+    image.writeByte(0x41, 0x80);
+    image.writeByte(0x42, 0x00);
+    image.writeByte(0x80, 0x11);
+    image.writeByte(0x81, 0xC0);
+    image.writeByte(0x82, 0x03);
+    image.writeByte(0xC0, 0x09);
+    image.writeByte(0xC1, 0x00);
+    image.writeByte(0xC2, 0x14);
+
+    var iterator = try CapabilityIterator.init(image.reader());
+
+    const express = (try iterator.next()).?;
+    try std.testing.expectEqual(@as(u8, 0x10), express.id);
+    try std.testing.expect(express.length == null);
+    try std.testing.expect(!declaresLength(express.id));
+
+    const msix = (try iterator.next()).?;
+    try std.testing.expectEqual(@as(u8, 0x11), msix.id);
+    try std.testing.expect(msix.length == null);
+
+    const vendor = (try iterator.next()).?;
+    try std.testing.expectEqual(capability_vendor_specific, vendor.id);
+    try std.testing.expectEqual(@as(u8, 0x14), vendor.length.?);
+
+    try std.testing.expect(try iterator.next() == null);
+}
+
+test "pci vendor specific capabilities still reject a truncated length" {
+    // A capability que declara tamanho continua validada: a mesma lista que
+    // aceita PCI Express e MSI-X recusa uma vendor-specific menor que o
+    // cabecalho de dois bytes.
+    var image = ConfigImage.zeroed();
+    image.writeWord(status_offset, status_capabilities);
+    image.writeByte(capability_pointer_offset, 0x40);
+    image.writeByte(0x40, capability_vendor_specific);
+    image.writeByte(0x41, 0x00);
+    image.writeByte(0x42, 0x01);
+
+    var iterator = try CapabilityIterator.init(image.reader());
+    try std.testing.expectError(error.TruncatedCapability, iterator.next());
 }
 
 test "pci capability walk is bounded by the alignment grid" {

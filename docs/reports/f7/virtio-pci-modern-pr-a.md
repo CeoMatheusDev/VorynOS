@@ -113,6 +113,36 @@ o driver aceita:
 - usar a **primeira instância utilizável** de cada tipo, e não a única;
 - aceitar `cap_len` maior que o necessário (padding e extensões).
 
+## `cap_len` só existe nas capabilities que o definem
+
+A primeira execução de `zig build qemu-test` na CI recusou o disco do QEMU com
+`capability list is invalid: TruncatedCapability`. A causa estava no percurso,
+não no dispositivo: o código tratava o byte 2 de **toda** capability como
+`cap_len`.
+
+O cabeçalho comum de uma capability PCI tem dois bytes: o identificador e o
+ponteiro para a próxima. O byte de tamanho é opcional e só existe nos formatos
+que o definem. No disco de teste (virtio-blk transicional no `q35`) a lista é:
+
+| Offset | ID | Byte 2 | O que o byte 2 realmente é |
+|--------|----|--------|-----------------------------|
+| `0x40` | `0x10` PCI Express | `0x00` | início do PCI Express Capabilities Register |
+| `0x80` (aprox.) | `0x11` MSI-X | `0x02` | Message Control (número de vetores) |
+| `0x9c`..`0xd8` | `0x09` vendor | `0x10`/`0x14` | **`cap_len`**, agora sim |
+
+Ler o byte 2 de uma capability PCI Express produz `0x00`, que era interpretado
+como "capability truncada". A correção é `declaresLength`: o tamanho só é
+validado para a capability vendor-specific (`0x09`), a única cujo formato este
+módulo interpreta. Um identificador desconhecido é percorrido sem validação de
+tamanho, e o percurso continua limitado pela validação de ponteiro, pelo mapa
+de offsets visitados e pelo fim do espaço de configuração.
+
+O campo `pci.Capability.length` passou a ser `?u8`: `null` significa "esta
+capability não declara tamanho", e não "tamanho zero". Dois testes cobrem o
+caso com o layout real (PCI Express com `0x00` e MSI-X com `0x02`) e um
+terceiro garante que a capability vendor-specific continua sendo recusada
+quando o `cap_len` declarado não cabe no espaço.
+
 ## Divergência documentada — `BlockFeatures` do módulo legado
 
 `kernel/arch/x86_64/virtio.zig` define:
@@ -171,8 +201,8 @@ Casos cobertos, conforme o escopo pedido:
 | Capabilities VirtIO inválidas | `virtio capability rejects truncated and malformed structures`, `virtio capability validation enforces the alignment of each region`, `virtio capability validation rejects short regions and bad multipliers` |
 | Composição da fundação | `a modern virtio block device reaches the feature and status plan`, `a device without the required regions cannot build the transport` |
 
-Contagem observada nos binários de teste: `arch-tests` 63 → **74** testes
-(11 novos em `pci.zig`), `virtio-modern-tests` **27** testes novos.
+Contagem observada nos binários de teste: `arch-tests` 63 → **76** testes
+(13 novos em `pci.zig`), `virtio-modern-tests` **27** testes novos.
 
 ### Layout do dispositivo de teste (QEMU)
 
@@ -185,10 +215,17 @@ layout do `virtio-blk-pci` foi conferido no código do QEMU
 | configuração comum | 4 (64 bits, prefetchable) | `0x0000` | `0x1000` |
 | ISR | 4 | `0x1000` | `0x1000` |
 | configuração do dispositivo | 4 | `0x2000` | `0x1000` |
-| notificação | 4 | `0x3000` | `0x1000` |
+| notificação | 4 | `0x3000` | `0x20000` (4 × `0x8000` filas) |
 
 O `notify_off_multiplier` é 4 (`virtio_pci_queue_mem_mult` sem
-`page-per-vq`), e o `cap_len` é 16 nas regiões comuns e 20 na notificação.
+`page-per-vq`), e o `cap_len` é 16 nas regiões comuns e 20 na notificação. O
+BAR 4 é dimensionado por `pow2ceil(notify.offset + notify.size)`, isto é,
+`pow2ceil(0x23000) = 0x40000`, e não por `0x1000` por fila: o tamanho da
+região de notificação é `4 × 0x8000` filas. O mínimo exigido pelo módulo
+(`length >= 2`) é atendido com folga em qualquer das duas leituras, e por isso
+a validação não depende desse detalhe — mas o número registrado aqui é o do
+código do emulador, e não uma suposição.
+
 Isso confirma que o mínimo de 56 bytes exigido para a configuração comum é
 atendido com folga e que o alinhamento das quatro regiões passa nas regras
 aplicadas por `caps.build`. O mesmo dispositivo apresenta uma segunda
@@ -201,7 +238,7 @@ utilizável, mas o driver usa a primeira instância, conforme a especificação.
 |---------|-----------|
 | `zig version` | `0.17.0` (instalado no ambiente a partir do pacote `ziglang` 0.17.0) |
 | `zig fmt --check` (`pci.zig`, `build.zig`, `drivers/virtio/*`) | sem alterações pendentes |
-| `zig build test` | passa; `arch-tests` 74/74, `virtio-modern-tests` 27/27 |
+| `zig build test` | passa; `arch-tests` 76/76, `virtio-modern-tests` 27/27 |
 | `zig build` | passa; `zig-out/bin/vorynos.img` (64 MiB) gerado |
 | `git diff --check` | sem espaços em branco defeituosos |
 | `zig build qemu-test` | **não executado localmente**: o ambiente da sessão não tem QEMU nem OVMF. Entregue à CI, que instala `ovmf` e `qemu-system-x86`. |
