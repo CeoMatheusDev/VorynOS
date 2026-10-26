@@ -4,7 +4,7 @@
 |-------|-------|
 | **Data** | 2026-10-26 |
 | **Base inspecionada** | `11575a06eeb580c1f168cbe5870548e660dafc9b` (`main`, igual a `origin/main` no início da sessão) |
-| **Estado** | IMPLEMENTADO — TESTADO LOCALMENTE (host); boot QEMU pendente de CI |
+| **Estado** | TESTADO LOCALMENTE (host) e TESTADO NO CI (boot QEMU/OVMF) |
 | **Escopo** | `kernel/arch/x86_64/virtio_blk.zig` |
 | **Toolchain** | Zig 0.17.0 |
 
@@ -117,15 +117,28 @@ estão instalados e não são instaláveis no ambiente.
 | `zig version` | `0.17.0` |
 | `zig build test` | **PASS** (exit 0) — `arch-tests` foi de 59 para 63 testes; soma dos 17 binários de teste: 416 → 420 |
 | `zig build` | **PASS** (exit 0) — `voryn-boot.efi`, `voryn-kernel` e `vorynos.img` (64 MiB) gerados |
-| `zig build qemu-test` | **BLOQUEADO** — `qemu-boot-test`: firmware OVMF não encontrado, script sai com código 2; `qemu-system-x86_64` ausente |
-| `zig build check` | **BLOQUEADO** — falha transitiva em `qemu-test` (44/47 passos) |
+| `zig build qemu-test` | **BLOQUEADO no sandbox** — `qemu-boot-test`: firmware OVMF não encontrado, script sai com código 2; `qemu-system-x86_64` ausente. **PASS na CI** (ver abaixo) |
+| `zig build check` | **BLOQUEADO no sandbox** — falha transitiva em `qemu-test` (44/47 passos). **PASS na CI** (ver abaixo) |
 | `git diff --check` | **PASS** — sem erro de whitespace |
 
 O teste de boot não é afetado por esta mudança: `virtio_blk.zig` não é
 importado por `kernel/main.zig` nem por nenhum outro arquivo fora do bloco
 `test` de `kernel/arch/x86_64/root.zig`, portanto o módulo não é ligado à
-imagem do kernel. A confirmação de boot fica para a CI, que instala OVMF e
-QEMU.
+imagem do kernel. Ainda assim o boot foi revalidado na CI, abaixo.
+
+## Evidência da CI
+
+Run [`40361111218`](https://github.com/CeoMatheusDev/VorynOS/actions/runs/40361111218),
+job `121706477468`, commit `55d9fe3`, concluído em 3m10s com
+`conclusion: success`. Os quatorze passos terminaram em `success`, entre
+eles `Testes de unidade` (`zig build test`), `Construir` (`zig build`),
+`Teste de boot no QEMU` (`zig build qemu-test`), `Verificação agregada`
+(`zig build check`) e `Verificar os artefatos`.
+
+O texto bruto do log fica em armazenamento externo fora do alcance do
+sandbox de desenvolvimento, portanto este relatório registra a conclusão
+estruturada de cada passo obtida pela API, e não cita linhas de marcador
+que não foram lidas.
 
 ## Divergência de documentação corrigida
 
@@ -166,4 +179,8 @@ incremento verificável e mínimo:
   a `block.Device` (ADR-0017) como substituto do ramdisk.
 - Validar persistência física em disco; hoje o backend verificado é o
   ramdisk em memória.
-- Validar `zig build qemu-test` e `zig build check` na CI.
+- Tratar os dois achados da mesma classe registrados acima
+  (`net_transmit()` e o marcador `device init complete`).
+
+Validação de `zig build qemu-test` e `zig build check` na CI: **feita** no
+run `40361111218`.
