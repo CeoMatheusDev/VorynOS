@@ -1,13 +1,16 @@
 //************************************************************************//
 //  vex.zig                                                               //
 //************************************************************************//
-//                         This file is part of:                          //
-//                               VorynOS                                  //
-//              https://github.com/CeoMatheusDev/VorynOS                  //
+//                        This file is part of:                           //
+//                              VorynOS                                   //
+//             https://github.com/CeoMatheusDev/VorynOS                   //
 //************************************************************************//
-// Copyright (C) 2026 VorynOS contributors.                               //
+// Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.               //
+// Copyright (C) 2026 VorynOS - All Rights Reserved.                      //
 //                                                                        //
 // SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
+//  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
 //************************************************************************//
 
 //! Formato VEX (Voryn EXecutable): o container nativo de executáveis.
@@ -138,7 +141,8 @@ pub fn wrap(payload: []const u8, manifest: []const Capability, out: []u8) Error!
     @memcpy(out[header_size .. header_size + payload.len], payload);
     for (manifest, 0..) |entry, index| {
         const at = manifest_offset + @as(u64, index) * 8;
-        put32(out, @intCast(at), @intFromEnum(entry.kind));
+        // Zig 0.17.0: @intFromEnum foi renomeado para @backingInt.
+        put32(out, @intCast(at), @backingInt(entry.kind));
         put32(out, @intCast(at + 4), entry.rights);
     }
     return total;
@@ -175,7 +179,9 @@ pub fn validate(bytes: []const u8) Error!Info {
         var index: usize = 0;
         while (index < manifest_size / 8) : (index += 1) {
             const kind_value = get32(bytes, @intCast(manifest_offset + index * 8));
-            if (kind_value > @intFromEnum(CapabilityKind.input)) return error.UnknownCapabilityKind;
+            // O tipo de backing de CapabilityKind é u32; a comparação
+            // direta com o valor lido continua válida.
+            if (kind_value > @backingInt(CapabilityKind.input)) return error.UnknownCapabilityKind;
         }
     }
 
@@ -209,7 +215,8 @@ pub fn manifestList(bytes: []const u8, out: *[max_manifest_entries]Capability) E
     while (index < info.manifest_count) : (index += 1) {
         const at = manifest_offset + @as(u64, index) * 8;
         out[index] = .{
-            .kind = @enumFromInt(get32(bytes, @intCast(at))),
+            // Zig 0.17.0: @enumFromInt foi renomeado para @fromBackingInt.
+            .kind = @fromBackingInt(get32(bytes, @intCast(at))),
             .rights = get32(bytes, @intCast(at + 4)),
         };
     }

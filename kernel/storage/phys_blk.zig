@@ -32,13 +32,13 @@ pub const PhysBlock = struct {
             .sector_count = if (self.sector_size == 0) 0 else @as(u64, self.backing.len) / self.sector_size,
         };
     }
-};
 
-    /// Indica persistencia: o backing atual e apenas memoria volatils.
+    /// Indica persistencia: o backing atual e apenas memoria volatil.
     /// Falha simulada nao recupera dados; nao declarar como resistente a falhas.
     pub fn flush(self: *PhysBlock) void {
         _ = self;
     }
+};
 
 fn read(ctx: *anyopaque, lba: u64, count: usize, inside: usize, out: []u8) block.Error!void {
     const self: *PhysBlock = @ptrCast(@alignCast(ctx));
@@ -69,14 +69,14 @@ fn write(ctx: *anyopaque, lba: u64, count: usize, inside: usize, in: []const u8)
 
 test "physBlkRealDeviceReadsWrites" {
     var backing: [4096]u8 = undefined;
-    @memset(&backing, 0);
+    @memset(backing[0..], 0);
     var blk: PhysBlock = .{};
-    blk.init(&backing, 1);
+    blk.init(&blk, &backing, 1);
     const dev: block.Device = blk.device();
     try std.testing.expectEqual(@as(u32, 512), dev.sector_size);
     try std.testing.expectEqual(@as(u64, 8), dev.sector_count); // 4096 / 512 = 8
     var out: [512]u8 = undefined;
-    @memset(&out, 0);
+    @memset(out[0..], 0);
     try dev.readBytes(0, &out);
     try std.testing.expectEqual(@as(u8, 0), out[0]);
 }

@@ -23,6 +23,7 @@
 //! não as conhece; o kernel as mapeia nos espaços certos e verifica as
 //! permissões antes de criar as tarefas.
 
+const std = @import("std");
 const usermode = @import("usermode.zig");
 
 /// A página de contrato fica esta distância abaixo da base da janela.
@@ -90,7 +91,6 @@ pub fn validWindow(geometry: WindowGeometry, surface_w: u32, surface_h: u32) boo
 }
 
 test "window placement rejects empty, clipped and overflowing rectangles" {
-    const std = @import("std");
     try std.testing.expect(validWindow(unpackWindow(packWindow(8, 8, 16, 16)), 32, 24));
     try std.testing.expect(validWindow(unpackWindow(packWindow(0, 0, 32, 24)), 32, 24));
     try std.testing.expect(!validWindow(unpackWindow(packWindow(0, 0, 0, 1)), 32, 24));
@@ -163,7 +163,6 @@ pub fn validContract(contract: Contract) bool {
 }
 
 test "client contract rejects inconsistent and unaligned surface metadata" {
-    const std = @import("std");
     const good: Contract = .{
         .version = contract_version,
         .compositor_process = 4,
@@ -191,7 +190,6 @@ test "client contract rejects inconsistent and unaligned surface metadata" {
 }
 
 test "contract layout is stable and fits one page" {
-    const std = @import("std");
     try std.testing.expectEqual(@as(usize, 9 * 8), @sizeOf(Contract));
     try std.testing.expectEqual(@as(usize, 8), @alignOf(Contract));
     try std.testing.expect(@sizeOf(Contract) <= 0x1000);
@@ -202,7 +200,6 @@ test "contract layout is stable and fits one page" {
 }
 
 test "surface and client rectangle are consistent" {
-    const std = @import("std");
     try std.testing.expectEqual(@as(u64, 32 * 24 * 4), surface_size);
     try std.testing.expect(surface_stride >= surface_width);
     try std.testing.expect(surface_size <= 0x1000);

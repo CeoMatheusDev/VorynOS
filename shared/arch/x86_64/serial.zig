@@ -94,7 +94,7 @@ var storage: [buffer_size]u8 = undefined;
 /// Formatted output writer connected to the serial port.
 pub var writer: std.Io.Writer = .{
     .vtable = &vtable,
-    .buffer = &storage,
+    .buffer = storage[0..], // Zig 0.17.0: o campo `buffer` é uma slice (`[]u8`).
     .end = 0,
 };
 

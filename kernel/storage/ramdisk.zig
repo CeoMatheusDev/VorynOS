@@ -23,6 +23,8 @@
 //! toda operação valida `lba + count` contra `sector_count` antes de tocar
 //! a memória.
 
+const std = @import("std");
+const testing = std.testing;
 const block = @import("block.zig");
 
 /// Dispositivo de blocos apoiado em um buffer contíguo.
@@ -79,8 +81,6 @@ pub const RamDisk = struct {
         return self.backing[start .. start + available];
     }
 };
-
-const testing = @import("std").testing;
 
 test "ramdisk exposes its geometry and rejects writes past the end" {
     var backing: [512 * 4]u8 = @splat(0);

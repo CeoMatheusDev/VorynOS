@@ -69,7 +69,7 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     var present_width: u32 = 0;
     var present_format: u32 = sdk.display.pixel_format_unknown;
     if (sdk.syscall.isError(info_status)) {
-        if (sdk.syscall.errorCode(info_status) != @intFromEnum(sdk.syscall.Error.no_display)) {
+        if (sdk.syscall.errorCode(info_status) != @backingInt(sdk.syscall.Error.no_display)) {
             sdk.exit(6);
         }
         _ = sdk.write("display unavailable\n");
@@ -129,12 +129,12 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
         }
         if (sdk.syscall.isError(status)) {
             const code = sdk.syscall.errorCode(status) orelse 0;
-            if (code == @intFromEnum(sdk.syscall.Error.timeout)) {
+            if (code == @backingInt(sdk.syscall.Error.timeout)) {
                 // A espera expirou sem evento; tenta de novo até o limite.
                 timeouts += 1;
                 continue;
             }
-            if (code == @intFromEnum(sdk.syscall.Error.not_authorized)) {
+            if (code == @backingInt(sdk.syscall.Error.not_authorized)) {
                 _ = sdk.write("input unavailable\n");
             } else {
                 _ = sdk.write("input error\n");
@@ -209,7 +209,7 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
         }
         const status = sdk.inputWait(&event, input_timeout_ticks);
         if (!sdk.syscall.isError(status)) continue;
-        if ((sdk.syscall.errorCode(status) orelse 0) == @intFromEnum(sdk.syscall.Error.timeout)) {
+        if ((sdk.syscall.errorCode(status) orelse 0) == @backingInt(sdk.syscall.Error.timeout)) {
             timeout_seen = true;
         } else break;
     }
@@ -275,7 +275,7 @@ fn presentComposition(window_base: u64, pixel_format: u32) bool {
     const surface_address = window_base - sdk.compositor.surface_below;
     const pixels: [*]u32 = @ptrFromInt(@as(usize, @intCast(surface_address)));
     var surface = composition.Surface.init(
-        pixels[0..@as(usize, composition_width) * composition_height],
+        pixels[0 .. @as(usize, composition_width) * composition_height],
         composition_width,
         composition_height,
         composition_stride,
@@ -338,7 +338,7 @@ fn receiveClientFrame(surface: *const composition.Surface, address: u64, pixel_f
         client_receive_ticks,
     );
     if (sdk.syscall.isError(placement.status)) {
-        if (sdk.syscall.errorCode(placement.status) == @intFromEnum(sdk.syscall.Error.timeout)) {
+        if (sdk.syscall.errorCode(placement.status) == @backingInt(sdk.syscall.Error.timeout)) {
             _ = sdk.write("window placement timeout\n");
         } else {
             _ = sdk.write("window placement error\n");
@@ -352,8 +352,7 @@ fn receiveClientFrame(surface: *const composition.Surface, address: u64, pixel_f
 
     const geometry = sdk.compositor.unpackWindow(placement.value);
     // Verifica se a geometria cabe na superfície antes de continuar.
-    if (!sdk.compositor.validWindow(geometry, composition_width, composition_height))
-    {
+    if (!sdk.compositor.validWindow(geometry, composition_width, composition_height)) {
         _ = sdk.write("window geometry invalid\n");
         return false;
     }
@@ -365,7 +364,7 @@ fn receiveClientFrame(surface: *const composition.Surface, address: u64, pixel_f
         client_receive_ticks,
     );
     if (sdk.syscall.isError(result.status)) {
-        if (sdk.syscall.errorCode(result.status) == @intFromEnum(sdk.syscall.Error.timeout)) {
+        if (sdk.syscall.errorCode(result.status) == @backingInt(sdk.syscall.Error.timeout)) {
             _ = sdk.write("client frame timeout\n");
         } else {
             _ = sdk.write("client frame error\n");
@@ -380,7 +379,10 @@ fn receiveClientFrame(surface: *const composition.Surface, address: u64, pixel_f
     // The client sends the hash of its declared rectangle. Verify the
     // actual pixels received through copy_to before trusting FRAME1.
     const received_hash = surface.checksumRegion(
-        geometry.x, geometry.y, geometry.width, geometry.height,
+        geometry.x,
+        geometry.y,
+        geometry.width,
+        geometry.height,
     ) orelse return false;
     if (received_hash != result.value) {
         _ = sdk.write("client frame checksum mismatch\n");
@@ -445,7 +447,7 @@ fn holdComposition() void {
         var status = sdk.inputPoll(&event);
         if (sdk.syscall.isError(status)) {
             const code = sdk.syscall.errorCode(status) orelse 0;
-            if (code != @intFromEnum(sdk.syscall.Error.no_input)) return;
+            if (code != @backingInt(sdk.syscall.Error.no_input)) return;
             status = 0;
         }
         // Fila vazia: bloqueia até que um evento chegue ou a janela expire.
@@ -453,8 +455,8 @@ fn holdComposition() void {
             status = sdk.inputWait(&event, composition_hold_ticks);
             if (sdk.syscall.isError(status)) {
                 const wait_code = sdk.syscall.errorCode(status) orelse 0;
-                if (wait_code == @intFromEnum(sdk.syscall.Error.timeout) or
-                    wait_code == @intFromEnum(sdk.syscall.Error.wait_impossible)) continue;
+                if (wait_code == @backingInt(sdk.syscall.Error.timeout) or
+                    wait_code == @backingInt(sdk.syscall.Error.wait_impossible)) continue;
                 return;
             }
         }

@@ -1,13 +1,16 @@
 //************************************************************************//
 //  vpk.zig                                                               //
 //************************************************************************//
-//                         This file is part of:                          //
-//                               VorynOS                                  //
-//              https://github.com/CeoMatheusDev/VorynOS                  //
+//                        This file is part of:                           //
+//                              VorynOS                                   //
+//             https://github.com/CeoMatheusDev/VorynOS                   //
 //************************************************************************//
-// Copyright (C) 2026 VorynOS contributors.                               //
+// Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.               //
+// Copyright (C) 2026 VorynOS - All Rights Reserved.                      //
 //                                                                        //
 // SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
+//  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
 //************************************************************************//
 
 //! Container VPK (Voryn Application Package): um arquivo único que embala
@@ -165,7 +168,8 @@ pub fn pack(files: []const FileSource, out: []u8) Error!usize {
         const at = header_size + index * entry_record_size;
         put64(out, at, names_cursor);
         put16(out, at + 8, @intCast(file.name.len));
-        out[at + 10] = @intFromEnum(file.kind);
+        // Zig 0.17.0: @intFromEnum foi renomeado para @backingInt.
+        out[at + 10] = @backingInt(file.kind);
         put64(out, at + 12, payload_cursor);
         put64(out, at + 20, file.bytes.len);
         put32(out, at + 28, std.hash.Crc32.hash(file.bytes));
@@ -224,10 +228,12 @@ fn entryAt(bytes: []const u8, index: usize) Error!Entry {
     const offset = get64(bytes, at + 12);
     const size = get64(bytes, at + 20);
     const crc = get32(bytes, at + 28);
-    if (kind_value > @intFromEnum(EntryKind.config)) return error.InvalidKind;
+    // Zig 0.17.0: @intFromEnum foi renomeado para @backingInt.
+    if (kind_value > @backingInt(EntryKind.config)) return error.InvalidKind;
     return .{
         .name = table[name_offset .. name_offset + name_len],
-        .kind = @enumFromInt(kind_value),
+        // Zig 0.17.0: @enumFromInt foi renomeado para @fromBackingInt.
+        .kind = @fromBackingInt(kind_value),
         .offset = offset,
         .size = size,
         .crc32 = crc,
@@ -272,7 +278,8 @@ pub fn validate(bytes: []const u8) Error!Info {
         const offset = get64(bytes, at + 12);
         const size = get64(bytes, at + 20);
         if (bytes[at + 11] != 0) return error.InvalidHeader;
-        if (kind_value > @intFromEnum(EntryKind.config)) return error.InvalidKind;
+        // Zig 0.17.0: @intFromEnum foi renomeado para @backingInt.
+        if (kind_value > @backingInt(EntryKind.config)) return error.InvalidKind;
         if (name_offset < names_start or name_len > max_name_len or
             name_offset + name_len > names_end)
         {

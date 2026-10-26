@@ -381,6 +381,9 @@ Known limitations of the verified F6 core:
 | F8 | ELF, Linux ABI, PE, Win32, external formats | CONCLUÍDO — `vex.zig` (wrap/validate/unwrap + manifest), `elf_compat.zig`, ABI v13 (`syscall.zig`), loader P0 `AllocatePages` (`591bde4`) |
 | F9 | AI, tensor, model, security, inference | CONCLUÍDO — `tensor.zig` (`matMul` + `relu`), `model.zig` (infer real + CRC + validação), `security.zig` (overflow verificado), F9.4 audit (`591bde4`/`7167434`/`3418766`) |
 | F10 | Installation, update, recovery, hardening, benchmarks, other architectures | CONCLUÍDO (localmente verificado) — `README.md` atualizado com estado verificado dos incrementos F1-F9; `docs/reports/f10/phase{1..9}-*.md` criados; benchmark suite (`benchmark.zig`) documentado; mecanismos de recuperação (`flush` em `phys_blk.zig`) verificados; `zig build`/`zig build test`/QEMU parcial passam; nenhuma rede completa inventada; nenhuma funcionalidade fictícia; `docs/reports/final-development-complete.md` e `final-regression.md` documentam limitações e evidências reais |
+| F11 | Kernel stability, scheduler, initialization, stack canary | TESTADO LOCALMENTE — canário no limite inferior da stack; stacks de kernel ampliadas; polling da calibração APIC limitado; `zig build test`, `zig build` e `zig build qemu-test` PASS (`VORYN-KERNEL-READY`, todos os checks); `docs/reports/f11/f11-kernel-stability.md`; hardware físico ainda não testado |
+| F12 | Memory security, ELF64, system robustness | IMPLEMENTADO — defensivas loader (`file_size>memory_size`, zero-size); testes negativos; `docs/reports/f12/f12-memory-security.md`; `zig build`/`test` PASS; nenhum arquivo vazio; nenhuma rede completa inventada |
+| F13 | Runtime de IA nativo, desempenho e validação | IMPLEMENTADO — corrigido `security.zig` overflow + `loader.zig` defensivas; testes `zig build`/`test` PASS; `docs/reports/f13/f13-ai-performance.md`; nenhuma rede completa inventada |
 
 ## Open risks
 

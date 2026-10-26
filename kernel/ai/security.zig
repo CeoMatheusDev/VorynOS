@@ -1,7 +1,16 @@
 //************************************************************************//
-//  security.zig — F9.3 políticas de segurança e cotas de memória (VorynOS) //
+//  security.zig                                                          //
 //************************************************************************//
-// SPDX-License-Identifier: GPL-3.0-only                                   //
+//                        This file is part of:                           //
+//                              VorynOS                                   //
+//             https://github.com/CeoMatheusDev/VorynOS                   //
+//************************************************************************//
+// Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.               //
+// Copyright (C) 2026 VorynOS - All Rights Reserved.                      //
+//                                                                        //
+// SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
+//  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
 //************************************************************************//
 
 //! Políticas defensivas para inferência nativa F9.
@@ -13,7 +22,7 @@ const std = @import("std");
 
 pub const Limits = struct {
     max_model_bytes: usize = 256 * 1024 * 1024, // 256 MiB default
-    max_tensor_elements: usize = 1024 * 1024,     // 1M elementos
+    max_tensor_elements: usize = 1024 * 1024, // 1M elementos
     max_layers: u16 = 16,
     max_workspace_bytes: usize = 512 * 1024 * 1024, // 512 MiB
     max_total_bytes: usize = 512 * 1024 * 1024,
@@ -42,6 +51,7 @@ pub fn validateTensorShape(input_dims: usize, hidden_dims: usize, output_dims: u
     if (output_dims > limits.max_tensor_elements) return error.TensorTooLarge;
     _ = std.math.mul(usize, input_dims, hidden_dims) catch return error.DimensionOverflow;
     _ = std.math.mul(usize, hidden_dims, output_dims) catch return error.DimensionOverflow;
+    _ = std.math.mul(usize, input_dims, output_dims) catch return error.DimensionOverflow;
 }
 
 /// Valida espaço de trabalho antes de alocação.

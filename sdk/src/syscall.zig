@@ -75,7 +75,7 @@ pub const Error = enum(u64) {
 pub fn knownError(status: u64) ?Error {
     const code = errorCode(status) orelse return null;
     return switch (code) {
-        1...25 => @enumFromInt(code),
+        1...25 => @fromBackingInt(code), // ✅ Substituição para Zig 0.17.0
         else => null,
     };
 }
@@ -92,14 +92,14 @@ pub inline fn call(number: u64, a: u64, b: u64, c: u64, d: u64) Result {
     var status: u64 = undefined;
     var value: u64 = undefined;
     asm volatile ("syscall"
-        : [status] "={rax}" (status),
-          [value] "={rdx}" (value),
-        : [number] "{rax}" (number),
-          [a] "{rdi}" (a),
-          [b] "{rsi}" (b),
-          [c] "{rdx}" (c),
-          [d] "{r8}" (d),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+    : [status] "={rax}" (status),
+                  [value] "={rdx}" (value),
+                  : [number] "{rax}" (number),
+                  [a] "{rdi}" (a),
+                  [b] "{rsi}" (b),
+                  [c] "{rdx}" (c),
+                  [d] "{r8}" (d),
+                  : .{ .rcx = true, .r11 = true, .memory = true });
     return .{ .status = status, .value = value };
 }
 

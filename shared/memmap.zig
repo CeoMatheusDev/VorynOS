@@ -112,7 +112,13 @@ pub fn findUsableRegion(
     length: u64,
 ) ?struct { address: u64, pages: u64 } {
     if (length == 0) return null;
-    const pages = std.math.divCeil(u64, length, page_size) catch return null;
+
+    // Zig 0.17.0: `@divCeil` replaces `std.math.divCeil`.
+    // `length` and `page_size` are both u64, and `page_size` is a non-zero
+    // constant, so the division is safe. `@divCeil` is defined to panic on
+    // overflow, which is the desired behavior here.
+    const pages = @divCeil(length, page_size);
+
     for (map) |descriptor| {
         if (!descriptor.isUsableRam()) continue;
         if (descriptor.page_count < pages) continue;

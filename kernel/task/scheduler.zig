@@ -1,13 +1,16 @@
 //************************************************************************//
 //  scheduler.zig                                                         //
 //************************************************************************//
-//                         This file is part of:                          //
-//                               VorynOS                                  //
-//              https://github.com/CeoMatheusDev/VorynOS                  //
+//                        This file is part of:                           //
+//                              VorynOS                                   //
+//             https://github.com/CeoMatheusDev/VorynOS                   //
 //************************************************************************//
-// Copyright (C) 2026 VorynOS contributors.                               //
+// Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.               //
+// Copyright (C) 2026 VorynOS - All Rights Reserved.                      //
 //                                                                        //
 // SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
+//  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
 //************************************************************************//
 
 //! The task fabric: tasks and the scheduler.
@@ -70,13 +73,15 @@ pub const Task = struct {
     context: Context = .{},
     /// The stack of the task, the one where its own code runs.
     stack: []u8 = &.{},
-    /// Stack canary: value stored at the top of the kernel stack.
+    /// Stack canary: value stored at the lower boundary of the kernel stack.
     ///
     /// On every context switch, the canary is written to the stack and
     /// verified when the task resumes. A mismatch indicates a stack
     /// corruption (buffer overflow, stack smashing), and the kernel
     /// will terminate the offending task.
     stack_canary: u64 = 0,
+    /// Address of the canary at the lower boundary of the kernel stack.
+    stack_canary_address: u64 = 0,
     /// The stack of the kernel of the task, where the handlers run.
     ///
     /// A task has two stacks: the one of its own code, and the one of the
@@ -241,6 +246,7 @@ pub const Scheduler = struct {
         // stack of the kernel of the task.
         task.stack = @as([*]u8, @ptrFromInt(kernel_stack_top))[0..0];
         task.kernel_rsp = stackTop(kernel_stack);
+        initializeStackCanary(task, kernel_stack);
         task.state = .running;
         task.priority = 0;
         self.current[0] = task;
@@ -285,17 +291,7 @@ pub const Scheduler = struct {
         task.kernel_rsp = stackTop(kernel_stack);
         task.state = .ready;
         task.priority = priority;
-        // F10 hardening: calcula o canary como timestamp XOR com o ID da tarefa.
-        // O valor é escrito na pilha do kernel do task em spawn(), imediatamente
-        // abaixo do registrador kernel_rsp.
-        //
-        // A pilha é montada a partir de stackTop(kernel_stack), que aponta
-        // para o registro usado pelo trampolim ASM. Imprimimos o canary no
-        // espaço da pilha para que um buffer overflow na pilha seja
-        // detectável.
-        task.stack_canary = cpu.readTimestamp() ^ @as(u64, @intCast(task.id));
-        // F10: canary inicializado; integração completa da escrita
-        // no assembly voryn_task_switch ainda pendente (ver docs).
+        initializeStackCanary(task, kernel_stack);
 
         // O EEVDF herda o menor vruntime das tarefas prontas, para que a
         // tarefa nova nao seja adiada indefinidamente.
@@ -338,7 +334,7 @@ pub const Scheduler = struct {
         space: ?*paging.AddressSpace,
         role: u64,
     ) ?*Task {
-        if (user_stack_length < 1024) return null;
+        if (user_stack_length < 1024 or kernel_stack.len < 256) return null;
 
         const task = self.allocate() orelse return null;
 
@@ -363,6 +359,7 @@ pub const Scheduler = struct {
         // The handlers of the task run on the stack of the kernel that the
         // kernel gave it, and not on the stack of the user.
         task.kernel_rsp = stackTop(kernel_stack);
+        initializeStackCanary(task, kernel_stack);
         task.space = space;
         task.state = .ready;
 
@@ -426,14 +423,21 @@ pub const Scheduler = struct {
             current.state = .ready;
         }
         const leaving = current;
-        // F10 hardening: verifica stack canary apenas se inicializado
-        // (integracao com task.s ainda pendente; evita pânico prematuro).
-        if (leaving.stack_canary != 0) {
-            const ptr_canary = @as(*const u64, @ptrFromInt(leaving.kernel_rsp - 8));
-            const stored_canary = @as(u64, ptr_canary.*);
-            if (stored_canary != leaving.stack_canary) {
-                @panic("stack corruption");
-            }
+        const ptr_canary = @as(*const u64, @ptrFromInt(leaving.stack_canary_address));
+        const stored_canary = @as(u64, ptr_canary.*);
+        if (stored_canary != leaving.stack_canary) {
+            var current_rsp: usize = undefined;
+            asm volatile ("movq %%rsp, %[value]"
+                : [value] "=r" (current_rsp),
+            );
+            voryn.serial.printLine("[VNK] PANIC: task {d} stack canary at 0x{x}: expected 0x{x}, got 0x{x}", .{
+                leaving.id,
+                leaving.stack_canary_address,
+                leaving.stack_canary,
+                stored_canary,
+            });
+            voryn.serial.printLine("[VNK] PANIC: current kernel RSP=0x{x}", .{current_rsp});
+            @panic("stack corruption");
         }
 
         next.state = .running;
@@ -693,6 +697,15 @@ pub var scheduler: Scheduler = .{};
 fn stackTop(stack: []u8) u64 {
     const top = @intFromPtr(stack.ptr) + stack.len;
     return top & ~@as(u64, 0xF);
+}
+
+fn initializeStackCanary(task: *Task, kernel_stack: []u8) void {
+    task.stack_canary = cpu.readTimestamp() ^ @as(u64, task.id);
+    const stack_base = @intFromPtr(kernel_stack.ptr);
+    const canary_address = std.mem.alignForward(usize, stack_base, @alignOf(u64));
+    task.stack_canary_address = canary_address;
+    const canary_ptr: *u64 = @ptrFromInt(canary_address);
+    canary_ptr.* = task.stack_canary;
 }
 
 /// The context of the task that is leaving, used by the switch.

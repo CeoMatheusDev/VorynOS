@@ -1,7 +1,16 @@
 //************************************************************************//
-//  model.zig — F9.2 modelo binário nativo (VorynOS)                          //
+//  model.zig                                                             //
 //************************************************************************//
-// SPDX-License-Identifier: GPL-3.0-only                                   //
+//                        This file is part of:                           //
+//                              VorynOS                                   //
+//             https://github.com/CeoMatheusDev/VorynOS                   //
+//************************************************************************//
+// Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.               //
+// Copyright (C) 2026 VorynOS - All Rights Reserved.                      //
+//                                                                        //
+// SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
+//  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
 //************************************************************************//
 
 //! Modelo de inferência nativo com formato binário versionado, CRC32,
@@ -125,73 +134,96 @@ pub fn validate(buf: []const u8) !void {
 
 /// Carrega um modelo e executa uma inferencia deterministica com testes.
 /// Nenhum mock substitui execucao real; o resultado numerico e verificavel.
-    pub fn infer(buf: []const u8, input: []const f32, output: []f32) !void {
-        try validate(buf);
-        const info = try fromBytes(buf);
-        const out_len = info.output_dims;
-        if (out_len == 0 or out_len > output.len) return error.InvalidShape;
-        if (input.len < info.input_dims) return error.InvalidShape;
-        const expected_w = info.output_dims * info.input_dims * 4;
-        const expected_b = info.output_dims * 4;
-        if (info.weight_size < expected_w) return error.InvalidShape;
-        if (info.bias_size < expected_b) return error.InvalidShape;
-        const w_start = info.weight_offset;
-        const w_size = info.weight_size;
-        if (w_start + w_size > buf.len) return error.OutOfBounds;
-        @memset(output[0..out_len], 0.0);
-        const weights_buf = buf[w_start .. w_start + w_size];
-        var idx: usize = 0;
-        while (idx < out_len) : (idx += 1) {
-            var sum: f32 = 0.0;
-            // Inferencia real com matMul deterministica: W [out][in] x x [in] -> y [out]
-            // Dados do modelo: weights como flat f32 (um por elemento de saida por entrada)
-            for (0..info.input_dims) |k| {
-                const offset = (idx * info.input_dims + k) * 4;
-                if (offset + 3 < weights_buf.len) {
-                    const b0 = @as(u32, weights_buf[offset]) | (@as(u32, weights_buf[offset + 1]) << 8) | (@as(u32, weights_buf[offset + 2]) << 16) | (@as(u32, weights_buf[offset + 3]) << 24);
-                    const w = @as(f32, @bitCast(b0));
-                    sum += w * input[k];
-                }
+pub fn infer(buf: []const u8, input: []const f32, output: []f32) !void {
+    try validate(buf);
+    const info = try fromBytes(buf);
+    const out_len = info.output_dims;
+    if (out_len == 0 or out_len > output.len) return error.InvalidShape;
+    if (input.len < info.input_dims) return error.InvalidShape;
+    const expected_w = info.output_dims * info.input_dims * 4;
+    const expected_b = info.output_dims * 4;
+    if (info.weight_size < expected_w) return error.InvalidShape;
+    if (info.bias_size < expected_b) return error.InvalidShape;
+    const w_start = info.weight_offset;
+    const w_size = info.weight_size;
+    if (w_start + w_size > buf.len) return error.OutOfBounds;
+    @memset(output[0..out_len], 0.0);
+    const weights_buf = buf[w_start .. w_start + w_size];
+    var idx: usize = 0;
+    while (idx < out_len) : (idx += 1) {
+        var sum: f32 = 0.0;
+        // Inferencia real com matMul deterministica: W [out][in] x x [in] -> y [out]
+        // Dados do modelo: weights como flat f32 (um por elemento de saida por entrada)
+        for (0..info.input_dims) |k| {
+            const offset = (idx * info.input_dims + k) * 4;
+            if (offset + 3 < weights_buf.len) {
+                const b0 = @as(u32, weights_buf[offset]) | (@as(u32, weights_buf[offset + 1]) << 8) | (@as(u32, weights_buf[offset + 2]) << 16) | (@as(u32, weights_buf[offset + 3]) << 24);
+                const w = @as(f32, @bitCast(b0));
+                sum += w * input[k];
             }
-            // Bias
-            const b_off = info.bias_offset;
-            if (b_off + idx * 4 + 3 < buf.len) {
-                const b0 = @as(u32, buf[b_off + idx * 4]) | (@as(u32, buf[b_off + idx * 4 + 1]) << 8) | (@as(u32, buf[b_off + idx * 4 + 2]) << 16) | (@as(u32, buf[b_off + idx * 4 + 3]) << 24);
-                sum += @as(f32, @bitCast(b0));
-            }
-            output[idx] = sum;
-            tensor.relu(output[idx..idx + 1]);
         }
+        // Bias
+        const b_off = info.bias_offset;
+        if (b_off + idx * 4 + 3 < buf.len) {
+            const b0 = @as(u32, buf[b_off + idx * 4]) | (@as(u32, buf[b_off + idx * 4 + 1]) << 8) | (@as(u32, buf[b_off + idx * 4 + 2]) << 16) | (@as(u32, buf[b_off + idx * 4 + 3]) << 24);
+            sum += @as(f32, @bitCast(b0));
+        }
+        output[idx] = sum;
+        tensor.relu(output[idx .. idx + 1]);
     }
+}
 
 test "modelBinaryFormatValidatesAndRejectsCorrupt" {
     // Cabeçalho minimo (58B) + payload pequeno (4B) + CRC correto.
     var package: [128]u8 = undefined;
-    @memset(&package, 0);
+    @memset(package[0..], 0);
     // Magic
     const magic_bytes = [4]u8{ 0x59, 'R', 'O', 'V' }; // VORY LE = 0x564F5259
-    @memcpy(package[0..4], &magic_bytes);
+    @memcpy(package[0..4], magic_bytes[0..]);
     // Version 1
-    package[4] = 0x01; package[5] = 0x00;
+    package[4] = 0x01;
+    package[5] = 0x00;
     // Weight type f32 (1)
     package[6] = 0x01;
     // Layers 1
-    package[7] = 0x01; package[8] = 0x00;
+    package[7] = 0x01;
+    package[8] = 0x00;
     // Input dims = 4
-    package[9] = 0x04; package[10] = 0x00; package[11] = 0x00; package[12] = 0x00;
+    package[9] = 0x04;
+    package[10] = 0x00;
+    package[11] = 0x00;
+    package[12] = 0x00;
     // Hidden dims = 2
-    package[13] = 0x02; package[14] = 0x00; package[15] = 0x00; package[16] = 0x00;
+    package[13] = 0x02;
+    package[14] = 0x00;
+    package[15] = 0x00;
+    package[16] = 0x00;
     // Output dims = 2
-    package[17] = 0x02; package[18] = 0x00; package[19] = 0x00; package[20] = 0x00;
+    package[17] = 0x02;
+    package[18] = 0x00;
+    package[19] = 0x00;
+    package[20] = 0x00;
     // Weight offset = 58 (header_size)
-    package[25] = 58; package[26] = 0; package[27] = 0; package[28] = 0;
-    package[29] = 4; package[30] = 0; package[31] = 0; package[32] = 0; // weight_size = 4
+    package[25] = 58;
+    package[26] = 0;
+    package[27] = 0;
+    package[28] = 0;
+    package[29] = 4;
+    package[30] = 0;
+    package[31] = 0;
+    package[32] = 0; // weight_size = 4
     // Bias offset = 62
-    package[37] = 62; package[38] = 0; package[39] = 0; package[40] = 0;
-    package[41] = 4; package[42] = 0; package[43] = 0; package[44] = 0; // bias_size = 4
+    package[37] = 62;
+    package[38] = 0;
+    package[39] = 0;
+    package[40] = 0;
+    package[41] = 4;
+    package[42] = 0;
+    package[43] = 0;
+    package[44] = 0; // bias_size = 4
     // CRC32 do payload: bytes [58..62] = 4 bytes de payload
     const payload_bytes = [4]u8{ 0x10, 0x20, 0x30, 0x40 };
-    @memcpy(package[58..62], &payload_bytes);
+    @memcpy(package[58..62], payload_bytes[0..]);
     const crc = std.hash.Crc32.hash(&payload_bytes);
     // Escreve CRC no offset 52-55
     package[52] = @truncate(crc);
@@ -209,29 +241,45 @@ test "modelBinaryFormatValidatesAndRejectsCorrupt" {
 
     // Teste negativo: corrompe CRC -> deve falhar
     var bad: [128]u8 = undefined;
-    @memcpy(bad[0..128], &package);
+    @memcpy(bad[0..128], package[0..]);
     bad[52] ^= 0xFF; // corrompe CRC
     try std.testing.expectError(Error.ChecksumMismatch, validate(&bad));
 }
 
 test "infer produces real numeric output" {
     var package: [128]u8 = undefined;
-    @memset(&package, 0);
+    @memset(package[0..], 0);
     const magic_bytes = [4]u8{ 0x59, 'R', 'O', 'V' };
-    @memcpy(package[0..4], &magic_bytes);
-    package[4] = 0x01; package[5] = 0x00;
+    @memcpy(package[0..4], magic_bytes[0..]);
+    package[4] = 0x01;
+    package[5] = 0x00;
     package[6] = 0x01;
-    package[7] = 0x01; package[8] = 0x00;
-    package[9] = 0x04; package[10] = 0x00; package[11] = 0x00; package[12] = 0x00;
-    package[13] = 0x02; package[14] = 0x00; package[15] = 0x00; package[16] = 0x00;
-    package[17] = 0x02; package[18] = 0x00; package[19] = 0x00; package[20] = 0x00;
-    package[25] = 58; package[29] = 32; // weight_size = 32 (2 outputs * 4 inputs * 4 bytes)
-    package[37] = 90; package[41] = 8; // bias_offset = 58+32=90; bias_size = 8 (2 outputs * 4 bytes)
+    package[7] = 0x01;
+    package[8] = 0x00;
+    package[9] = 0x04;
+    package[10] = 0x00;
+    package[11] = 0x00;
+    package[12] = 0x00;
+    package[13] = 0x02;
+    package[14] = 0x00;
+    package[15] = 0x00;
+    package[16] = 0x00;
+    package[17] = 0x02;
+    package[18] = 0x00;
+    package[19] = 0x00;
+    package[20] = 0x00;
+    package[25] = 58;
+    package[29] = 32; // weight_size = 32 (2 outputs * 4 inputs * 4 bytes)
+    package[37] = 90;
+    package[41] = 8; // bias_offset = 58+32=90; bias_size = 8 (2 outputs * 4 bytes)
     // Payload: 32 bytes de pesos + 8 bytes de bias — zerados (valores neutros = soma 0)
     @memset(package[58..98], 0);
     const payload_bytes = package[58..90];
     const crc = std.hash.Crc32.hash(payload_bytes);
-    package[52] = @truncate(crc); package[53] = @truncate(crc >> 8); package[54] = @truncate(crc >> 16); package[55] = @truncate(crc >> 24);
+    package[52] = @truncate(crc);
+    package[53] = @truncate(crc >> 8);
+    package[54] = @truncate(crc >> 16);
+    package[55] = @truncate(crc >> 24);
 
     var input: [4]f32 = .{ 1.0, 2.0, 3.0, 4.0 };
     var output: [2]f32 = undefined;

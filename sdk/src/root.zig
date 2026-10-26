@@ -70,11 +70,11 @@ pub fn copyTo(process: u64, destination: u64, source: []const u8) u64 {
 }
 
 pub fn grant(process: u64, kind: CapabilityKind, subject: u64, rights: u64) u64 {
-    return syscall.call(syscall.Number.grant, process, @intFromEnum(kind), subject, rights).status;
+    return syscall.call(syscall.Number.grant, process, @backingInt(kind), subject, rights).status;
 }
 
 pub fn revoke(process: u64, kind: CapabilityKind, subject: u64) u64 {
-    return syscall.call(syscall.Number.revoke, process, @intFromEnum(kind), subject, 0).status;
+    return syscall.call(syscall.Number.revoke, process, @backingInt(kind), subject, 0).status;
 }
 
 pub fn fsOpen(path: []const u8, flags: u64) u64 {
@@ -112,9 +112,9 @@ pub fn displayInfo(info: *display.DisplayInfo) u64 {
     return syscall.call(
         syscall.Number.display_info,
         @intFromPtr(info),
-        @sizeOf(display.DisplayInfo),
-        0,
-        0,
+                        @sizeOf(display.DisplayInfo),
+                        0,
+                        0,
     ).status;
 }
 
@@ -124,9 +124,9 @@ pub fn present(request: *const display.PresentRequest) u64 {
     return syscall.call(
         syscall.Number.present,
         @intFromPtr(request),
-        @sizeOf(display.PresentRequest),
-        0,
-        0,
+                        @sizeOf(display.PresentRequest),
+                        0,
+                        0,
     ).status;
 }
 
@@ -137,9 +137,9 @@ pub fn inputPoll(event: *input.InputEvent) u64 {
     return syscall.call(
         syscall.Number.input_poll,
         @intFromPtr(event),
-        @sizeOf(input.InputEvent),
-        0,
-        0,
+                        @sizeOf(input.InputEvent),
+                        0,
+                        0,
     ).status;
 }
 
@@ -151,9 +151,9 @@ pub fn inputWait(event: *input.InputEvent, ticks: u64) u64 {
     return syscall.call(
         syscall.Number.input_wait,
         @intFromPtr(event),
-        @sizeOf(input.InputEvent),
-        ticks,
-        0,
+                        @sizeOf(input.InputEvent),
+                        ticks,
+                        0,
     ).status;
 }
 

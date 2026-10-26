@@ -16,6 +16,9 @@
 //! register, which is the way a process receives the information of its own
 //! memory when it starts.
 
+const std = @import("std");
+const testing = std.testing;
+
 /// The offset of the page of the program inside the window.
 pub const code_offset: u64 = 0x0000;
 
@@ -34,7 +37,7 @@ pub const stack_offset: u64 = 0x4000;
 pub const stack_pages: u64 = 2;
 
 /// The size of the window, in bytes.
-pub const window_size: u64 = (stack_offset + stack_pages * 0x1000);
+pub const window_size: u64 = stack_offset + stack_pages * 0x1000;
 
 /// The page below the base of the window that holds the contract of the
 /// client of the compositor.
@@ -126,9 +129,6 @@ pub const data_input_refused: u64 = 0xB8;
 /// The block that the program of the user mode writes for the copy with the
 /// overlapping ranges.
 pub const overlap_pattern: u64 = 0x1122_3344_5566_7788;
-
-const std = @import("std");
-const testing = std.testing;
 
 test "the window does not hold two pages in the same place" {
     try testing.expect(code_offset != data_offset);

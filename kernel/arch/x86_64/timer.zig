@@ -1,13 +1,16 @@
 //************************************************************************//
 //  timer.zig                                                             //
 //************************************************************************//
-//                         This file is part of:                          //
-//                               VorynOS                                  //
-//              https://github.com/CeoMatheusDev/VorynOS                  //
+//                        This file is part of:                           //
+//                              VorynOS                                   //
+//             https://github.com/CeoMatheusDev/VorynOS                   //
 //************************************************************************//
-// Copyright (C) 2026 VorynOS contributors.                               //
+// Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.               //
+// Copyright (C) 2026 VorynOS - All Rights Reserved.                      //
 //                                                                        //
 // SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
+//  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
 //************************************************************************//
 
 //! The timer of the kernel and the interrupt controllers.
@@ -168,7 +171,7 @@ pub fn initApicTimer(ticks_per_second: u32) void {
     const tsc_start = cpu.readTimestamp();
     var attempts: u64 = 0;
     while (apic.read32(apic.ApicOffset.timer_current) != 0 and attempts < 1_000_000) : (attempts += 1) {
-        cpu.halt();
+        cpu.pause();
     }
     const tsc_end = cpu.readTimestamp();
 

@@ -1,13 +1,16 @@
 //************************************************************************//
 //  loader.zig                                                            //
 //************************************************************************//
-//                         This file is part of:                          //
-//                               VorynOS                                  //
-//              https://github.com/CeoMatheusDev/VorynOS                  //
+//                        This file is part of:                           //
+//                              VorynOS                                   //
+//             https://github.com/CeoMatheusDev/VorynOS                   //
 //************************************************************************//
-// Copyright (C) 2026 VorynOS contributors.                               //
+// Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.               //
+// Copyright (C) 2026 VorynOS - All Rights Reserved.                      //
 //                                                                        //
 // SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
+//  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
 //************************************************************************//
 
 //! Placement of the kernel image in physical memory.
@@ -53,26 +56,37 @@ pub const Error = error{
 ///
 /// `load_bias` is the physical address that the virtual address zero of the
 /// image is mapped to. It is zero for a non relocatable image.
-pub fn place(image: elf64.Image, bytes: []const u8, load_bias: u64, boot_services: *uefi.tables.BootServices) Error!void {
+pub fn place(
+    image: elf64.Image,
+    bytes: []const u8,
+    load_bias: u64,
+    boot_services: *uefi.tables.BootServices,
+) Error!void {
     for (image.segments) |segment| {
         const address = if (image.relocatable)
-            std.math.add(u64, segment.virtual_address, load_bias) catch return error.SegmentOutOfBounds
+        std.math.add(u64, segment.virtual_address, load_bias) catch
+        return error.SegmentOutOfBounds
         else
             segment.physical_address;
 
         const end = std.math.add(u64, address, segment.memory_size) catch
-            return error.SegmentNotIdentityMapped;
+        return error.SegmentNotIdentityMapped;
         if (end > identity_mapped_limit) return error.SegmentNotIdentityMapped;
 
         const file_end = std.math.add(u64, segment.file_offset, segment.file_size) catch
-            return error.SegmentOutOfBounds;
+        return error.SegmentOutOfBounds;
         if (file_end > bytes.len) return error.SegmentOutOfBounds;
 
-        // Reserva exatamente o endereco escolhido pelo load_bias. Reservar em
-        // qualquer endereco e copiar para o retorno do firmware faria o
-        // handoff anunciar um kernel diferente daquele que foi escrito.
+        // Reserva exatamente o endereco escolhido pelo load_bias.
         if (address & (handoff.page_size - 1) != 0) return error.LoadAddressNotAligned;
-        const pages: usize = @intCast((end - address + handoff.page_size - 1) / handoff.page_size);
+        if (segment.file_size > segment.memory_size) return error.SegmentOutOfBounds;
+        if (segment.memory_size == 0) continue;
+
+        // Calcula numero de paginas necessarias.
+        const pages: usize = @intCast(
+            (end - address + handoff.page_size - 1) / handoff.page_size,
+        );
+
         const requested: [*]align(4096) uefi.Page = @ptrFromInt(address);
         const pages_alloc = boot_services.allocatePages(
             .{ .address = requested },
@@ -84,14 +98,12 @@ pub fn place(image: elf64.Image, bytes: []const u8, load_bias: u64, boot_service
         // copiar dados para um local e depois publicar outro no handoff.
         if (@intFromPtr(pages_alloc.ptr) != address) return error.AllocatePagesWrongAddress;
 
-        // Defensiva: verifica limite de mapeamento identidade.
-        if (end > identity_mapped_limit or address > identity_mapped_limit) return error.SegmentNotIdentityMapped;
         const destination: [*]u8 = @ptrFromInt(address);
 
         if (segment.file_size != 0) {
             @memcpy(
                 destination[0..@intCast(segment.file_size)],
-                bytes[@intCast(segment.file_offset)..][0..@intCast(segment.file_size)],
+                    bytes[@intCast(segment.file_offset)..][0..@intCast(segment.file_size)],
             );
         }
 
@@ -114,16 +126,20 @@ pub fn place(image: elf64.Image, bytes: []const u8, load_bias: u64, boot_service
 fn relocate(image: elf64.Image, load_bias: u64) Error!void {
     for (image.relocations) |relocation| {
         const address = std.math.add(u64, relocation.offset, load_bias) catch
-            return error.RelocationOutOfBounds;
+        return error.RelocationOutOfBounds;
         const end = std.math.add(u64, address, @sizeOf(u64)) catch
-            return error.RelocationOutOfBounds;
+        return error.RelocationOutOfBounds;
         if (end > identity_mapped_limit) return error.RelocationOutOfBounds;
 
         const value: i64 = @bitCast(load_bias);
         const addend: i64 = @bitCast(relocation.addend);
         const sum = std.math.add(i64, value, addend) catch
-            return error.RelocationOutOfBounds;
-        const target: *u64 = @ptrFromInt(address);
+        return error.RelocationOutOfBounds;
+
+        // `*align(1) u64` porque o compilador nao consegue provar que
+        // `address` e multiplo de 8 em tempo de compilacao. O alinhamento
+        // real e garantido pelas proprias entradas RELA do ELF.
+        const target: *align(1) u64 = @ptrFromInt(address);
         target.* = @bitCast(sum);
     }
 }

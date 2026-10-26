@@ -237,6 +237,9 @@ const timer_frequency = 100;
 /// Size of the stack of a task of the kernel.
 const task_stack_size = 16 * 1024;
 
+/// Size of the kernel stack used by syscall and interrupt handlers.
+const kernel_stack_size = 256 * 1024;
+
 /// Number of tasks of the kernel: the main task and two workers.
 const task_count = 3;
 
@@ -254,13 +257,13 @@ var task_stacks: [task_count][task_stack_size]u8 align(16) = undefined;
 /// interrupt is built on the stack of the kernel, and the frame of a task
 /// that runs in the user mode would otherwise live in a page that the user
 /// owns.
-var kernel_stacks: [task_count][task_stack_size]u8 align(16) = undefined;
+var kernel_stacks: [task_count][kernel_stack_size]u8 align(16) = undefined;
 
 /// The stack of the kernel of the task of the user mode.
 ///
 /// The handlers of the calls and of the interrupts of the task run on it,
 /// and not on the stack of the user, which the user could rewrite.
-var user_task_stack: [task_stack_size]u8 align(16) = undefined;
+var user_task_stack: [kernel_stack_size]u8 align(16) = undefined;
 
 /// The base of the window of the user mode.
 ///
@@ -287,10 +290,10 @@ var second_space: ?*paging.AddressSpace = null;
 var third_space: ?*paging.AddressSpace = null;
 
 /// The stack of the kernel of the second process.
-var second_task_stack: [task_stack_size]u8 align(16) = undefined;
+var second_task_stack: [kernel_stack_size]u8 align(16) = undefined;
 
 /// The stack of the kernel of the third process.
-var third_task_stack: [task_stack_size]u8 align(16) = undefined;
+var third_task_stack: [kernel_stack_size]u8 align(16) = undefined;
 
 /// The address space of the native process loaded from the RamFS.
 var native_space: ?*paging.AddressSpace = null;
@@ -311,7 +314,7 @@ var toolchain_entry: u64 = 0;
 var toolchain_task: ?*scheduler.Task = null;
 
 /// The stack of the kernel of the toolchain task.
-var toolchain_task_stack: [task_stack_size]u8 align(16) = undefined;
+var toolchain_task_stack: [kernel_stack_size]u8 align(16) = undefined;
 
 /// The address space of the client of the compositor.
 var client_space: ?*paging.AddressSpace = null;
@@ -323,10 +326,10 @@ var client_entry: u64 = 0;
 var client_task: ?*scheduler.Task = null;
 
 /// The stack of the kernel of the client task.
-var client_task_stack: [task_stack_size]u8 align(16) = undefined;
+var client_task_stack: [kernel_stack_size]u8 align(16) = undefined;
 
 /// The stack of the kernel of the native task.
-var native_task_stack: [task_stack_size]u8 align(16) = undefined;
+var native_task_stack: [kernel_stack_size]u8 align(16) = undefined;
 
 /// The buffer that receives the native image read from the RamFS.
 var native_image_buffer: [native_image.max_image_size]u8 = undefined;

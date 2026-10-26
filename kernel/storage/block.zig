@@ -26,6 +26,7 @@
 //! o volume nem o sistema de arquivos.
 
 const std = @import("std");
+const ramdisk = @import("ramdisk.zig");
 
 pub const Error = error{
     /// O dispositivo ou o pedido é inválido (setor zero, contagem zero).
@@ -110,7 +111,7 @@ const testing = std.testing;
 
 test "readBytes and writeBytes round trip across sector boundaries" {
     var backing: [512 * 3]u8 = @splat(0);
-    var disk = @import("ramdisk.zig").RamDisk.init(&backing, 512);
+    var disk = ramdisk.RamDisk.init(&backing, 512);
     const device = disk.device();
 
     const payload = "the quick brown fox jumps over the lazy dog";
@@ -125,7 +126,7 @@ test "readBytes and writeBytes round trip across sector boundaries" {
 
 test "byte I/O rejects ranges outside the device" {
     var backing: [512 * 2]u8 = @splat(0);
-    var disk = @import("ramdisk.zig").RamDisk.init(&backing, 512);
+    var disk = ramdisk.RamDisk.init(&backing, 512);
     const device = disk.device();
 
     var buffer: [8]u8 = undefined;
@@ -137,7 +138,7 @@ test "byte I/O rejects ranges outside the device" {
 
 test "byte I/O works on unaligned offsets inside one sector" {
     var backing: [512]u8 = @splat(0);
-    var disk = @import("ramdisk.zig").RamDisk.init(&backing, 512);
+    var disk = ramdisk.RamDisk.init(&backing, 512);
     const device = disk.device();
 
     const value = "mid-sector";
@@ -149,7 +150,7 @@ test "byte I/O works on unaligned offsets inside one sector" {
 
 test "a device with a zero sector size is rejected" {
     var backing: [512]u8 = @splat(0);
-    var disk = @import("ramdisk.zig").RamDisk.init(&backing, 0);
+    var disk = ramdisk.RamDisk.init(&backing, 0);
     const device = disk.device();
     var buffer: [8]u8 = undefined;
     try testing.expectError(error.InvalidRequest, device.readBytes(0, &buffer));

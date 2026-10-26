@@ -47,10 +47,12 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     if (window_base <= sdk.compositor.contract_below) sdk.exit(3);
 
     const contract_address = window_base - sdk.compositor.contract_below;
-    const contract: *const sdk.compositor.Contract =
+
+    // Utiliza alinhamento 1 para evitar que o compilador exija que
+    // `contract_address` seja múltiplo do alinhamento natural da struct.
+    const contract: *align(1) const sdk.compositor.Contract =
         @ptrFromInt(@as(usize, @intCast(contract_address)));
-    if (!sdk.compositor.validContract(contract.*))
-    {
+    if (!sdk.compositor.validContract(contract.*)) {
         sdk.exit(4);
     }
 
@@ -112,7 +114,9 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     // The marker is written as one serial line so the kernel report cannot
     // interleave between the prefix and the hash.
     var hash_line: [35]u8 = undefined;
-    @memcpy(hash_line[0..18], "client checksum=0x");
+    // Usa um slice explícito no literal para alinhar com a semântica de
+    // `@memcpy` do Zig 0.17.0 (que opera sobre slices/arrays).
+    @memcpy(hash_line[0..18], "client checksum=0x"[0..]);
     var digit: usize = 0;
     while (digit < 16) : (digit += 1) {
         const shift: u6 = @intCast((15 - digit) * 4);
@@ -120,7 +124,8 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
         hash_line[18 + digit] = "0123456789abcdef"[nibble];
     }
     hash_line[34] = '\n';
-    _ = sdk.write(&hash_line);
+    // Passa o array como slice explicitamente.
+    _ = sdk.write(hash_line[0..]);
 
     // Avisa o compositor com o kind FRAME1 e o checksum da região.
     const sent = sdk.send(

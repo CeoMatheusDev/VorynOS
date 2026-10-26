@@ -137,8 +137,10 @@ WORK_DIRECTORY="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIRECTORY"' EXIT
 
 SERIAL_LOG="$WORK_DIRECTORY/serial.log"
+QEMU_ERROR_LOG="$WORK_DIRECTORY/qemu.stderr"
 SCREENSHOT="$WORK_DIRECTORY/presentation.ppm"
 cp "$OVMF_VARS_PATH" "$WORK_DIRECTORY/vars.fd"
+cp "$IMAGE" "$WORK_DIRECTORY/disk.img"
 
 echo "qemu-boot-test: booting $IMAGE (firmware: $OVMF_CODE_PATH, format: $OVMF_CODE_FORMAT)"
 
@@ -147,14 +149,14 @@ qemu-system-x86_64 \
     -machine q35 \
     -m 256 \
     -smp 1 \
-    -drive "file=$IMAGE,format=raw,if=virtio" \
+    -drive "file=$WORK_DIRECTORY/disk.img,format=raw,if=virtio" \
     -drive "if=pflash,format=$OVMF_CODE_FORMAT,readonly=on,file=$OVMF_CODE_PATH" \
     -drive "if=pflash,format=$OVMF_VARS_FORMAT,file=$WORK_DIRECTORY/vars.fd" \
     -serial "file:$SERIAL_LOG" \
     -monitor "unix:$WORK_DIRECTORY/monitor.sock,server=on,wait=off" \
     -display none \
     -no-reboot \
-    >/dev/null 2>&1 &
+    >/dev/null 2>"$QEMU_ERROR_LOG" &
 QEMU_PID=$!
 
 # The kernel does not stop: it stops on purpose, and the emulator waits
@@ -321,6 +323,17 @@ set -e
 # halts and never exits.
 if [[ $QEMU_STATUS -ne 0 && $QEMU_STATUS -ne 124 && $QEMU_STATUS -ne 143 ]]; then
     echo "qemu-boot-test: qemu exited with status $QEMU_STATUS" >&2
+fi
+
+if [[ ! -s "$SERIAL_LOG" && -s "$QEMU_ERROR_LOG" ]]; then
+    echo "----- QEMU startup error -----" >&2
+    cat "$QEMU_ERROR_LOG" >&2
+    echo "------------------------------" >&2
+fi
+
+if [[ $QEMU_STATUS -ne 0 && $QEMU_STATUS -ne 124 && $QEMU_STATUS -ne 143 && ! -s "$SERIAL_LOG" ]]; then
+    echo "qemu-boot-test: QEMU failed before producing serial output" >&2
+    exit 1
 fi
 
 echo "----- serial console -----"

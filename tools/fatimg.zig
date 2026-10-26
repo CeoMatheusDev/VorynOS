@@ -132,23 +132,23 @@ const FatImage = struct {
         bpb[2] = 0x90;
         @memcpy(bpb[3..11], oem_name);
 
-        std.mem.writeInt(u16, bpb[11..13], bytes_per_sector, .little);
+        std.mem.writeInt(u16, @ptrCast(&bpb[11]), bytes_per_sector, .little);
         bpb[13] = sectors_per_cluster;
-        std.mem.writeInt(u16, bpb[14..16], reserved_sectors, .little);
+        std.mem.writeInt(u16, @ptrCast(&bpb[14]), reserved_sectors, .little);
         bpb[16] = fat_count;
-        std.mem.writeInt(u16, bpb[17..19], root_entries, .little);
+        std.mem.writeInt(u16, @ptrCast(&bpb[17]), root_entries, .little);
         // The volume is larger than 65535 sectors, the 16 bit field has to be
         // zero and the 32 bit field carries the real size.
-        std.mem.writeInt(u16, bpb[19..21], 0, .little);
+        std.mem.writeInt(u16, @ptrCast(&bpb[19]), 0, .little);
         bpb[21] = media_descriptor;
-        std.mem.writeInt(u16, bpb[22..24], @intCast(self.fat_sectors), .little);
-        std.mem.writeInt(u16, bpb[24..26], 63, .little); // sectors per track
-        std.mem.writeInt(u16, bpb[26..28], 255, .little); // number of heads
-        std.mem.writeInt(u32, bpb[28..32], 0, .little); // hidden sectors
-        std.mem.writeInt(u32, bpb[32..36], image_sectors, .little);
+        std.mem.writeInt(u16, @ptrCast(&bpb[22]), @intCast(self.fat_sectors), .little);
+        std.mem.writeInt(u16, @ptrCast(&bpb[24]), 63, .little); // sectors per track
+        std.mem.writeInt(u16, @ptrCast(&bpb[26]), 255, .little); // number of heads
+        std.mem.writeInt(u32, @ptrCast(&bpb[28]), 0, .little); // hidden sectors
+        std.mem.writeInt(u32, @ptrCast(&bpb[32]), image_sectors, .little);
         bpb[36] = 0x80; // drive number
         bpb[38] = 0x29; // extended boot signature
-        std.mem.writeInt(u32, bpb[39..43], 0x564F_5259, .little); // volume id
+        std.mem.writeInt(u32, @ptrCast(&bpb[39]), 0x564F_5259, .little); // volume id
         @memcpy(bpb[43..54], volume_label);
         @memcpy(bpb[54..62], "FAT16   ");
 
@@ -161,8 +161,8 @@ const FatImage = struct {
     fn writeFatHeaders(self: *FatImage) void {
         for (0..fat_count) |copy| {
             const base = (reserved_sectors + copy * self.fat_sectors) * bytes_per_sector;
-            std.mem.writeInt(u16, self.bytes[base..][0..2], 0xFFF8, .little);
-            std.mem.writeInt(u16, self.bytes[base + 2 ..][0..2], 0xFFFF, .little);
+            std.mem.writeInt(u16, @ptrCast(&self.bytes[base]), 0xFFF8, .little);
+            std.mem.writeInt(u16, @ptrCast(&self.bytes[base + 2]), 0xFFFF, .little);
         }
     }
 
@@ -171,7 +171,7 @@ const FatImage = struct {
         for (0..fat_count) |copy| {
             const base = (reserved_sectors + copy * self.fat_sectors) * bytes_per_sector;
             const offset = base + @as(usize, cluster) * 2;
-            std.mem.writeInt(u16, self.bytes[offset..][0..2], value, .little);
+            std.mem.writeInt(u16, @ptrCast(&self.bytes[offset]), value, .little);
         }
     }
 
@@ -241,14 +241,14 @@ fn writeDirectoryEntry(destination: []u8, entry: DirectoryEntry) void {
     @memset(destination, 0);
     @memcpy(destination[0..11], &entry.name);
     destination[11] = entry.attributes;
-    std.mem.writeInt(u16, destination[14..16], 0, .little); // creation time
-    std.mem.writeInt(u16, destination[16..18], 0x4C21, .little); // creation date
-    std.mem.writeInt(u16, destination[18..20], 0x4C21, .little); // last access date
-    std.mem.writeInt(u16, destination[20..22], 0, .little); // high cluster
-    std.mem.writeInt(u16, destination[22..24], 0x4C21, .little); // write time
-    std.mem.writeInt(u16, destination[24..26], 0x4C21, .little); // write date
-    std.mem.writeInt(u16, destination[26..28], entry.first_cluster, .little);
-    std.mem.writeInt(u32, destination[28..32], entry.size, .little);
+    std.mem.writeInt(u16, @ptrCast(&destination[14]), 0, .little); // creation time
+    std.mem.writeInt(u16, @ptrCast(&destination[16]), 0x4C21, .little); // creation date
+    std.mem.writeInt(u16, @ptrCast(&destination[18]), 0x4C21, .little); // last access date
+    std.mem.writeInt(u16, @ptrCast(&destination[20]), 0, .little); // high cluster
+    std.mem.writeInt(u16, @ptrCast(&destination[22]), 0x4C21, .little); // write time
+    std.mem.writeInt(u16, @ptrCast(&destination[24]), 0x4C21, .little); // write date
+    std.mem.writeInt(u16, @ptrCast(&destination[26]), entry.first_cluster, .little);
+    std.mem.writeInt(u32, @ptrCast(&destination[28]), entry.size, .little);
 }
 
 /// Builds a padded FAT name from a base name and an extension.
