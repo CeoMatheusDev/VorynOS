@@ -256,13 +256,19 @@ revelaria:
 |----------|-----------|-------|
 | primeira | falhou antes de compilar | `Instalar OVMF`: `apt-get` estourou o limite de 5 min do próprio passo (infraestrutura) |
 | segunda a quarta | `qemu-boot-test: 2 check(s) failed` | o percurso recusava o disco do QEMU como `TruncatedCapability` — ver a seção do `cap_len` |
-| quinta em diante | passa | correção do `cap_len` e diagnóstico do script de boot |
+| quinta a sexta | passa no boot; a sexta caiu de novo em `Instalar OVMF` | infraestrutura: `apt-get` do runner sem resposta dentro do limite do passo |
+| sétima | **todos os passos verdes** | correção do `cap_len`, diagnóstico do script de boot e repetição da instalação do OVMF |
 
 O script de boot passou a repetir, no fim do relatório, os nomes dos checks que
 falharam e as últimas linhas das sondas de PCI e VirtIO: a anotação da CI é
 truncada em 4096 caracteres e mantém o início do texto, então o diagnóstico
 tem de estar no começo da anotação. Nenhuma verificação foi enfraquecida para
 o teste passar.
+
+O passo `Instalar OVMF` também foi endurecido: duas execuções falharam ali, sem
+compilar uma linha, porque o `apt-get update` do runner não respondeu dentro do
+limite do passo. Cada tentativa continua limitada por `timeout`, e o passo só
+desiste depois de três, com uma anotação de erro explícita.
 
 ## Limitações (explícitas)
 
