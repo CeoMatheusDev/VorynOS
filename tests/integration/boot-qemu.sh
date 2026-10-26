@@ -678,6 +678,19 @@ if [[ $FAILURES -ne 0 ]]; then
     for check in "${FAILED_CHECKS[@]}"; do
         echo "qemu-boot-test: failed check: $check" >&2
     done
+    # O console serial e longo e as linhas das sondas ficam no meio dele. A
+    # falha costuma ser a ausencia de uma dessas linhas, e por isso elas sao
+    # repetidas aqui, no fim: quem le o relatorio ve o diagnostico do kernel
+    # sem precisar do log completo.
+    DIAGNOSTIC="$(grep -E '\[VNK\] (pci|virtio)' "$SERIAL_LOG" | tail -n 12 || true)"
+    if [[ -n "$DIAGNOSTIC" ]]; then
+        echo "qemu-boot-test: last console lines of the PCI and VirtIO probes:" >&2
+        while IFS= read -r line; do
+            echo "qemu-boot-test:   $line" >&2
+        done <<< "$DIAGNOSTIC"
+    else
+        echo "qemu-boot-test: the console has no PCI or VirtIO probe lines" >&2
+    fi
     exit 1
 fi
 

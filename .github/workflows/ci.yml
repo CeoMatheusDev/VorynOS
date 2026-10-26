@@ -73,7 +73,7 @@ jobs:
             python3 - "zig build test" "$log_file" <<'PY'
           import pathlib, sys
           label, path = sys.argv[1:]
-          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = pathlib.Path(path).read_text(errors="replace")[-8000:]
           text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
           print(f"::error title={label} failed::{text}")
           PY
@@ -92,7 +92,7 @@ jobs:
             python3 - "zig build" "$log_file" <<'PY'
           import pathlib, sys
           label, path = sys.argv[1:]
-          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = pathlib.Path(path).read_text(errors="replace")[-8000:]
           text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
           print(f"::error title={label} failed::{text}")
           PY
@@ -111,7 +111,7 @@ jobs:
             python3 - "zig build qemu-test" "$log_file" <<'PY'
           import pathlib, sys
           label, path = sys.argv[1:]
-          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = pathlib.Path(path).read_text(errors="replace")[-8000:]
           text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
           print(f"::error title={label} failed::{text}")
           PY
@@ -130,7 +130,7 @@ jobs:
             python3 - "zig build check" "$log_file" <<'PY'
           import pathlib, sys
           label, path = sys.argv[1:]
-          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = pathlib.Path(path).read_text(errors="replace")[-8000:]
           text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
           print(f"::error title={label} failed::{text}")
           PY
