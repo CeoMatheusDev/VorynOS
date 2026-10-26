@@ -59,13 +59,14 @@ O repositório iniciou limpo. `git status` indicou a branch `arena/9f3de243-vory
 | `zig build check` | Bloqueado: `zig: command not found` (exit 127) |
 | `git diff --check` | PASS — sem erros de whitespace no diff revisado |
 
-**Não se afirma que o incremento compila ou passa testes.** O ambiente local não tem Zig/QEMU; a CI confirmou instalação de Zig 0.17.0, OVMF e QEMU e confirmou a versão do Zig. Os três runs atuais falharam em `zig build test`; na terceira execução, 414/416 testes passaram e os dois restantes falharam por incompatibilidade da classificação de erros, corrigida no código e aguardando reexecução. `zig build`, `zig build qemu-test` e `zig build check` ainda não concluíram com sucesso; nenhum resultado de compilação final ou boot deve ser inferido.
+**Validação local:** não executável porque o sandbox não contém Zig nem QEMU. A validação da implementação foi realizada pela CI do GitHub.
 
-## Evidência posterior da CI
+## Evidência da CI
 
-- `40347639388` (commit `b8d524f`) e `40352274138` (commit `6dcc9b4`): instalação de Zig, OVMF/QEMU, verificação de versão e diagnóstico do firmware concluíram; `zig build test` falhou; passos seguintes foram ignorados.
-- `40352926078` (commit `0e1a12a`): as mesmas instalações e verificações passaram; `zig build test` reportou **414/416 testes**, com dois erros de expectativa em `fs-loader-tests`. `elf_loader.test.plan enforces the alignment of the segment` esperava `SegmentNotAligned`, mas o parser devolveu `BadSegmentAlignment`; `elf_loader.test.plan requires the entry point to be executable` esperava `EntryOutsideExecutableSegment`, mas o parser devolveu `EntryNotExecutable`.
-- Causa identificada: o parser compartilhado agora reporta erros ELF mais específicos antes de o planejador do kernel aplicar sua classificação já estabelecida. `kernel/elf_loader.zig` foi atualizado para traduzir esses dois erros e preservar o contrato de erro do planejador. A correção ainda aguarda a próxima CI.
-- O workflow em `6dcc9b4` limita/re tenta a instalação apt, define timeout do job e inclui `zig build check`. Em `0e1a12a`, o wrapper acrescentou a saída final como anotação acessível, permitindo diagnosticar a causa mesmo sem acesso ao arquivo bruto do runner.
+- Runs `40347639388` (`b8d524f`) e `40352274138` (`6dcc9b4`): instalação de Zig 0.17.0, OVMF/QEMU, verificação da versão e diagnóstico do firmware passaram; `zig build test` falhou e os passos restantes foram ignorados.
+- Run `40352926078` (`0e1a12a`): **414/416 testes passaram**. Dois testes do planejador ELF esperavam os erros `SegmentNotAligned` e `EntryOutsideExecutableSegment`, mas o parser retornava `BadSegmentAlignment` e `EntryNotExecutable`.
+- Causa corrigida em `fb0847b`: `kernel/elf_loader.zig` traduz esses dois erros do parser para preservar a classificação pública já estabelecida pelo planejador.
+- Run `40353490650` (código até `fb0847b`): todos os passos terminaram com sucesso: instalar Zig 0.17.0, instalar OVMF/QEMU, verificar a versão, diagnosticar o firmware, `zig build test`, `zig build`, `zig build qemu-test`, `zig build check` e verificar os artefatos. Este é o primeiro run que valida a correção; não houve teste em hardware físico nem benchmark.
+- O workflow agora limita e repete as operações apt, aplica timeout ao job e inclui `zig build check`. Em caso de falha, anexa a saída final do comando ao check run para diagnóstico.
 
-Pendências registradas: [issue #8 — validar mapeamento identidade](https://github.com/CeoMatheusDev/VorynOS/issues/8) e [issue #9 — rollback de páginas](https://github.com/CeoMatheusDev/VorynOS/issues/9). O PR #6 deve permanecer em draft e não ser mesclado até a correção ser confirmada pela CI e todos os comandos obrigatórios passarem.
+Pendências registradas: [issue #8 — validar mapeamento identidade](https://github.com/CeoMatheusDev/VorynOS/issues/8) e [issue #9 — rollback de páginas](https://github.com/CeoMatheusDev/VorynOS/issues/9). O PR #6 deve continuar em draft até a CI do commit que atualiza este relatório concluir; sem merge automático.
