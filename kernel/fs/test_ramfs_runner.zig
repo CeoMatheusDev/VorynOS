@@ -1,82 +1,83 @@
+//************************************************************************//
+//  test_ramfs_runner.zig                                                 //
+//************************************************************************//
+//                        This file is part of:                           //
+//                              VorynOS                                   //
+//             https://github.com/CeoMatheusDev/VorynOS                   //
+//************************************************************************//
+// Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.               //
+// Copyright (C) 2026 VorynOS - All Rights Reserved.                      //
+//                                                                        //
+// SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
+//  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
+//************************************************************************//
+
 // Test runner for RAMFS tests
 const std = @import("std");
 const fs = @import("ramfs.zig");
 const inode = @import("inode.zig");
 
+// RamFS is defined in ramfs.zig and exported as `fs.RamFS`.
+const RamFS = fs.RamFS;
+
 // Test: block allocation exhaustion
 test "block allocation exhaustion" {
-    var r: RamFS = .{};
+    var r = RamFS{};
     r.init();
 
-    // Try to allocate many blocks
     var allocated: [32]u64 = undefined;
-    var count: u32 = 0;
+    var count: usize = 0;
 
-    var i: u32 = 0;
-    while (i < 32) {
-        const b = r.ramfs.allocate_block();
-        if (b == null) break;
+    // Allocate until exhausted or until 32 blocks have been reached.
+    var i: usize = 0;
+    while (i < 32) : (i += 1) {
+        const b = r.ramfs.allocate_block() orelse break;
         allocated[i] = b;
-        i += 1;
+        count = i + 1;
     }
-    count = i;
 
-    // Try one more allocation - should fail
+    // Try one more allocation; it must fail and return null.
     const exhausted_block = r.ramfs.allocate_block();
-    if (exhausted_block == null) {
-        std.debug("PASS: block allocation exhaustion\n", .{});
-    } else {
-        std.debug("FAIL: block allocation should have exhausted\n", .{});
-    }
+    try std.testing.expect(exhausted_block == null);
 
-    // Free some blocks
+    // Free the allocated blocks.
     while (count > 0) {
         count -= 1;
         r.ramfs.free_block(allocated[count]);
     }
 
-    // Try allocation again - should succeed
+    // Try allocating again; it must succeed.
     const recovered_block = r.ramfs.allocate_block();
-    if (recovered_block != null) {
-        std.debug("PASS: block recovery after free\n", .{});
-    } else {
-        std.debug("FAIL: block recovery should succeed\n", .{});
-    }
+    try std.testing.expect(recovered_block != null);
 
-    // Verify bitmap is all 0xFF again
-    if (r.ramfs_block_bitmap[0] == 0xFF) {
-        std.debug("PASS: bitmap consistent after recovery\n", .{});
-    } else {
-        std.debug("FAIL: bitmap should be all free\n", .{});
-    }
+    // Verify that the bitmap is free again (0xFF).
+    // The block_bitmap field must be accessible and contain at least one item.
+    try std.testing.expectEqual(@as(u8, 0xFF), r.ramfs.block_bitmap[0]);
 }
 
 // Test: inode allocation and type validation
 test "inode allocation and type validation" {
-    var r: RamFS = .{};
+    var r = RamFS{};
     r.init();
 
-    // Allocate inodes - first ones should be directories
-    var dir_inode: u32 = r.ramfs.allocate_inode();
-    if (dir_inode != null) {
-        if (r.ramfs_inodes[dir_inode].i_type == inode.InodeType.directory) {
-            std.debug("PASS: first inode is directory\n", .{});
-        } else {
-            std.debug("FAIL: first inode should be directory, got: {}\n", r.ramfs_inodes[dir_inode].i_type);
-        }
-    } else {
-        std.debug("FAIL: could not allocate inode\n", .{});
-    }
+    // The first inode must be a directory.
+    const dir_inode_opt = r.ramfs.allocate_inode();
+    try std.testing.expect(dir_inode_opt != null);
+    const dir_inode = dir_inode_opt.?; // unwrap seguro após o expect
 
-    // Allocate a file inode
-    var file_inode: u32 = r.ramfs.allocate_inode();
-    if (file_inode != null) {
-        if (r.ramfs_inodes[file_inode].i_type == inode.InodeType.file) {
-            std.debug("PASS: second inode is file\n", .{});
-        } else {
-            std.debug("FAIL: second inode should be file, got: {}\n", r.ramfs_inodes[file_inode].i_type);
-        }
-    } else {
-        std.debug("FAIL: could not allocate inode\n", .{});
-    }
+    try std.testing.expectEqual(
+        inode.InodeType.directory,
+        r.ramfs_inodes[dir_inode].i_type,
+    );
+
+    // The second inode must be a file.
+    const file_inode_opt = r.ramfs.allocate_inode();
+    try std.testing.expect(file_inode_opt != null);
+    const file_inode = file_inode_opt.?;
+
+    try std.testing.expectEqual(
+        inode.InodeType.file,
+        r.ramfs_inodes[file_inode].i_type,
+    );
 }

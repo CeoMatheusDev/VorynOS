@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.
+# Copyright (C) 2026 VorynOS - All Rights Reserved.
+# SPDX-License-Identifier: GPL-3.0-only
+
 """Compare QEMU HMP P6 screendumps before and after a keyboard movement."""
 import sys
 

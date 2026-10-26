@@ -1,7 +1,16 @@
 //************************************************************************//
-//  phys_blk_vnv_integration.zig — F4: physical driver + VNV cycle         //
+//  phys_blk_vnv_integration.zig                                          //
 //************************************************************************//
+//                        This file is part of:                           //
+//                              VorynOS                                   //
+//             https://github.com/CeoMatheusDev/VorynOS                   //
+//************************************************************************//
+// Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.               //
+// Copyright (C) 2026 VorynOS - All Rights Reserved.                      //
+//                                                                        //
 // SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
+//  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
 //************************************************************************//
 
 //! Integration test: PhysBlock (F4 driver) -> block.Device -> VNV commit/\n//! recover. Verifies that a physical driver interface can substitute the\n//! ramdisk without altering the volume or filesystem.\n

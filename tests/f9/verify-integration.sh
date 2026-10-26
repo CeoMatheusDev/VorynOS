@@ -1,4 +1,8 @@
 #!/bin/bash
+# Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.
+# Copyright (C) 2026 VorynOS - All Rights Reserved.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # F9 — Teste de integracao em QEMU (F9.4) — VorynOS
 # Executa `zig build` e verifica que kernel inicia com -smp 4 sem panico,
 # confirmando que F9 (tensor.zig / model.zig / security.zig) integra sem

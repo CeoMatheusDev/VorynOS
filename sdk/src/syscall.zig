@@ -1,11 +1,17 @@
 //************************************************************************//
 //  syscall.zig                                                           //
 //************************************************************************//
-//                         This file is part of:                          //
-//                               VorynOS                                  //
+//                        This file is part of:                           //
+//                              VorynOS                                   //
+//             https://github.com/CeoMatheusDev/VorynOS                   //
 //************************************************************************//
-// Copyright (C) 2026 VorynOS contributors.
-// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.               //
+// Copyright (C) 2026 VorynOS - All Rights Reserved.                      //
+//                                                                        //
+// SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
+//  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
+//************************************************************************//
 
 //! Interface de baixo nível da ABI VSC-0001, versão 13.
 //! x86_64: RAX=número/resultado, RDI/RSI/RDX/R8=argumentos.

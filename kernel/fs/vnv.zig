@@ -1,8 +1,16 @@
 //************************************************************************//
-//  vnv.zig                                                                //
+//  vnv.zig                                                               //
 //************************************************************************//
-// Copyright (C) 2026 VorynOS contributors.
-// SPDX-License-Identifier: GPL-3.0-only
+//                        This file is part of:                           //
+//                              VorynOS                                   //
+//             https://github.com/CeoMatheusDev/VorynOS                   //
+//************************************************************************//
+// Copyright (C) 2020 - 2026 Matheus.A.Santos contributors.               //
+// Copyright (C) 2026 VorynOS - All Rights Reserved.                      //
+//                                                                        //
+// SPDX-License-Identifier: GPL-3.0-only                                  //
+//************************************************************************//
+//  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
 //************************************************************************//
 
 //! Deterministic, validated VNV image codec for one RamFS volume.
