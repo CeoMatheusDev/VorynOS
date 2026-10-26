@@ -37,6 +37,7 @@ A documentação e a estrutura foram comparadas com o código existente; estes i
 ## Arquivos deste incremento
 
 - `shared/elf64.zig`: validação de alinhamento, W^X, endereço fixo, ponto de entrada e relocação; novos testes ELF negativos.
+- `kernel/elf_loader.zig`: tradução de dois erros do parser para preservar a classificação já exposta pelo planejador; aguardando validação CI.
 - `boot/uefi/main.zig`: evita console UEFI durante recuperação de `ExitBootServices` e limita o total de tentativas.
 - `.github/workflows/ci.yml`: adiciona timeout/retries à instalação de OVMF/QEMU, executa `zig build check` e publica uma síntese dos logs quando um comando falha.
 - `docs/testing/testing-strategy.md`: lista os novos casos ELF negativos no conjunto host.
@@ -58,13 +59,13 @@ O repositório iniciou limpo. `git status` indicou a branch `arena/9f3de243-vory
 | `zig build check` | Bloqueado: `zig: command not found` (exit 127) |
 | `git diff --check` | PASS — sem erros de whitespace no diff revisado |
 
-**Não se afirma que o incremento compila ou passa testes.** O ambiente local não tem Zig/QEMU; a CI confirmou instalação de Zig 0.17.0, OVMF e QEMU e confirmou a versão do Zig, mas os dois runs observados falharam em `zig build test`. Os outros comandos foram ignorados pelo `set -e` do workflow; nenhum resultado de compilação ou boot deve ser inferido.
+**Não se afirma que o incremento compila ou passa testes.** O ambiente local não tem Zig/QEMU; a CI confirmou instalação de Zig 0.17.0, OVMF e QEMU e confirmou a versão do Zig. Os três runs atuais falharam em `zig build test`; na terceira execução, 414/416 testes passaram e os dois restantes falharam por incompatibilidade da classificação de erros, corrigida no código e aguardando reexecução. `zig build`, `zig build qemu-test` e `zig build check` ainda não concluíram com sucesso; nenhum resultado de compilação final ou boot deve ser inferido.
 
 ## Evidência posterior da CI
 
-- Run `40347639388` (commit `b8d524f`): instalação de Zig, OVMF/QEMU, verificação de versão e diagnóstico do firmware concluíram com sucesso; `zig build test` falhou (exit 1); `zig build`, `zig build qemu-test` e `zig build check` não foram executados. A anotação do check run contém somente o exit code, sem a saída do compilador/test runner.
-- Run `40352274138` (commit `6dcc9b4`): Zig, OVMF/QEMU, versão e diagnóstico também concluíram; `zig build test` falhou novamente; os passos seguintes foram ignorados. A execução agregada ainda não começou.
-- A obtenção dos logs completos pelo agente falhou porque a API redireciona para o host externo de armazenamento de logs, fora do acesso de rede disponível nesta sessão. A causa da falha permanece **não identificada**; nenhuma correção ao kernel foi inventada.
-- O workflow foi atualizado em `6dcc9b4` com limites/retries para apt, timeout de job e a execução explícita de `zig build check`. O próximo incremento acrescenta a saída final do comando como anotação de erro para permitir diagnosticar falhas sem acesso ao arquivo bruto do runner.
+- `40347639388` (commit `b8d524f`) e `40352274138` (commit `6dcc9b4`): instalação de Zig, OVMF/QEMU, verificação de versão e diagnóstico do firmware concluíram; `zig build test` falhou; passos seguintes foram ignorados.
+- `40352926078` (commit `0e1a12a`): as mesmas instalações e verificações passaram; `zig build test` reportou **414/416 testes**, com dois erros de expectativa em `fs-loader-tests`. `elf_loader.test.plan enforces the alignment of the segment` esperava `SegmentNotAligned`, mas o parser devolveu `BadSegmentAlignment`; `elf_loader.test.plan requires the entry point to be executable` esperava `EntryOutsideExecutableSegment`, mas o parser devolveu `EntryNotExecutable`.
+- Causa identificada: o parser compartilhado agora reporta erros ELF mais específicos antes de o planejador do kernel aplicar sua classificação já estabelecida. `kernel/elf_loader.zig` foi atualizado para traduzir esses dois erros e preservar o contrato de erro do planejador. A correção ainda aguarda a próxima CI.
+- O workflow em `6dcc9b4` limita/re tenta a instalação apt, define timeout do job e inclui `zig build check`. Em `0e1a12a`, o wrapper acrescentou a saída final como anotação acessível, permitindo diagnosticar a causa mesmo sem acesso ao arquivo bruto do runner.
 
-Pendências registradas: [issue #8 — validar mapeamento identidade](https://github.com/CeoMatheusDev/VorynOS/issues/8) e [issue #9 — rollback de páginas](https://github.com/CeoMatheusDev/VorynOS/issues/9). O PR #6 deve permanecer em draft e não ser mesclado até a causa da falha ser identificada, corrigida e os comandos obrigatórios passarem.
+Pendências registradas: [issue #8 — validar mapeamento identidade](https://github.com/CeoMatheusDev/VorynOS/issues/8) e [issue #9 — rollback de páginas](https://github.com/CeoMatheusDev/VorynOS/issues/9). O PR #6 deve permanecer em draft e não ser mesclado até a correção ser confirmada pela CI e todos os comandos obrigatórios passarem.
