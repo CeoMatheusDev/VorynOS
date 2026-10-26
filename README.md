@@ -45,18 +45,26 @@ evidências são mantidos no [roadmap técnico](docs/roadmap/phase-status.md);
 implementação não significa, por si só, que uma funcionalidade tenha sido
 validada.
 
-| Área | Estado resumido |
-|---|---|
-| Boot | Aplicação UEFI x86_64, carregamento ELF64 e transferência controlada ao kernel; fluxo coberto pelo teste de boot em QEMU. |
-| Kernel e execução | Inicialização x86_64, memória virtual, interrupções, escalonamento, processos, modo usuário, chamadas de sistema e IPC possuem testes e verificações em QEMU. |
-| Armazenamento | RamFS, roteamento VFSX e operações de persistência/recuperação VNV são exercitados; a recuperação de volume usa um dispositivo em memória. Driver de armazenamento físico e montagem de boot continuam pendentes. |
-| Aplicações nativas | Há carregamento de ELF64 com validação de segmentos e permissões W^X, além de SDK freestanding e aplicações de teste. VLIB ainda não está implementada. |
-| Gráficos e entrada | Rasterização, composição, teclado PS/2 e interfaces de apresentação/entrada têm validação experimental em QEMU. Um desktop completo e um serviço gráfico isolado ainda não existem. |
-| Dispositivos e rede | Há infraestrutura parcial de PCI e filas virtio; não há driver virtio-blk ou virtio-net funcional nem pilha de rede completa. |
-| Hardware físico | Ainda não há validação documentada em uma máquina real. |
+### Progresso dos marcos
 
-Esses limites são intencionais: componentes planejados na arquitetura não são
-apresentados como implementações prontas.
+| Marco | Descrição | Estado atual |
+|---|---|---|
+| F0 | Fundação, toolchain, sistema de build e documentação | ✅ Concluído |
+| F1 | Bootloader UEFI e inicialização do kernel | ✅ Concluído |
+| F2 | Estruturas do processador, interrupções e memória | 🟢 Testado localmente |
+| F3 | Threads, escalonador, processos, syscalls e IPC | 🟡 Em desenvolvimento — capacidades genéricas de dispositivos, heap dinâmico e expansão de processos ainda pendentes |
+| F4 | Armazenamento e sistemas de arquivos | 🟡 Em desenvolvimento — RamFS/VFSX e persistência VNV em dispositivo de memória; driver físico e montagem automática pendentes |
+| F5 | Runtime, SDK e aplicações nativas | 🟡 Em desenvolvimento — ELF nativo e SDK presentes; VLIB ainda pendente |
+| F6 | Gráficos e ambiente desktop | 🟡 Em desenvolvimento — caminho experimental validado em QEMU; serviço gráfico e desktop completo não implementados |
+| F7 | Drivers, rede, áudio e hardware físico | 🟡 Em desenvolvimento — base PCI/Virtio parcial; drivers funcionais e validação física pendentes |
+| F8 | Compatibilidade com formatos externos e APIs | 🟡 Em desenvolvimento — base ELF/VEX e ABI própria implementadas; compatibilidade ampla ainda incompleta |
+| F9 | Infraestrutura de inteligência artificial | ✅ Concluído no escopo atual — inferência nativa em CPU e testes locais; sem aceleração por GPU |
+| F10 | Instalação, segurança, recuperação e prontidão para produção | 🟡 Parcial — correções de hardening e auditoria realizadas; instalação, atualização e recuperação de produção continuam pendentes |
+
+“Concluído” indica o escopo documentado do marco, não que o VorynOS como um
+todo esteja pronto para uso diário. A validação em QEMU não equivale a testes
+em hardware físico; consulte o [roadmap](docs/roadmap/phase-status.md) e os
+relatórios para critérios, evidências e limitações de cada incremento.
 
 ## Compilação e testes
 
