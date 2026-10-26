@@ -18,7 +18,10 @@ pub const Error = error{
 /// Multiplica matrizes A (M x K) * B (K x N) -> C (M x N).
 /// Todos os buffers sao fornecidos pelo chamador (isolamento de memoria).
 pub fn matMul(A: []const f32, B: []const f32, C: []f32, M: usize, K: usize, N: usize) Error!void {
-    if (A.len < M * K or B.len < K * N or C.len < M * N) return error.DimensionMismatch;
+    const mk = std.math.mul(usize, M, K) catch return error.Overflow;
+    const kn = std.math.mul(usize, K, N) catch return error.Overflow;
+    const mn = std.math.mul(usize, M, N) catch return error.Overflow;
+    if (A.len < mk or B.len < kn or C.len < mn) return error.DimensionMismatch;
     for (0..M) |i| {
         for (0..N) |j| {
             var sum: f32 = 0.0;

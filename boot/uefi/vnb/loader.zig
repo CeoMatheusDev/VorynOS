@@ -115,10 +115,15 @@ fn relocate(image: elf64.Image, load_bias: u64) Error!void {
     for (image.relocations) |relocation| {
         const address = std.math.add(u64, relocation.offset, load_bias) catch
             return error.RelocationOutOfBounds;
-        if (address + @sizeOf(u64) > identity_mapped_limit) return error.RelocationOutOfBounds;
+        const end = std.math.add(u64, address, @sizeOf(u64)) catch
+            return error.RelocationOutOfBounds;
+        if (end > identity_mapped_limit) return error.RelocationOutOfBounds;
 
         const value: i64 = @bitCast(load_bias);
+        const addend: i64 = @bitCast(relocation.addend);
+        const sum = std.math.add(i64, value, addend) catch
+            return error.RelocationOutOfBounds;
         const target: *u64 = @ptrFromInt(address);
-        target.* = @bitCast(value + relocation.addend);
+        target.* = @bitCast(sum);
     }
 }

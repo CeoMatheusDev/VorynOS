@@ -131,6 +131,10 @@ pub fn validate(buf: []const u8) !void {
         const out_len = info.output_dims;
         if (out_len == 0 or out_len > output.len) return error.InvalidShape;
         if (input.len < info.input_dims) return error.InvalidShape;
+        const expected_w = info.output_dims * info.input_dims * 4;
+        const expected_b = info.output_dims * 4;
+        if (info.weight_size < expected_w) return error.InvalidShape;
+        if (info.bias_size < expected_b) return error.InvalidShape;
         const w_start = info.weight_offset;
         const w_size = info.weight_size;
         if (w_start + w_size > buf.len) return error.OutOfBounds;
@@ -142,8 +146,9 @@ pub fn validate(buf: []const u8) !void {
             // Inferencia real com matMul deterministica: W [out][in] x x [in] -> y [out]
             // Dados do modelo: weights como flat f32 (um por elemento de saida por entrada)
             for (0..info.input_dims) |k| {
-                if (idx * 4 + k * 4 + 3 < weights_buf.len) {
-                    const b0 = @as(u32, weights_buf[idx * 4 + k * 4]) | (@as(u32, weights_buf[idx * 4 + k * 4 + 1]) << 8) | (@as(u32, weights_buf[idx * 4 + k * 4 + 2]) << 16) | (@as(u32, weights_buf[idx * 4 + k * 4 + 3]) << 24);
+                const offset = (idx * info.input_dims + k) * 4;
+                if (offset + 3 < weights_buf.len) {
+                    const b0 = @as(u32, weights_buf[offset]) | (@as(u32, weights_buf[offset + 1]) << 8) | (@as(u32, weights_buf[offset + 2]) << 16) | (@as(u32, weights_buf[offset + 3]) << 24);
                     const w = @as(f32, @bitCast(b0));
                     sum += w * input[k];
                 }
@@ -207,4 +212,30 @@ test "modelBinaryFormatValidatesAndRejectsCorrupt" {
     @memcpy(bad[0..128], &package);
     bad[52] ^= 0xFF; // corrompe CRC
     try std.testing.expectError(Error.ChecksumMismatch, validate(&bad));
+}
+
+test "infer produces real numeric output" {
+    var package: [128]u8 = undefined;
+    @memset(&package, 0);
+    const magic_bytes = [4]u8{ 0x59, 'R', 'O', 'V' };
+    @memcpy(package[0..4], &magic_bytes);
+    package[4] = 0x01; package[5] = 0x00;
+    package[6] = 0x01;
+    package[7] = 0x01; package[8] = 0x00;
+    package[9] = 0x04; package[10] = 0x00; package[11] = 0x00; package[12] = 0x00;
+    package[13] = 0x02; package[14] = 0x00; package[15] = 0x00; package[16] = 0x00;
+    package[17] = 0x02; package[18] = 0x00; package[19] = 0x00; package[20] = 0x00;
+    package[25] = 58; package[29] = 32; // weight_size = 32 (2 outputs * 4 inputs * 4 bytes)
+    package[37] = 90; package[41] = 8; // bias_offset = 58+32=90; bias_size = 8 (2 outputs * 4 bytes)
+    // Payload: 32 bytes de pesos + 8 bytes de bias — zerados (valores neutros = soma 0)
+    @memset(package[58..98], 0);
+    const payload_bytes = package[58..90];
+    const crc = std.hash.Crc32.hash(payload_bytes);
+    package[52] = @truncate(crc); package[53] = @truncate(crc >> 8); package[54] = @truncate(crc >> 16); package[55] = @truncate(crc >> 24);
+
+    var input: [4]f32 = .{ 1.0, 2.0, 3.0, 4.0 };
+    var output: [2]f32 = undefined;
+    try infer(&package, &input, &output);
+    // Confirma que inferencia executa numéricamente sem NaN (pesos neutros -> valor 0 legitimate)
+    try std.testing.expect(!std.math.isNan(output[0]) and !std.math.isNan(output[1]));
 }

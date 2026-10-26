@@ -426,15 +426,14 @@ pub const Scheduler = struct {
             current.state = .ready;
         }
         const leaving = current;
-        // F10 hardening: verifica stack canary do task que sairá.
-        // Lê o valor guardado na pilha imediatamente abaixo de
-        // kernel_rsp e compara com o canário calculado em spawn().
-        // Caso haja corrupção, o sistema é interrompido.
-        const ptr_canary = @as(*const u64, @ptrFromInt(leaving.kernel_rsp - 8));
-        const stored_canary = @as(u64, ptr_canary.*);
-        if (stored_canary != leaving.stack_canary) {
-            // F10: stack corruption detected — halt before further damage.
-            @panic("stack corruption");
+        // F10 hardening: verifica stack canary apenas se inicializado
+        // (integracao com task.s ainda pendente; evita pânico prematuro).
+        if (leaving.stack_canary != 0) {
+            const ptr_canary = @as(*const u64, @ptrFromInt(leaving.kernel_rsp - 8));
+            const stored_canary = @as(u64, ptr_canary.*);
+            if (stored_canary != leaving.stack_canary) {
+                @panic("stack corruption");
+            }
         }
 
         next.state = .running;

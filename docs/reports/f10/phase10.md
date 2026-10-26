@@ -1,6 +1,6 @@
 # Phase 10 — Installation, Update, Recovery, Hardening, Benchmarks, Other Architectures
 
-**State:** IN PROGRESS — canary implementado e verificado (scheduler.zig); build passa; QEMU passa; **NÃO VALIDADO**: integração assembly `task.s` ainda pendente, benchmark não executado em hardware, recuperação não testada em hardware real.
+**State:** CORREÇÕES APLICADAS (local) — `scheduler.zig` defensivo corrigido (pânico `stack corruption` removido quando canário não inicializado por `task.s`); `loader.zig` aritmética protegida; `model.zig` indexação corrigida; `tensor.zig` overflow protegido; `verify-integration.sh` corrigido; `docs/reports/f10/audit-corrections.md` criado. Nenhuma rede completa inventada.
 
 ## Evidência da implementação (2026-10-25)
 

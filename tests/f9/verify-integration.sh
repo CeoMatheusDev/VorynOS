@@ -1,3 +1,4 @@
+#!/bin/bash
 # F9 — Teste de integracao em QEMU (F9.4) — VorynOS
 # Executa `zig build` e verifica que kernel inicia com -smp 4 sem panico,
 # confirmando que F9 (tensor.zig / model.zig / security.zig) integra sem
@@ -6,7 +7,6 @@
 # (boot-qemu.sh, qemu-test) permanecem como baseline.
 # Autor: AGENTS.md — fluxo obligatorio (inspecionar → verificar → documentar)
 
-#!/bin/bash
 set -euo pipefail
 
 echo "[F9.4] Iniciando validacao de integracao F9"
