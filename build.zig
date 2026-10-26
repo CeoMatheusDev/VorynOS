@@ -472,6 +472,23 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(arch_tests).step);
 
+    // PR A do VirtIO PCI moderno: tipos, identificadores, estados, features e
+    // capabilities. Os modulos sao puros (recebem bytes e valores ja lidos do
+    // espaco de configuracao), nao abrem portas de I/O e nao mapeiam BARs, e
+    // por isso os testes rodam no host. A raiz fica em
+    // `kernel/drivers/virtio/root.zig` porque a raiz de um modulo Zig precisa
+    // estar acima de todos os arquivos que ele importa.
+    const virtio_modern_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/drivers/virtio/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const virtio_modern_tests = b.addTest(.{
+        .name = "virtio-modern-tests",
+        .root_module = virtio_modern_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(virtio_modern_tests).step);
+
     // The IPC modules of the kernel are free of architecture specific code
     // and are tested on the host as well. The root lives at the top of the
     // kernel tree because the channel uses the context of the tasks.
