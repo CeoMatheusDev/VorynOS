@@ -13,6 +13,7 @@ jobs:
   build-and-test:
     name: Compilar e testar (x86_64, QEMU/OVMF)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Obter o código
@@ -27,9 +28,19 @@ jobs:
           version: 0.17.0
 
       - name: Instalar OVMF
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ovmf qemu-system-x86
+          sudo timeout --kill-after=15s 5m apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            update
+          sudo timeout --kill-after=15s 12m apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            install -y ovmf qemu-system-x86
 
       - name: Verificar a versão do Zig
         run: |
@@ -56,6 +67,9 @@ jobs:
 
       - name: Teste de boot no QEMU
         run: zig build qemu-test
+
+      - name: Verificação agregada
+        run: zig build check
 
       - name: Verificar os artefatos
         run: |
