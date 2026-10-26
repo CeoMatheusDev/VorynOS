@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Permite reexecutar a validacao sem empurrar um commit novo.
+  workflow_dispatch:
 
 permissions:
   contents: read
