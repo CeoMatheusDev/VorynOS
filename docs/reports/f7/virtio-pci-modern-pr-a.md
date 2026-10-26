@@ -202,7 +202,7 @@ Casos cobertos, conforme o escopo pedido:
 | Composição da fundação | `a modern virtio block device reaches the feature and status plan`, `a device without the required regions cannot build the transport` |
 
 Contagem observada nos binários de teste: `arch-tests` 63 → **76** testes
-(13 novos em `pci.zig`), `virtio-modern-tests` **27** testes novos.
+(13 novos em `pci.zig`), `virtio-modern-tests` **29** testes novos.
 
 ### Layout do dispositivo de teste (QEMU)
 
@@ -238,7 +238,7 @@ utilizável, mas o driver usa a primeira instância, conforme a especificação.
 |---------|-----------|
 | `zig version` | `0.17.0` (instalado no ambiente a partir do pacote `ziglang` 0.17.0) |
 | `zig fmt --check` (`pci.zig`, `build.zig`, `drivers/virtio/*`) | sem alterações pendentes |
-| `zig build test` | passa; `arch-tests` 76/76, `virtio-modern-tests` 27/27 |
+| `zig build test` | passa; `arch-tests` 76/76, `virtio-modern-tests` 29/29, **462/462** no total |
 | `zig build` | passa; `zig-out/bin/vorynos.img` (64 MiB) gerado |
 | `git diff --check` | sem espaços em branco defeituosos |
 | `zig build qemu-test` | **não executado localmente**: o ambiente da sessão não tem QEMU nem OVMF. Executado na CI (`.github/workflows/ci.yml`), que instala `ovmf` e `qemu-system-x86`; o passo de boot passou depois da correção do `cap_len`. |
@@ -269,6 +269,72 @@ O passo `Instalar OVMF` também foi endurecido: duas execuções falharam ali, s
 compilar uma linha, porque o `apt-get update` do runner não respondeu dentro do
 limite do passo. Cada tentativa continua limitada por `timeout`, e o passo só
 desiste depois de três, com uma anotação de erro explícita.
+
+## Revisão técnica final (2026-10-26) — correções
+
+Três desvios da especificação foram encontrados na revisão e corrigidos, cada
+um com teste de regressão. Nenhum deles aparecia no QEMU, porque o emulador
+apresenta exatamente as formas mínimas; todos apareceriam em dispositivos
+reais ou em versões futuras do emulador.
+
+### 1. `cap_len` maior que o definido era recusado
+
+A especificação é normativa para o driver: *"The driver MUST accept a `cap_len`
+value which is larger than specified here"*, e o dispositivo *"MAY append extra
+data or padding to any structure beyond that"*.
+
+`caps.parse` comparava `cap_len` com o número de bytes entregues e recusava
+como `TruncatedCapability` toda capability com dados extras — e o chamador no
+kernel lia no máximo 20 bytes. Um dispositivo com `cap_len` 24 na configuração
+comum seria recusado, e o dispositivo inteiro seria anunciado como incompleto.
+
+Correção: o `cap_len` declarado deixou de limitar o que `parse` aceita. O que a
+função confere é que os campos que ela interpreta existam nos bytes recebidos.
+
+### 2. A variante `cap64` era lida como padding
+
+`struct virtio_pci_cap64` acrescenta `offset_hi` e `length_hi` em 0x10 e 0x14
+para regiões acima de 4 GiB. O módulo lia apenas as metades baixas e ignorava o
+resto: uma região em `0x1_0000_0000` viraria `0x0000_0000` sem erro nenhum —
+um deslocamento errado que só apareceria como acesso inválido na fase de MMIO.
+
+Correção: `max_structure_size` (24 bytes) é o que o chamador lê, e `parse`
+devolve `error.UnsupportedLargeRegion` quando as metades altas não são zero. A
+notificação não tem essa variante (os bytes 0x10 já são o multiplicador), e o
+caso é documentado no código.
+
+### 3. `status.transition` aceitava apagar bits ao escrever FAILED
+
+A especificação é normativa: *"The driver MUST NOT clear a `device status`
+bit"*. A implementação aceitava `0x03 → 0x80` (escrever FAILED sozinho a partir
+de ACKNOWLEDGE|DRIVER) e devolvia `.failed`, apagando dois bits no caminho.
+
+Correção: toda escrita precisa preservar os bits já ligados — desistir é
+`from | failed`, não `failed` — e a nova condição tem erro próprio,
+`error.StatusBitCleared`. O zero continua aceito de qualquer estado, porque a
+especificação o define como reset, e não como limpeza. O bit
+`DEVICE_NEEDS_RESET` passou a ser recusado por `device_mask` antes da
+interpretação do valor: acrescentá-lo é erro do driver, mantê-lo é
+obrigatório.
+
+### Limpeza
+
+- `status.driver_mask` foi removido: era um `pub const` que nada referenciava.
+- `status.device_mask` passou a ser usado na regra acima.
+- O limite de capabilities sondadas no kernel deixou de ser o literal `8`:
+  virou `probed_capability_limit` (16), e a mensagem de truncamento diz o que
+  aconteceu, em vez de sugerir um dispositivo anormal.
+
+## Desvios e riscos conhecidos
+
+| Item | Situação | Efeito |
+|------|----------|--------|
+| ISR tratada como opcional | A especificação exige que o dispositivo apresente ao menos uma capability de ISR; `caps.build` não a exige | Um dispositivo sem ISR é aceito pela fundação. Não há falso sucesso — nada é inicializado —, mas o PR B precisa decidir se a região passa a ser obrigatória quando as interrupções existirem |
+| Região acima de 4 GiB | `cap64` é detectada e recusada com erro | Dispositivo com BAR acima de 4 GiB não é conduzido; é uma recusa explícita, e não uma leitura truncada |
+| Primeira instância inválida | Uma instância de tipo conhecido que viola uma regra normativa interrompe `build`, mesmo que exista outra utilizável | A especificação diz que o driver *SHOULD* usar a primeira instância que consegue suportar. Dispositivo assim é recusado, e não conduzido por uma região diferente da que ele indicou como preferida |
+| Alinhamento DWORD dos ponteiros | Ponteiro de capability fora da grade de 4 bytes é recusado | Aparelhos antigos com lista desalinhada não são percorridos; a decisão é falhar em vez de adivinhar |
+| Limite de 16 capabilities por função | Acima disso a sonda para e diz que truncou | O disco do QEMU apresenta cinco. Um dispositivo com mais de 16 tem as excedentes descartadas, e a linha do console declara o truncamento |
+| Lista corrompida depois de capabilities válidas | O erro descarta o que já foi lido | Falha fechada: a função não é conduzida com uma lista que não fecha |
 
 ## Limitações (explícitas)
 

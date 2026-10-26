@@ -1,6 +1,10 @@
 # ADR-0018 — Subsistema VirtIO PCI moderno e fundação do transporte
 
-- **Estado:** IMPLEMENTADO — TESTADO LOCALMENTE (host); boot QEMU na CI
+- **Estado:** IMPLEMENTADO — TESTADO LOCALMENTE (host) e na CI (11/11 passos)
+  - Revisão técnica final (2026-10-26): `cap_len` maior passou a ser aceito
+    (norma do driver), a variante `cap64` é recusada com erro em vez de lida
+    como padding, e `status.transition` não aceita mais apagar um bit já
+    ligado. Ver `docs/reports/f7/virtio-pci-modern-pr-a.md`.
 - **Data:** 2026-10-26
 - **Escopo:** `kernel/drivers/virtio/`, `kernel/arch/x86_64/pci.zig`,
   `kernel/main.zig`, `build.zig`

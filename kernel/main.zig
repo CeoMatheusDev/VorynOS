@@ -1150,12 +1150,20 @@ fn identifyVirtioDevices() void {
     }
 }
 
+/// Quantas capabilities vendor-specific a sonda guarda por funcao.
+///
+/// O limite existe porque a sonda vive na pilha do kernel. O disco do QEMU
+/// apresenta cinco; um dispositivo com mais do que isto tem as excedentes
+/// descartadas, e a linha do console diz que a lista foi truncada — a sonda
+/// nao pode apresentar como completa uma leitura que parou no meio.
+const probed_capability_limit: usize = 16;
+
 /// Le e valida as capabilities modernas de uma funcao VirtIO ja identificada.
 fn reportVirtioCapabilities(device: u8, identification: virtio_modern.types.Identification) void {
     const location: pci.Function = .{ .bus = 0, .device = device, .function = 0 };
     const reader = pci.functionReader(&location);
 
-    var capabilities: [8]virtio_modern.caps.Capability = undefined;
+    var capabilities: [probed_capability_limit]virtio_modern.caps.Capability = undefined;
     var count: usize = 0;
 
     var iterator = pci.CapabilityIterator.init(reader) catch |err| {
@@ -1178,7 +1186,10 @@ fn reportVirtioCapabilities(device: u8, identification: virtio_modern.types.Iden
         const pci_capability = next orelse break;
         if (pci_capability.id != pci.capability_vendor_specific) continue;
         if (count == capabilities.len) {
-            serial.printLine("[VNK] virtio: 00:{d}.0 has more capabilities than the probe records", .{device});
+            serial.printLine(
+                "[VNK] virtio: 00:{d}.0 capability list truncated at {d} entries",
+                .{ device, probed_capability_limit },
+            );
             break;
         }
         capabilities[count] = readVirtioCapability(device, pci_capability) catch |err| {
@@ -1227,14 +1238,16 @@ fn reportVirtioCapabilities(device: u8, identification: virtio_modern.types.Iden
 
 /// Le o corpo de uma capability VirtIO a partir do espaco de configuracao.
 ///
-/// Somente os bytes que a estrutura do VirtIO moderno usa sao lidos; o
-/// restante do `cap_len` declarado pode ser padding ou uma extensao que este
-/// incremento nao interpreta.
+/// Somente os bytes que este modulo interpreta sao lidos: os campos da
+/// estrutura base, o multiplicador da notificacao e as metades altas da
+/// variante de 64 bits (`cap64`). O resto do `cap_len` declarado pode ser
+/// padding ou uma extensao, e `caps.parse` aceita um `cap_len` maior do que os
+/// bytes entregues aqui, como a especificacao exige.
 fn readVirtioCapability(
     device: u8,
     pci_capability: pci.Capability,
 ) virtio_modern.caps.Error!virtio_modern.caps.Capability {
-    var body: [virtio_modern.caps.notify_structure_size]u8 = @splat(0);
+    var body: [virtio_modern.caps.max_structure_size]u8 = @splat(0);
     // O percurso recusou uma capability vendor-specific sem `cap_len`, e por
     // isso a ausencia do campo aqui e uma violacao da mesma regra.
     const declared = pci_capability.length orelse return error.TruncatedCapability;

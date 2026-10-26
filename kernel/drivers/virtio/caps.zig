@@ -64,6 +64,25 @@ pub const structure_size: usize = 16;
 /// Bytes de `struct virtio_pci_notify_cap`, que acrescenta o multiplicador.
 pub const notify_structure_size: usize = 20;
 
+/// Maior prefixo de uma capability que este modulo interpreta.
+///
+/// A especificacao define a variante `struct virtio_pci_cap64`, que acrescenta
+/// `offset_hi` e `length_hi` para regioes acima de 4 GiB:
+///
+/// ```text
+/// struct virtio_pci_cap64 {        // 24 bytes
+///     struct virtio_pci_cap cap;   // 0x00
+///     le32 offset_hi;              // 0x10
+///     le32 length_hi;              // 0x14
+/// };
+/// ```
+///
+/// Uma notificacao nao tem essa variante: os bytes 0x10 ja sao o
+/// `notify_off_multiplier`. O chamador precisa entregar ate este tamanho para
+/// que `parse` possa conferir as metades altas em vez de ignorar uma regiao
+/// que nao cabe em 32 bits.
+pub const max_structure_size: usize = structure_size + 8;
+
 /// Maior indice de BAR de uma funcao PCI; acima disso o valor e reservado.
 pub const max_bar_index: u8 = 5;
 
@@ -128,6 +147,9 @@ pub const Error = error{
     MissingCommonConfiguration,
     /// Nao existe capability utilizavel de notificacao.
     MissingNotifyConfiguration,
+    /// A regiao declara `offset` ou `length` acima de 4 GiB (`cap64`), que
+    /// este modulo nao representa.
+    UnsupportedLargeRegion,
 };
 
 /// Uma capability VirtIO ja decodificada.
@@ -170,9 +192,15 @@ fn readLe32(bytes: []const u8) u32 {
 /// Decodifica e valida uma capability a partir dos bytes lidos do espaco de
 /// configuracao.
 ///
-/// `bytes` comeca no offset da capability (`cap_vndr`) e precisa conter ao
-/// menos `cap_len` bytes. A funcao valida a estrutura e a regiao; a
-/// adequacao ao BAR e a escolha entre instancias ficam em `build`, porque
+/// `bytes` comeca no offset da capability (`cap_vndr`) e precisa conter os
+/// primeiros `min(cap_len, max_structure_size)` bytes dela.
+///
+/// O `cap_len` declarado **nao** limita o que a funcao aceita: a especificacao
+/// exige que o driver aceite um `cap_len` maior que o definido, porque o
+/// dispositivo pode acrescentar dados extras ou padding. O que a funcao
+/// confere e que os campos que ela interpreta existam nesses bytes.
+///
+/// A adequacao ao BAR e a escolha entre instancias ficam em `build`, porque
 /// dependem do que o chamador consegue mapear.
 pub fn parse(bytes: []const u8) Error!Capability {
     if (bytes.len < structure_size) return error.TruncatedCapability;
@@ -180,7 +208,6 @@ pub fn parse(bytes: []const u8) Error!Capability {
 
     const declared: usize = bytes[2];
     if (declared < structure_size) return error.TruncatedCapability;
-    if (declared > bytes.len) return error.TruncatedCapability;
 
     const offset = readLe32(bytes[8..12]);
     const length = readLe32(bytes[12..16]);
@@ -198,10 +225,24 @@ pub fn parse(bytes: []const u8) Error!Capability {
     };
 
     if (capability.isNotify()) {
-        // O multiplicador faz parte da capability de notificacao: sem ele a
-        // estrutura esta truncada, mesmo que os 16 bytes da base existam.
+        // O multiplicador faz parte da capability de notificacao: ele precisa
+        // estar declarado no `cap_len` e presente nos bytes entregues, mesmo
+        // que os 16 bytes da base existam.
         if (declared < notify_structure_size) return error.TruncatedCapability;
+        if (bytes.len < notify_structure_size) return error.TruncatedCapability;
         capability.notify_off_multiplier = readLe32(bytes[16..20]);
+        return capability;
+    }
+
+    if (declared >= max_structure_size) {
+        // Uma capability `cap64` precisa ser reconhecida, e nao lida como se
+        // as metades altas fossem padding: interpretar so os 32 bits baixos
+        // de uma regiao acima de 4 GiB produziria um deslocamento errado sem
+        // erro nenhum.
+        if (bytes.len < max_structure_size) return error.TruncatedCapability;
+        const offset_hi = readLe32(bytes[16..20]);
+        const length_hi = readLe32(bytes[20..24]);
+        if (offset_hi != 0 or length_hi != 0) return error.UnsupportedLargeRegion;
     }
     return capability;
 }
@@ -332,7 +373,7 @@ const testing = std.testing;
 
 /// Escreve uma capability nos bytes dados e devolve a fatia usada.
 fn encode(
-    buffer: *[notify_structure_size]u8,
+    buffer: []u8,
     capability: Capability,
 ) []const u8 {
     const length: usize = if (capability.isNotify()) notify_structure_size else structure_size;
@@ -432,10 +473,14 @@ test "virtio capability rejects truncated and malformed structures" {
     try testing.expectError(error.WrongVendor, parse(buffer[0..bytes.len]));
     buffer[0] = capability_id;
 
-    // cap_len menor que a estrutura, e cap_len maior que os bytes lidos.
+    // cap_len menor que a estrutura base.
     buffer[2] = 8;
     try testing.expectError(error.TruncatedCapability, parse(bytes));
-    buffer[2] = 20;
+    buffer[2] = 16;
+
+    // cap_len que declara a variante de 64 bits sem que os bytes dela tenham
+    // sido lidos: as metades altas nao podem ser supostas iguais a zero.
+    buffer[2] = max_structure_size;
     buffer[3] = cfg_type.common;
     try testing.expectError(error.TruncatedCapability, parse(bytes[0..16]));
     buffer[2] = 16;
@@ -469,15 +514,56 @@ test "virtio capability rejects truncated and malformed structures" {
 }
 
 test "virtio capability accepts a larger cap_len than required" {
-    var buffer: [notify_structure_size]u8 = undefined;
+    // A especificacao exige que o driver aceite um cap_len maior que o
+    // definido: o dispositivo pode acrescentar dados extras ou padding.
+    var buffer: [max_structure_size]u8 = @splat(0);
     _ = encode(&buffer, sample(cfg_type.common));
-    // A especificacao exige aceitar um cap_len maior, com padding ou campos
-    // que o driver nao usa.
-    buffer[2] = structure_size + 2;
 
-    const capability = try parse(buffer[0 .. structure_size + 2]);
-    try testing.expectEqual(cfg_type.common, capability.cfg_type);
-    try testing.expectEqual(@as(u32, 0x1000), capability.offset);
+    // Quatro bytes de dados extras, com os bytes entregues iguais ao cap_len.
+    buffer[2] = structure_size + 4;
+    const padded = try parse(buffer[0 .. structure_size + 4]);
+    try testing.expectEqual(cfg_type.common, padded.cfg_type);
+    try testing.expectEqual(@as(u32, 0x1000), padded.offset);
+
+    // Um cap_len maior que os bytes lidos tambem e aceito, desde que os
+    // campos interpretados estejam presentes: os bytes que faltam sao dados
+    // extras que este modulo nao le.
+    buffer[2] = structure_size + 4;
+    const short_read = try parse(buffer[0..structure_size]);
+    try testing.expectEqual(@as(u32, 0x1000), short_read.offset);
+
+    // A notificacao continua exigindo o multiplicador presente e declarado.
+    var notify_buffer: [max_structure_size]u8 = @splat(0);
+    _ = encode(&notify_buffer, sample(cfg_type.notify));
+    notify_buffer[2] = notify_structure_size + 4;
+    const notify = try parse(notify_buffer[0 .. notify_structure_size + 4]);
+    try testing.expectEqual(@as(u32, 4), notify.notify_off_multiplier);
+    try testing.expectError(error.TruncatedCapability, parse(notify_buffer[0..16]));
+}
+
+test "virtio capability rejects a region above four gigabytes" {
+    // `struct virtio_pci_cap64` acrescenta `offset_hi` e `length_hi`. Este
+    // modulo so representa regioes de 32 bits, e ler apenas as metades baixas
+    // produziria um deslocamento errado sem erro nenhum.
+    var buffer: [max_structure_size]u8 = @splat(0);
+    _ = encode(&buffer, sample(cfg_type.common));
+    buffer[2] = max_structure_size;
+
+    // Sem as metades altas: nao ha como saber se elas sao zero.
+    try testing.expectError(error.TruncatedCapability, parse(buffer[0..structure_size]));
+
+    // Metades altas zeradas sao a forma explicita de "cabe em 32 bits".
+    const within = try parse(buffer[0..max_structure_size]);
+    try testing.expectEqual(@as(u32, 0x1000), within.offset);
+
+    // Um deslocamento acima de 4 GiB.
+    buffer[16] = 0x01;
+    try testing.expectError(error.UnsupportedLargeRegion, parse(buffer[0..max_structure_size]));
+    buffer[16] = 0x00;
+
+    // Um tamanho acima de 4 GiB.
+    buffer[20] = 0x01;
+    try testing.expectError(error.UnsupportedLargeRegion, parse(buffer[0..max_structure_size]));
 }
 
 test "virtio capability types follow the specification table" {
