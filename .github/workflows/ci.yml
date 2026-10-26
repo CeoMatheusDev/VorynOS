@@ -108,12 +108,24 @@ jobs:
           else
             status=$?
             cat "$log_file"
+            # A anotacao da execucao e truncada em 4096 caracteres e mantem o
+            # inicio do texto. Por isso as linhas de diagnostico vem primeiro,
+            # e o fim do log so ocupa o espaco que sobrar: o que interessa
+            # (qual check falhou e o que o kernel imprimiu) cabe no inicio.
             python3 - "zig build qemu-test" "$log_file" <<'PY'
           import pathlib, sys
           label, path = sys.argv[1:]
-          text = pathlib.Path(path).read_text(errors="replace")[-8000:]
-          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
-          print(f"::error title={label} failed::{text}")
+          text = pathlib.Path(path).read_text(errors="replace")
+          interesting = [
+              line
+              for line in text.splitlines()
+              if line.startswith(("qemu-boot-test:", "FAIL:")) or "check(s) failed" in line
+          ]
+          head = "\n".join(interesting)[:2200]
+          tail = text[-1200:]
+          body = f"{head}\n--- fim do log ---\n{tail}" if head else tail
+          escaped = body.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
+          print(f"::error title={label} failed::{escaped}")
           PY
             exit "$status"
           fi
