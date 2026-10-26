@@ -52,9 +52,6 @@ pub const failed: u8 = 1 << 7;
 pub const defined_mask: u8 = acknowledge | driver | driver_ok | features_ok |
     suspended | device_needs_reset | failed;
 
-/// Bits que o driver escreve.
-pub const driver_mask: u8 = acknowledge | driver | driver_ok | features_ok | failed;
-
 /// Bits que somente o dispositivo escreve.
 pub const device_mask: u8 = device_needs_reset;
 
@@ -78,8 +75,10 @@ pub const Error = error{
     SuspendUnsupported,
     /// Os bits ligados nao formam um estado da sequencia.
     InvalidCombination,
-    /// A transicao pula um passo, volta atras ou nao existe.
+    /// A transicao pula um passo da sequencia.
     IllegalTransition,
+    /// A escrita apagaria um bit ja ligado, e o driver nao pode limpar bit.
+    StatusBitCleared,
     /// O driver tentou escrever o bit do dispositivo.
     DeviceBitWrittenByDriver,
 };
@@ -144,16 +143,27 @@ pub fn nextPhase(current: Phase) ?Phase {
 ///
 ///   * escrever 0 e o reset do dispositivo, aceito de qualquer estado;
 ///   * FAILED e aceito de qualquer estado, porque o driver pode desistir a
-///     qualquer momento;
-///   * a sequencia avanca um passo por vez e nunca retrocede;
+///     qualquer momento — mas o valor escrito precisa preservar os bits ja
+///     ligados (`from | failed`), porque o driver **nao pode limpar** um bit
+///     do campo `device status`;
+///   * a sequencia avanca um passo por vez;
 ///   * repetir o valor atual e aceito e nao altera o estado;
 ///   * DEVICE_NEEDS_RESET nunca e escrito pelo driver;
 ///   * depois de FAILED, so o reset e aceito.
 pub fn transition(from: u8, to: u8) Error!Phase {
     const current = try phase(from);
-    const desired = try phase(to);
 
-    if (desired == .device_needs_reset) return error.DeviceBitWrittenByDriver;
+    // "The driver MUST NOT clear a device status bit": a escrita so pode
+    // acrescentar bits ao valor que ja esta no registro. A unica excecao e o
+    // zero, que a especificacao define como reset e nao como limpeza.
+    if (to != 0 and to & from != from) return error.StatusBitCleared;
+    // O bit do dispositivo e recusado antes da interpretacao do valor, para
+    // que o erro diga o que aconteceu mesmo quando a combinacao nao seria um
+    // estado valido. Preservar o bit que o dispositivo ja ligou e obrigatorio,
+    // e por isso o que se recusa e *acrescentar* esse bit, e nao mante-lo.
+    if (to & device_mask & ~from != 0) return error.DeviceBitWrittenByDriver;
+
+    const desired = try phase(to);
     if (desired == .reset) return .reset;
     if (desired == .failed) return .failed;
 
@@ -201,7 +211,7 @@ test "virtio status requires the documented sequence" {
 
     // O estado final da sequencia nao avanca mais.
     try testing.expect(nextPhase(.driver_ok) == null);
-    try testing.expectError(error.IllegalTransition, transition(state, bitsOf(.acknowledge)));
+    try testing.expectError(error.StatusBitCleared, transition(state, bitsOf(.acknowledge)));
 }
 
 test "virtio status rejects skipped, backwards and reserved values" {
@@ -213,13 +223,14 @@ test "virtio status rejects skipped, backwards and reserved values" {
         transition(bitsOf(.acknowledge), bitsOf(.features_ok)),
     );
 
-    // Voltar atras sem reset.
+    // Voltar atras sem reset: para voltar seria preciso apagar um bit, e o
+    // driver nao pode fazer isso.
     try testing.expectError(
-        error.IllegalTransition,
+        error.StatusBitCleared,
         transition(bitsOf(.features_ok), bitsOf(.driver)),
     );
     try testing.expectError(
-        error.IllegalTransition,
+        error.StatusBitCleared,
         transition(bitsOf(.driver_ok), bitsOf(.features_ok)),
     );
 
@@ -245,12 +256,14 @@ test "virtio status reset and failure are always available" {
     };
     for (states) |state| {
         try testing.expectEqual(Phase.reset, try transition(state, 0));
-        try testing.expectEqual(Phase.failed, try transition(state, failed));
+        // Desistir preserva os bits ja ligados: um driver que escreve apenas
+        // 0x80 apagaria ACKNOWLEDGE, DRIVER e o resto.
+        try testing.expectEqual(Phase.failed, try transition(state, state | failed));
     }
 
     // Depois de FAILED, so o reset e aceito.
-    try testing.expectError(error.IllegalTransition, transition(failed, acknowledge));
-    try testing.expectError(error.IllegalTransition, transition(failed, bitsOf(.driver_ok)));
+    try testing.expectError(error.StatusBitCleared, transition(failed, acknowledge));
+    try testing.expectError(error.StatusBitCleared, transition(failed, bitsOf(.driver_ok)));
     try testing.expectEqual(Phase.reset, try transition(failed, 0));
 
     // Repetir o valor atual nao e uma transicao ilegal.
@@ -272,9 +285,57 @@ test "virtio status never accepts the device bit from the driver" {
     try testing.expectEqual(Phase.device_needs_reset, try phase(needs_reset));
     try testing.expect(!isReady(needs_reset));
     try testing.expectEqual(Phase.reset, try transition(needs_reset, 0));
-    try testing.expectEqual(Phase.failed, try transition(needs_reset, failed));
+    // Desistir mantem o bit que o dispositivo ligou: apaga-lo seria uma
+    // limpeza que a especificacao proibe.
+    try testing.expectEqual(Phase.failed, try transition(needs_reset, needs_reset | failed));
     try testing.expectError(
-        error.IllegalTransition,
+        error.StatusBitCleared,
         transition(needs_reset, bitsOf(.driver_ok)),
     );
+    try testing.expectError(
+        error.StatusBitCleared,
+        transition(needs_reset, failed),
+    );
+
+    // Um bit do dispositivo nao pode ser acrescentado pelo driver, mesmo que
+    // a combinacao resultante nao seja um estado da sequencia.
+    try testing.expectError(
+        error.DeviceBitWrittenByDriver,
+        transition(bitsOf(.driver), bitsOf(.driver) | device_needs_reset),
+    );
+}
+
+test "virtio status never clears a bit that is already set" {
+    // "The driver MUST NOT clear a device status bit": toda escrita precisa
+    // preservar os bits do valor atual, com a unica excecao do zero, que e o
+    // reset.
+    const sequence = [_]u8{
+        bitsOf(.acknowledge),
+        bitsOf(.driver),
+        bitsOf(.features_ok),
+        bitsOf(.driver_ok),
+    };
+
+    var state: u8 = 0;
+    for (sequence) |step| {
+        // Tentar escrever qualquer estado anterior, ou o FAILED sozinho, sem
+        // preservar o que ja estava ligado.
+        for (sequence) |target| {
+            if (target & state == state) continue;
+            try testing.expectError(error.StatusBitCleared, transition(state, target));
+        }
+        if (state == 0) {
+            // Do zero nao ha bit a apagar: FAILED sozinho e uma escrita
+            // valida, porque o driver esta desistindo antes de reconhecer.
+            try testing.expectEqual(Phase.failed, try transition(0, failed));
+        } else {
+            try testing.expectError(error.StatusBitCleared, transition(state, failed));
+        }
+
+        state = bitsOf(try transition(state, step));
+    }
+
+    // O reset continua aceito de qualquer ponto, e zera o estado.
+    try testing.expectEqual(Phase.reset, try transition(state, 0));
+    try testing.expectEqual(@as(u8, 0), bitsOf(.reset));
 }
