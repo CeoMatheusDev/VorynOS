@@ -346,13 +346,26 @@ echo "-------------------------"
 
 FAILURES=0
 
+# Nomes dos checks que falharam, na ordem em que falharam.
+#
+# A anotacao que a CI publica a partir de um passo com falha contem apenas o
+# fim do log. Repetir a lista no fim faz o nome de cada check que falhou
+# chegar ao relatorio da execucao, em vez de ficar enterrado no log inteiro.
+FAILED_CHECKS=()
+
+record_failure() {
+    local description="$1"
+    echo "FAIL: $description" >&2
+    FAILED_CHECKS+=("$description")
+    FAILURES=$((FAILURES + 1))
+}
+
 require_marker() {
     local marker="$1"
     if grep -qF -- "$marker" "$SERIAL_LOG"; then
         echo "ok: found '$marker'"
     else
-        echo "FAIL: missing '$marker'" >&2
-        FAILURES=$((FAILURES + 1))
+        record_failure "missing '$marker'"
     fi
 }
 
@@ -364,8 +377,7 @@ require_pattern() {
     if grep -qE -- "$pattern" "$SERIAL_LOG"; then
         echo "ok: found '$description'"
     else
-        echo "FAIL: missing '$description'" >&2
-        FAILURES=$((FAILURES + 1))
+        record_failure "missing '$description'"
     fi
 }
 
@@ -507,16 +519,13 @@ require_marker "[VNK] EXCEPTION 6: invalid opcode"
 # only the presence of the serial marker.
 COMPOSITION_HASH="$(grep -oE 'composition ready frame=32x24 at=0,0 checksum=0x[0-9a-f]+' "$SERIAL_LOG" | tail -1 | sed -E 's/.*checksum=0x//')"
 if [[ "$SCREENSHOT_TAKEN" -ne 1 || ! -s "$SCREENSHOT" ]]; then
-    echo "FAIL: no presentation screenshot was captured" >&2
-    FAILURES=$((FAILURES + 1))
+    record_failure "no presentation screenshot was captured"
 elif [[ -z "$COMPOSITION_HASH" ]]; then
-    echo "FAIL: the composition checksum is missing from the serial console" >&2
-    FAILURES=$((FAILURES + 1))
+    record_failure "the composition checksum is missing from the serial console"
 elif python3 tests/integration/compare-presentation.py "$SCREENSHOT" 0 0 32 24 "$COMPOSITION_HASH"; then
     echo "ok: QEMU screenshot matches the user-space composition"
 else
-    echo "FAIL: the QEMU screenshot does not match the user-space composition" >&2
-    FAILURES=$((FAILURES + 1))
+    record_failure "the QEMU screenshot does not match the user-space composition"
 fi
 
 # F6.29: o cliente publica o checksum da janela que copiou por `copy_to`;
@@ -541,8 +550,7 @@ PY
 then
     :
 else
-    echo "FAIL: the F6.29 client frame verification failed" >&2
-    FAILURES=$((FAILURES + 1))
+    record_failure "the F6.29 client frame verification failed"
 fi
 
 # F15.6: require four bounded RAM/GOP trials and exact framebuffer restoration.
@@ -567,8 +575,7 @@ PY
 then
     :
 else
-    echo "FAIL: F15.6 RAM/framebuffer benchmark verification failed" >&2
-    FAILURES=$((FAILURES + 1))
+    record_failure "F15.6 RAM/framebuffer benchmark verification failed"
 fi
 
 # F14.2: verify latency counters and pixel savings from the actual QEMU log.
@@ -659,17 +666,18 @@ PY
 then
     :
 else
-    echo "FAIL: F14.2 graphics latency consistency checks failed" >&2
-    FAILURES=$((FAILURES + 1))
+    record_failure "F14.2 graphics latency consistency checks failed"
 fi
 
 if grep -qF "FATAL" "$SERIAL_LOG"; then
-    echo "FAIL: the boot chain reported a fatal error" >&2
-    FAILURES=$((FAILURES + 1))
+    record_failure "the boot chain reported a fatal error"
 fi
 
 if [[ $FAILURES -ne 0 ]]; then
     echo "qemu-boot-test: $FAILURES check(s) failed" >&2
+    for check in "${FAILED_CHECKS[@]}"; do
+        echo "qemu-boot-test: failed check: $check" >&2
+    done
     exit 1
 fi
 
