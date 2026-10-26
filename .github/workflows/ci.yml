@@ -60,16 +60,80 @@ jobs:
             \( -name 'OVMF_CODE*' -o -name 'OVMF_VARS*' \) 2>/dev/null | sort || true
 
       - name: Testes de unidade
-        run: zig build test
+        shell: bash
+        run: |
+          log_file="$(mktemp)"
+          if zig build test >"$log_file" 2>&1; then
+            cat "$log_file"
+          else
+            status=$?
+            cat "$log_file"
+            python3 - "zig build test" "$log_file" <<'PY'
+          import pathlib, sys
+          label, path = sys.argv[1:]
+          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
+          print(f"::error title={label} failed::{text}")
+          PY
+            exit "$status"
+          fi
 
       - name: Construir
-        run: zig build
+        shell: bash
+        run: |
+          log_file="$(mktemp)"
+          if zig build >"$log_file" 2>&1; then
+            cat "$log_file"
+          else
+            status=$?
+            cat "$log_file"
+            python3 - "zig build" "$log_file" <<'PY'
+          import pathlib, sys
+          label, path = sys.argv[1:]
+          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
+          print(f"::error title={label} failed::{text}")
+          PY
+            exit "$status"
+          fi
 
       - name: Teste de boot no QEMU
-        run: zig build qemu-test
+        shell: bash
+        run: |
+          log_file="$(mktemp)"
+          if zig build qemu-test >"$log_file" 2>&1; then
+            cat "$log_file"
+          else
+            status=$?
+            cat "$log_file"
+            python3 - "zig build qemu-test" "$log_file" <<'PY'
+          import pathlib, sys
+          label, path = sys.argv[1:]
+          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
+          print(f"::error title={label} failed::{text}")
+          PY
+            exit "$status"
+          fi
 
       - name: Verificação agregada
-        run: zig build check
+        shell: bash
+        run: |
+          log_file="$(mktemp)"
+          if zig build check >"$log_file" 2>&1; then
+            cat "$log_file"
+          else
+            status=$?
+            cat "$log_file"
+            python3 - "zig build check" "$log_file" <<'PY'
+          import pathlib, sys
+          label, path = sys.argv[1:]
+          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
+          print(f"::error title={label} failed::{text}")
+          PY
+            exit "$status"
+          fi
 
       - name: Verificar os artefatos
         run: |
