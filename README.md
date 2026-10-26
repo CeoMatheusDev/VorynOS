@@ -2,80 +2,79 @@
 
 # VorynOS
 
-### Liberdade • Desempenho • Controle
+### Freedom • Performance • Control
 
-**Um sistema operacional independente, desenvolvido do zero para x86_64 e UEFI.**
+**An independent operating system built from scratch for x86_64 and UEFI.**
 
 [![Zig](https://img.shields.io/badge/Zig-0.17.0-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
-[![Arquitetura](https://img.shields.io/badge/arquitetura-x86__64-64748B)](#arquitetura)
-[![Estado](https://img.shields.io/badge/estado-em%20desenvolvimento-EAB308)](#estado-do-projeto)
-[![Licença](https://img.shields.io/badge/licença-GPL--3.0--only-22C55E)](LICENSE)
+[![Architecture](https://img.shields.io/badge/architecture-x86__64-64748B)](#architecture)
+[![Status](https://img.shields.io/badge/status-in%20development-EAB308)](#project-status)
+[![License](https://img.shields.io/badge/license-GPL--3.0--only-22C55E)](LICENSE)
 
-[Visão geral](#visão-geral) ·
-[Estado](#estado-do-projeto) ·
-[Compilação e testes](#compilação-e-testes) ·
-[Arquitetura](#arquitetura) ·
-[Documentação](#documentação)
+[Overview](#overview) ·
+[Project Status](#project-status) ·
+[Build and Test](#build-and-test) ·
+[Architecture](#architecture) ·
+[Documentation](#documentation)
 
-![Logo do VorynOS](assets/branding/logos/Logos_VorynOS.png)
+![VorynOS Logo](assets/branding/logos/Logos_VorynOS.png)
 
 </div>
 
 ---
 
-## Visão geral
+## Overview
 
-O **VorynOS** é um sistema operacional independente cuja implementação inclui
-bootloader UEFI, kernel, contratos próprios entre componentes e ferramentas de
-desenvolvimento. O kernel e o bootloader são escritos principalmente em Zig,
-com Assembly x86_64 onde o acesso direto à arquitetura é necessário.
+**VorynOS** is an independent operating system project that includes its own
+UEFI bootloader, kernel, component contracts, and development tools. The
+bootloader and kernel are written primarily in Zig, with x86_64 Assembly where
+direct access to the processor architecture is required.
 
-O VorynOS **não é** uma distribuição Linux, um fork de Windows ou BSD, nem uma
-interface executada sobre outro kernel. O projeto usa ferramentas externas de
-desenvolvimento e padrões estabelecidos, como UEFI e ELF, sem incorporá-los
-como base oculta do sistema.
+VorynOS is **not** a Linux distribution, a Windows or BSD fork, or an interface
+running on top of another kernel. The project uses external development tools
+and established standards such as UEFI and ELF without incorporating them as a
+hidden system foundation.
 
-O projeto ainda está em desenvolvimento e **não é adequado para uso diário**.
-Os resultados locais em QEMU não constituem validação em hardware físico.
+The project is under active development and is **not suitable for everyday
+use**. Local QEMU results do not constitute validation on physical hardware.
 
-## Estado do projeto
+## Project Status
 
-O branch `main` contém a linha de desenvolvimento atual. Os marcos e suas
-evidências são mantidos no [roadmap técnico](docs/roadmap/phase-status.md);
-implementação não significa, por si só, que uma funcionalidade tenha sido
-validada.
+The `main` branch contains the current development line. Milestone status and
+evidence are maintained in the [technical roadmap](docs/roadmap/phase-status.md);
+implementation alone does not mean a feature has been validated.
 
-### Progresso dos marcos
+### Milestone Progress
 
-| Marco | Descrição | Estado atual |
+| Milestone | Description | Current status |
 |---|---|---|
-| F0 | Fundação, toolchain, sistema de build e documentação | ✅ Concluído |
-| F1 | Bootloader UEFI e inicialização do kernel | ✅ Concluído |
-| F2 | Estruturas do processador, interrupções e memória | 🟢 Testado localmente |
-| F3 | Threads, escalonador, processos, syscalls e IPC | 🟡 Em desenvolvimento — capacidades genéricas de dispositivos, heap dinâmico e expansão de processos ainda pendentes |
-| F4 | Armazenamento e sistemas de arquivos | 🟡 Em desenvolvimento — RamFS/VFSX e persistência VNV em dispositivo de memória; driver físico e montagem automática pendentes |
-| F5 | Runtime, SDK e aplicações nativas | 🟡 Em desenvolvimento — ELF nativo e SDK presentes; VLIB ainda pendente |
-| F6 | Gráficos e ambiente desktop | 🟡 Em desenvolvimento — caminho experimental validado em QEMU; serviço gráfico e desktop completo não implementados |
-| F7 | Drivers, rede, áudio e hardware físico | 🟡 Em desenvolvimento — base PCI/Virtio parcial; drivers funcionais e validação física pendentes |
-| F8 | Compatibilidade com formatos externos e APIs | 🟡 Em desenvolvimento — base ELF/VEX e ABI própria implementadas; compatibilidade ampla ainda incompleta |
-| F9 | Infraestrutura de inteligência artificial | ✅ Concluído no escopo atual — inferência nativa em CPU e testes locais; sem aceleração por GPU |
-| F10 | Instalação, segurança, recuperação e prontidão para produção | 🟡 Parcial — correções de hardening e auditoria realizadas; instalação, atualização e recuperação de produção continuam pendentes |
+| F0 | Foundation, toolchain, build system, and documentation | ✅ Completed |
+| F1 | UEFI bootloader and kernel initialization | ✅ Completed |
+| F2 | Processor structures, interrupts, and memory | 🟢 Locally tested |
+| F3 | Threads, scheduler, processes, syscalls, and IPC | 🟡 In development — generic device capabilities, a dynamic heap, and expanded process support remain pending |
+| F4 | Storage and file systems | 🟡 In development — RamFS/VFSX and VNV persistence on an in-memory device; physical driver and automatic boot mounting remain pending |
+| F5 | Runtime, SDK, and native applications | 🟡 In development — native ELF loading and the SDK are present; VLIB remains pending |
+| F6 | Graphics subsystem and desktop environment | 🟡 In development — an experimental path is validated in QEMU; a graphics service and complete desktop are not implemented |
+| F7 | Drivers, networking, audio, and physical hardware | 🟡 In development — partial PCI/Virtio foundations; functional drivers and hardware validation remain pending |
+| F8 | Compatibility with external formats and APIs | 🟡 In development — ELF/VEX foundations and an independent ABI are implemented; broad compatibility remains incomplete |
+| F9 | Artificial intelligence infrastructure | ✅ Completed within the current scope — native CPU inference and local tests; no GPU acceleration |
+| F10 | Installation, security, recovery, and production readiness | 🟡 Partial — hardening fixes and an audit have been performed; production installation, updates, and recovery remain pending |
 
-“Concluído” indica o escopo documentado do marco, não que o VorynOS como um
-todo esteja pronto para uso diário. A validação em QEMU não equivale a testes
-em hardware físico; consulte o [roadmap](docs/roadmap/phase-status.md) e os
-relatórios para critérios, evidências e limitações de cada incremento.
+“Completed” refers to the documented scope of a milestone; it does not mean
+VorynOS as a whole is ready for everyday use. QEMU validation is not equivalent
+to physical hardware testing. See the [roadmap](docs/roadmap/phase-status.md)
+and reports for each increment's criteria, evidence, and limitations.
 
-## Compilação e testes
+## Build and Test
 
-### Requisitos
+### Requirements
 
-- Linux x86_64 para o ambiente de desenvolvimento de referência.
+- Linux x86_64 as the reference development environment.
 - Zig **0.17.0**.
-- Bash e utilitários básicos do sistema.
-- Para os testes de boot: `qemu-system-x86_64` e firmware UEFI OVMF/edk2.
+- Bash and standard system utilities.
+- For boot tests: `qemu-system-x86_64` and UEFI OVMF/edk2 firmware.
 
-Clone o repositório e confira a versão do compilador:
+Clone the repository and verify the compiler version:
 
 ```bash
 git clone https://github.com/CeoMatheusDev/VorynOS.git
@@ -83,111 +82,111 @@ cd VorynOS
 zig version
 ```
 
-O comando `zig version` deve informar `0.17.0`.
+The `zig version` command must report `0.17.0`.
 
-### Construir e validar
+### Build and Validate
 
 ```bash
-# Testes de unidade executados no host
+# Run host unit tests
 zig build test
 
-# Compila os componentes e gera a imagem inicializável
+# Compile the components and generate the bootable image
 zig build
 
-# Inicializa a imagem em QEMU e verifica o boot automaticamente
+# Boot the image in QEMU and run automated checks
 zig build qemu-test
 
-# Executa os testes de unidade e o teste automatizado de boot
+# Run unit tests and the automated boot test
 zig build check
 ```
 
-O teste de boot usa QEMU e OVMF para verificar a cadeia de inicialização e os
-marcadores de comportamento emitidos pelo kernel. Ele não substitui testes em
-hardware físico.
+The boot test uses QEMU and OVMF to verify the boot chain and behavioral
+markers emitted by the kernel. It does not replace physical hardware testing.
 
-Para iniciar o sistema manualmente no QEMU:
+To start the system manually in QEMU:
 
 ```bash
 zig build qemu
 ```
 
-No modo de console serial, encerre o QEMU com `Ctrl+A` e depois `X`. Existe
-também `zig build qemu-interactive-test`, um teste separado para o caminho
-experimental de entrada e gráficos; consulte o [roadmap](docs/roadmap/phase-status.md)
-para o escopo e o estado de validação.
+In serial console mode, exit QEMU by pressing `Ctrl+A`, then `X`.
+`zig build qemu-interactive-test` is a separate test for the experimental
+graphics and input path; see the [roadmap](docs/roadmap/phase-status.md) for
+its scope and validation status.
 
-A imagem gerada fica em `zig-out/bin/vorynos.img`. Para consultar todos os
-passos disponíveis, execute `zig build --help`.
+The generated image is located at `zig-out/bin/vorynos.img`. Run
+`zig build --help` to see all available build steps.
 
-## Arquitetura
+## Architecture
 
-A plataforma inicial é **x86_64 com firmware UEFI**. O fluxo de boot é:
+The initial platform is **x86_64 with UEFI firmware**. The boot flow is:
 
 ```text
-Firmware UEFI
+UEFI Firmware
     │
     ▼
-VNB — aplicação de boot UEFI
-    │ valida e carrega o kernel ELF64
-    │ prepara o contrato de transferência
+VNB — UEFI boot application
+    │ validates and loads the ELF64 kernel
+    │ prepares the handoff contract
     ▼
 ExitBootServices
     │
     ▼
-VNK — kernel independente
+VNK — independent kernel
 ```
 
-O projeto organiza os mecanismos do sistema na arquitetura Voryn Fabric. Os
-nomes abaixo descrevem componentes e objetivos arquiteturais; nem todos têm
-implementação funcional:
+The project organizes system mechanisms under the Voryn Fabric architecture.
+The names below describe architectural components and goals; not all of them
+have functional implementations:
 
-| Sigla | Componente | Responsabilidade |
+| Acronym | Component | Responsibility |
 |---|---|---|
-| VNB | Voryn Native Boot | Inicialização UEFI e carregamento do kernel |
-| VNK | Voryn Nucleus Kernel | Mecanismos privilegiados do kernel |
-| VNH / VND | Hardware Nexus / Device Fabric | Descoberta de hardware e infraestrutura de dispositivos |
-| VNM | Voryn Nexus Memory | Gerenciamento de memória |
-| VNT | Voryn Task Fabric | Tarefas e escalonamento |
-| VNX / VNC | Voryn Exchange / Capability Fabric | Comunicação entre processos e controle de acesso por capacidades |
-| VSN | Voryn Service Node | Serviços e supervisão |
+| VNB | Voryn Native Boot | UEFI initialization and kernel loading |
+| VNK | Voryn Nucleus Kernel | Privileged kernel mechanisms |
+| VNH / VND | Hardware Nexus / Device Fabric | Hardware discovery and device infrastructure |
+| VNM | Voryn Nexus Memory | Memory management |
+| VNT | Voryn Task Fabric | Tasks and scheduling |
+| VNX / VNC | Voryn Exchange / Capability Fabric | Inter-process communication and capability-based access control |
+| VSN | Voryn Service Node | Services and supervision |
 
-Mais detalhes da decisão arquitetural estão em [ADR-0001 — Voryn Fabric](docs/adr/ADR-0001-voryn-fabric.md).
+For more details, see [ADR-0001 — Voryn Fabric](docs/adr/ADR-0001-voryn-fabric.md).
 
-## Organização do repositório
+## Repository Layout
 
 ```text
-boot/       Bootloader UEFI
-kernel/     Kernel, memória, execução, filesystem, gráficos e drivers
-shared/     Contratos e estruturas compartilhados
-sdk/        Interfaces para aplicações nativas
-user/       Aplicações nativas e código de entrada
-tools/      Ferramentas de build e imagem
-tests/      Testes de unidade e integração
-docs/       Especificações, decisões, roadmap e relatórios
+boot/       UEFI bootloader
+kernel/     Kernel, memory, execution, filesystem, graphics, and drivers
+shared/     Shared contracts and data structures
+sdk/        Interfaces for native applications
+user/       Native applications and entry code
+tools/      Build and image tools
+tests/      Unit and integration tests
+docs/       Specifications, decisions, roadmap, and reports
 ```
 
-## Documentação
+## Documentation
 
-- [Roadmap e estado dos marcos](docs/roadmap/phase-status.md)
-- [Estratégia de testes](docs/testing/testing-strategy.md)
-- [Especificação da ABI de chamadas de sistema](docs/specs/syscall-abi.md)
-- [Contrato de transferência do boot](docs/specs/boot-handoff-spec.md)
-- [Registros de decisões arquiteturais](docs/adr/)
-- [Política de versionamento](docs/releases/VERSIONING-RESET-2026.md)
-- [Instruções para agentes de engenharia](AGENTS.md)
+- [Roadmap and milestone status](docs/roadmap/phase-status.md)
+- [Testing strategy](docs/testing/testing-strategy.md)
+- [System call ABI specification](docs/specs/syscall-abi.md)
+- [Boot handoff specification](docs/specs/boot-handoff-spec.md)
+- [Architecture decision records](docs/adr/)
+- [Versioning policy](docs/releases/VERSIONING-RESET-2026.md)
+- [Engineering instructions for agents](AGENTS.md)
 
-## Contribuição e segurança
+## Contributing and Security
 
-Antes de propor uma alteração, consulte as convenções e critérios técnicos em
-[AGENTS.md](AGENTS.md), a [estratégia de testes](docs/testing/testing-strategy.md)
-e as especificações relacionadas ao componente. Relate vulnerabilidades de
-forma responsável conforme [SECURITY.md](SECURITY.md).
+Before proposing a change, review the conventions and technical criteria in
+[AGENTS.md](AGENTS.md), the [testing strategy](docs/testing/testing-strategy.md),
+and the specifications related to the component. Report vulnerabilities
+responsibly according to [SECURITY.md](SECURITY.md).
 
-## Licença
+## License
 
-O código próprio do VorynOS é disponibilizado sob a licença
-[GPL-3.0-only](LICENSE). Avisos e licenças de terceiros devem ser preservados.
+VorynOS original code is distributed under the
+[GPL-3.0-only](LICENSE) license. Third-party notices and licenses must be
+preserved.
 
 ---
 
-*README revisado em 26 de outubro de 2026.*
+*README last reviewed on October 26, 2026.*
