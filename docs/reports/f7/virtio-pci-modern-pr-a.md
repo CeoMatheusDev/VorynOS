@@ -174,6 +174,27 @@ Casos cobertos, conforme o escopo pedido:
 Contagem observada nos binários de teste: `arch-tests` 63 → **74** testes
 (11 novos em `pci.zig`), `virtio-modern-tests` **27** testes novos.
 
+### Layout do dispositivo de teste (QEMU)
+
+Para que o teste de boot não dependa de suposições sobre o dispositivo, o
+layout do `virtio-blk-pci` foi conferido no código do QEMU
+(`hw/virtio/virtio-pci.c`, `virtio_pci_realize`):
+
+| Região | BAR | Offset | Tamanho |
+|--------|-----|--------|---------|
+| configuração comum | 4 (64 bits, prefetchable) | `0x0000` | `0x1000` |
+| ISR | 4 | `0x1000` | `0x1000` |
+| configuração do dispositivo | 4 | `0x2000` | `0x1000` |
+| notificação | 4 | `0x3000` | `0x1000` |
+
+O `notify_off_multiplier` é 4 (`virtio_pci_queue_mem_mult` sem
+`page-per-vq`), e o `cap_len` é 16 nas regiões comuns e 20 na notificação.
+Isso confirma que o mínimo de 56 bytes exigido para a configuração comum é
+atendido com folga e que o alinhamento das quatro regiões passa nas regras
+aplicadas por `caps.build`. O mesmo dispositivo apresenta uma segunda
+capability de notificação em um BAR de I/O, com multiplicador 0; ela é
+utilizável, mas o driver usa a primeira instância, conforme a especificação.
+
 ## Validação executada
 
 | Comando | Resultado |
