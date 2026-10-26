@@ -30,19 +30,50 @@ jobs:
           version: 0.17.0
 
       - name: Instalar OVMF
+        shell: bash
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo timeout --kill-after=15s 5m apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            update
-          sudo timeout --kill-after=15s 12m apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            install -y ovmf qemu-system-x86
+          set -uo pipefail
+          # O indice de pacotes do runner as vezes nao responde dentro do
+          # limite do `apt-get update`, e o passo falhava sem nunca chegar a
+          # compilar o projeto. Cada tentativa tem limite de tempo, e o passo
+          # so desiste depois de tres.
+          attempt=1
+          while true; do
+            if sudo timeout --kill-after=15s 7m apt-get \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 \
+              update; then
+              break
+            fi
+            if (( attempt >= 3 )); then
+              echo "::error::o indice de pacotes nao respondeu em 3 tentativas"
+              exit 1
+            fi
+            echo "tentativa $attempt do apt-get update falhou; repetindo"
+            attempt=$(( attempt + 1 ))
+            sleep $(( attempt * 10 ))
+          done
+
+          attempt=1
+          while true; do
+            if sudo timeout --kill-after=15s 15m apt-get \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 \
+              install -y ovmf qemu-system-x86; then
+              break
+            fi
+            if (( attempt >= 3 )); then
+              echo "::error::a instalacao de ovmf e qemu-system-x86 falhou em 3 tentativas"
+              exit 1
+            fi
+            echo "tentativa $attempt do apt-get install falhou; repetindo"
+            attempt=$(( attempt + 1 ))
+            sleep $(( attempt * 10 ))
+          done
 
       - name: Verificar a versão do Zig
         run: |
