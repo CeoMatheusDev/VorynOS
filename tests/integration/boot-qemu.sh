@@ -363,6 +363,9 @@ require_marker "[VNK] interrupts: idt installed and verified"
 require_marker "[VNK] segments: task state segment loaded"
 require_marker "[VNK] paging: cr3"
 require_marker "[VNK] paging: no-execute enabled"
+require_pattern '\[VNK\] pci: bus 0 scan complete, virtio=[1-9][0-9]*' 'the PCI config scan on bus 0'
+require_marker "[VNK] dma: window map probe ok"
+require_marker "[VNK] virtio: split queue layout ok"
 require_marker "[VNK] timer:"
 require_marker "[VNK] keyboard: ready for PS/2 input"
 require_pattern '\[VNK\] keyboard: key scancode=0x1e extended=0 pressed=1' 'PS/2 A key press'

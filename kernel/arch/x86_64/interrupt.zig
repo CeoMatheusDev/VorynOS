@@ -173,6 +173,9 @@ pub fn install() void {
         setGate(first_hardware_vector + @as(usize, index), interruptStubFor(index));
     }
 
+    // The APIC local timer uses vector 64 (aligned with assembly INTERRUPT_ENTRY 64).
+    setGate(64, @intFromPtr(&voryn_interrupt_64));
+
     // The vectors that are not handled point at a stub that reports them.
     const unexpected = stubFor(255);
     for (exception_count + hardware_interrupt_count..entry_count) |vector| {
@@ -496,3 +499,4 @@ extern var voryn_interrupt_44: u8;
 extern var voryn_interrupt_45: u8;
 extern var voryn_interrupt_46: u8;
 extern var voryn_interrupt_47: u8;
+extern var voryn_interrupt_64: u8;

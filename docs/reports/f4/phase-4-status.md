@@ -1,0 +1,1 @@
+Fase 4 — Virtqueue VirtIO (TESTADO LOCALMENTE): layout VRing, available/used rings, descritores, cadeias, fila cheia, índices inválidos, ordenação de memória, testes host aprovados, QEMU aprovado. DMA ainda não integrado a descritor real no contexto arquitetural do módulo.

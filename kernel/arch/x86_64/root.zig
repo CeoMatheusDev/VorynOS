@@ -36,4 +36,8 @@ test {
     _ = @import("spinlock.zig");
     _ = @import("smp.zig");
     _ = @import("apic.zig");
+    _ = @import("pci.zig");
+    _ = @import("virtio.zig");
+    _ = @import("virtio_blk.zig");
+    _ = @import("virtio_net.zig");
 }

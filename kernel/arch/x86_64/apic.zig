@@ -35,7 +35,7 @@ const timer = @import("timer.zig");
 /// Valor padrao do QEMU/OVMF e de muitos sistemas reais. Quando a leitura
 /// da tabela MADT estiver integrada, este valor sera substituido pelo
 /// lido da ACPI.
-pub const apic_base: u64 = 0xFEE0000;
+pub const apic_base: u64 = 0xFEE00000;
 
 /// Offset dos registradores do APIC local, em bytes, a partir da base.
 /// Cada registro de 32 bits ocupa 16 bytes (espacamento de 16).
@@ -72,6 +72,8 @@ pub const ApicOffset = struct {
     pub const lint1: u64 = 0x360;
     /// Registrador de erro (ESR).
     pub const error_reg: u64 = 0x370;
+    /// Timer: divisor de frequencia (TDR / divide).
+    pub const timer_divide: u64 = 0x3E0;
     /// ICR baixo (comando de interrupcao inter-processador).
     pub const icr_low: u64 = 0x300;
     /// ICR alto (destino da IPI).
@@ -129,7 +131,8 @@ pub const IcrDeliveryStatus = enum(u32) {
 };
 
 /// Vetor da interrupcao do timer local do APIC.
-pub const timer_vector: u32 = @as(u32, timer.first_hardware_vector + timer.hardware_interrupt_count);
+// Alinhado com INTERRUPT_ENTRY 64 no assembly de interrupcao.
+pub const timer_vector: u32 = 64;
 
 /// Acesso ao APIC local como ponteiro para a regiao mapeada de memoria.
 var apic: [*]u8 = undefined;
@@ -149,7 +152,7 @@ pub fn isMapped() bool {
 }
 
 /// Le um registrador de 32 bits do APIC local.
-fn read32(offset: u64) u32 {
+pub fn read32(offset: u64) u32 {
     const addr = @intFromPtr(apic) + offset;
     const ptr: *u32 = @ptrFromInt(addr);
     return ptr.*;
@@ -207,6 +210,14 @@ pub fn timerOneShot(divisor: u32) void {
     // Desabilita o timer antes de reconfigurar.
     write32(ApicOffset.timer_config, 0x0001_0000); // mascarado, one-shot
     write32(ApicOffset.timer_icr, divisor);
+}
+
+pub fn timerStop() void {
+    write32(ApicOffset.timer_config, 0x0001_0000); // Mascarado (bit 16 = 1)
+}
+
+pub fn setTimerDivide(divide_value: u32) void {
+    write32(ApicOffset.timer_divide, divide_value & 0x0B); // Apenas os bits de divisao
 }
 
 /// Configura o timer local da APIC no modo periodico.
@@ -285,5 +296,5 @@ test "apicOffsetsAreAligned" {
 }
 
 test "timerVectorIsAfterHardwareInterrupts" {
-    try std.testing.expectEqual(timer_vector, timer.first_hardware_vector + timer.hardware_interrupt_count);
+    try std.testing.expectEqual(@as(u32, 64), timer_vector);
 }

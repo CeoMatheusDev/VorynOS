@@ -27,11 +27,13 @@ pub const EventQueue = struct {
     len: usize = 0,
     dropped: usize = 0,
 
-    /// Retorna false quando cheia; preserva todos os eventos anteriores.
+    /// Quando cheia, descarta o evento mais antigo para preservar o mais novo.
+    /// Isso evita que um evento de liberação seja perdido enquanto uma tecla
+    /// pressa permanece em estado inconsistente.
     pub fn push(self: *EventQueue, event: KeyEvent) bool {
         if (self.len == capacity) {
+            _ = self.pop(); // descarta o mais antigo
             self.dropped +|= 1;
-            return false;
         }
         self.events[(self.head + self.len) % capacity] = event;
         self.len += 1;
@@ -111,7 +113,7 @@ test "queue overflow drops newest event and records loss" {
     for (0..EventQueue.capacity) |_| {
         try std.testing.expect(queue.push(.{ .scancode = 0x1e, .extended = false, .pressed = true }));
     }
-    try std.testing.expect(!queue.push(.{ .scancode = 0x30, .extended = false, .pressed = true }));
+    try std.testing.expect(queue.push(.{ .scancode = 0x30, .extended = false, .pressed = true }));
     try std.testing.expectEqual(@as(usize, 1), queue.dropped);
     try std.testing.expectEqual(@as(u8, 0x1e), queue.pop().?.scancode);
     try std.testing.expect(queue.push(.{ .scancode = 0x30, .extended = false, .pressed = true }));

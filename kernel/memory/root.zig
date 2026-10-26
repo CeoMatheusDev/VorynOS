@@ -16,6 +16,7 @@
 //! their unit tests run.
 
 pub const physical = @import("physical.zig");
+pub const dma = @import("dma.zig");
 pub const heap = @import("heap.zig");
 
 // The unit tests of the modules live in the modules themselves, and this
@@ -26,5 +27,6 @@ pub const heap = @import("heap.zig");
 // not evidence of anything.
 test {
     _ = @import("physical.zig");
+    _ = @import("dma.zig");
     _ = @import("heap.zig");
 }

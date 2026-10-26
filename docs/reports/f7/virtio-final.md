@@ -1,5 +1,14 @@
 # Relatório Final F7 — Virtio Base (2026-10-25)
 
+> **Correção pós-auditoria (2026-10-25):** este relatório histórico cita
+> `submitPacket()` e funções de bloco que não existem no código atual. Na
+> auditoria inicial, o `zig build test` passava porque os testes de
+> `virtio.zig` não eram importados; executados diretamente, 1 de 7 falhava.
+> Após as Fases 1 e 2, os 9 testes foram importados e passam. O F7 ainda
+> não está concluído: `virtio_blk.zig` e `virtio_net.zig` são stubs e não
+> há driver de rede. Consulte `docs/roadmap/phase-status.md` para o estado
+> vigente.
+
 ## Estado final
 - **F7:** `PROPOSED` → `EM DESENVOLVIMENTO` (`main`: `362e9af`, `f7adcf5`, `c17b6df`, `10333ee`)
 - **M0.5:** `CONCLUÍDO` (`53dc842` — SMP, EEVDF, APIC, spinlocks, `ap_trampoline.s`)
@@ -30,3 +39,12 @@
 
 ## Próxima etapa
 Integrar `virtio_blk.zig` ao `scheduler.zig` para I/O assíncrono, ou finalizar F8 (compatibilidade com formatos externos).
+
+## Fase 2b (2026-10-25) — Contiguous Virtqueue + DMA Virtual Window
+
+- `DeviceQueue` e `splitQueueLayout` implementados em `kernel/arch/x86_64/virtio.zig`.
+- Janela DMA virtual monotônica em `0x4000_0000`/64 MiB em `kernel/memory/dma.zig`.
+- Probes `probeDmaWindow` e `probeVirtqueueLayout` em `kernel/main.zig` emitem `[VNK] dma: window map probe ok` e `[VNK] virtio: split queue layout ok`.
+- 22 testes de kernel passaram; `zig build test` 400/400; `zig build qemu-test` todos checks passam.
+- Limitações: sem dispositivo real, window monotônica (sem recycle sem shootdown), `virtio-net`/`virtio-blk` permanecem stubs.
+

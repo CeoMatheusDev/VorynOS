@@ -23,13 +23,12 @@
 const std = @import("std");
 const cpu = @import("cpu.zig");
 
-/// Spinlock simples: test-and-set com espera ativa.
+/// Spinlock simples: compare-and-swap com espera ativa.
 ///
-/// O lock usa @atomicStore para publicar a trancagem e @atomicLoad para
-/// consultar o estado. Na tentativa de aquisicao, escreve 1 apenas quando
-/// o lock esta livre (0). Em um sistema de CPU unica com interrupcoes
-/// desabilitadas na regiao critica, isso e suficiente; quando o SMP estiver
-/// ativo, a tentativa sera substituida por uma instrucao cmpxchg atomica.
+/// `tryLock` publica a aquisicao com `@cmpxchgStrong`: a troca de 0 por 1
+/// so acontece se o valor ainda for 0, e duas CPUs nao podem vencer a mesma
+/// disputa. O caminho de espera usa `@atomicLoad` para reduzir o trafego de
+/// cache, e `unlock` publica a liberacao com release.
 ///
 /// O lock nao e reentrante: o holder que tentar adquiri-lo novamente
 /// travará para sempre. O lock nao tem prioridade nem justica: qualquer
@@ -51,12 +50,12 @@ pub const Spinlock = struct {
 
     /// Tenta adquirir o lock sem bloquear. Retorna true se obteve o lock.
     ///
-    /// A escrita so ocorre quando o lock esta livre (0), evitando
-    /// sobrescrever um lock ja trancado por outra CPU.
+    /// A operacao e um compare-and-swap: o valor esperado e 0, o novo valor
+    /// e 1. Se outra CPU tiver adquirido o lock entre a leitura e a troca,
+    /// a troca falha e esta CPU nao entra na regiao critica. Um load
+    /// seguido de store nao oferece essa garantia.
     pub fn tryLock(self: *Spinlock) bool {
-        if (@atomicLoad(u8, &self.locked, .acquire) != 0) return false;
-        @atomicStore(u8, &self.locked, 1, .release);
-        return true;
+        return @cmpxchgStrong(u8, &self.locked, 0, 1, .acquire, .monotonic) == null;
     }
 
     /// Libera o lock. O caller deve ser o holder atual.
@@ -79,19 +78,26 @@ pub const Spinlock = struct {
 /// contexto de interrupcao quanto em contexto de thread. Evita deadlock
 /// quando o holder e preemptado por uma interrupcao que tenta adquirir
 /// o mesmo lock.
+///
+/// `lockIrqSave` devolve o RFLAGS anterior. `unlockIrqRestore` recebe esse
+/// valor e restaura o estado exato: se as interrupcoes ja estavam
+/// desabilitadas antes da aquisicao, continuam desabilitadas depois. Um
+/// `sti` incondicional na liberacao quebraria esse contrato e poderia
+/// habilitar interrupcoes no meio de outra regiao critica.
 pub const IrqSpinlock = struct {
     lock: Spinlock = .{},
 
-    /// Adquire o lock e desabilita interrupcoes locais.
-    pub fn lockIrqSave(self: *IrqSpinlock) void {
-        cpu.disableInterrupts();
+    /// Adquire o lock, salva o RFLAGS e desabilita interrupcoes locais.
+    pub fn lockIrqSave(self: *IrqSpinlock) u64 {
+        const flags = cpu.saveAndDisableInterrupts();
         self.lock.lock();
+        return flags;
     }
 
-    /// Libera o lock e reabilita interrupcoes locais.
-    pub fn unlockIrqRestore(self: *IrqSpinlock) void {
+    /// Libera o lock e restaura o RFLAGS salvo por `lockIrqSave`.
+    pub fn unlockIrqRestore(self: *IrqSpinlock, flags: u64) void {
         self.lock.unlock();
-        cpu.enableInterrupts();
+        cpu.restoreInterrupts(flags);
     }
 
     /// Adquire o lock assumindo que interrupcoes ja estao desabilitadas.
@@ -130,4 +136,38 @@ test "spinlock lock and unlock serializes access" {
     try std.testing.expectEqual(counter, iterations);
 }
 
+test "spinlock excludes concurrent holders" {
+    var lock: Spinlock = .{};
+    var holders = std.atomic.Value(u32).init(0);
+    var violations = std.atomic.Value(u32).init(0);
 
+    const Worker = struct {
+        fn run(
+            lock_ptr: *Spinlock,
+            holders_ptr: *std.atomic.Value(u32),
+            violations_ptr: *std.atomic.Value(u32),
+        ) void {
+            var iteration: u32 = 0;
+            while (iteration < 200_000) : (iteration += 1) {
+                if (!lock_ptr.tryLock()) continue;
+
+                const previous = holders_ptr.fetchAdd(1, .monotonic);
+                if (previous != 0) {
+                    _ = violations_ptr.fetchAdd(1, .monotonic);
+                }
+                _ = holders_ptr.fetchSub(1, .monotonic);
+                lock_ptr.unlock();
+            }
+        }
+    };
+
+    var threads: [4]std.Thread = undefined;
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, Worker.run, .{ &lock, &holders, &violations });
+    }
+    for (threads) |thread| thread.join();
+
+    // A ausencia de violacoes e o criterio: o teste nao prova justica nem
+    // progresso, apenas que duas CPUs nunca entram juntas na regiao critica.
+    try std.testing.expectEqual(@as(u32, 0), violations.load(.monotonic));
+}

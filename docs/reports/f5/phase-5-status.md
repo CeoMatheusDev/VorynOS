@@ -1,0 +1,1 @@
+Fase 5 — Integração PCI VirtIO + DMA (TESTADO LOCALMENTE): decodeBar com I/O, mem, 64-bit; detectVirtioDevice retorna base BAR64 e bus/device; submitDmaDescriptor/completeDmaDescriptor com validação de intervalo; testes aprovados; QEMU aprovado. Nenhum driver net/blk real iniciado; nenhuma transmissão Ethernet comprovada. Não declarado CONCLUÍDO.

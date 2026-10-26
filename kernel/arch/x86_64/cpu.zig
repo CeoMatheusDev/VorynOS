@@ -223,6 +223,34 @@ pub fn disableInterrupts() void {
     asm volatile ("cli" ::: .{ .memory = true });
 }
 
+/// Saves the current flags and disables interrupts atomically.
+///
+/// The returned value is the complete RFLAGS before `cli`. The caller must
+/// pass it back to `restoreInterrupts`; restoring the complete register is
+/// what makes a critical section safe when it is entered with interrupts
+/// already disabled. A plain `sti` at the end would enable them anyway and
+/// break the caller's invariant.
+pub fn saveAndDisableInterrupts() u64 {
+    var flags: u64 = undefined;
+    asm volatile ("pushfq; cli; popq %[flags]"
+        : [flags] "=r" (flags),
+        :
+        : .{ .memory = true });
+    return flags;
+}
+
+/// Restores the flags saved by `saveAndDisableInterrupts`.
+///
+/// The interrupt enable bit is restored together with the other flags. This
+/// function is only valid at CPL0; the host tests cannot execute `popfq`
+/// with the interrupt bit, so the path is verified in the QEMU boot test.
+pub fn restoreInterrupts(flags: u64) void {
+    asm volatile ("pushq %[flags]; popfq"
+        :
+        : [flags] "r" (flags),
+        : .{ .memory = true, .cc = true });
+}
+
 /// Pausa brevemente o processador: indica ao hardware que o hart está em um
 /// laço de espera ativa, reduzindo o consumo de energia e o tráfego de
 /// barramento. Usado em spinlocks.

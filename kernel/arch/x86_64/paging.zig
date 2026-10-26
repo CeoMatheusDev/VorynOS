@@ -97,10 +97,12 @@ const level2_count = 8;
 /// Number of level 1 tables that the kernel provides.
 ///
 /// A level 1 table describes two megabytes, therefore the pool describes
-/// `level1_count` times two megabytes of identity mapping. The image of the
+/// `level1_count` times two megabytes of kernel mappings. The image of the
 /// kernel grows, and a table that cannot describe the whole image makes the
-/// kernel unable to boot, so the pool is sized with room to grow.
-const level1_count = 32;
+/// kernel unable to boot, so the pool is sized with room to grow. The DMA
+/// window reserves 32 tables of its own (64 MiB); the rest is left for the
+/// image, the device pages and future kernel mappings.
+const level1_count = 64;
 
 /// Number of address spaces of the processes that the kernel supports.
 pub const max_process_spaces = 8;
@@ -179,6 +181,8 @@ pub const Error = error{
     UnalignedPage,
     /// The page that the caller asked to protect is not mapped for the user.
     NotMapped,
+    /// The page is already mapped: substituicao silenciosa nao permitida.
+    AlreadyMapped,
 };
 
 /// Maps a page of the kernel, with the same address in the physical and in
@@ -207,6 +211,58 @@ pub fn mapDevicePage(virtual: u64, physical: u64) Error!void {
     );
 }
 
+/// Maps a page of kernel data that is never executed.
+///
+/// A DMA buffer is data. Mapping it with the no-execute bit keeps a device
+/// that writes attacker-controlled bytes from turning those bytes into a
+/// kernel instruction stream.
+pub fn mapKernelDataPage(virtual: u64, physical: u64) Error!void {
+    return mapPage(
+        virtual,
+        physical,
+        Flags.present | Flags.writable | Flags.no_execute,
+    );
+}
+
+/// Ensures that the level 1 table that describes `virtual` exists.
+///
+/// The function only builds the hierarchy; it does not make the page
+/// present. A range that was reserved before the address spaces of the
+/// processes were created shares its level 1 table with those spaces,
+/// because `createAddressSpace` copies the level 2 entry that points at it.
+fn ensureLevel1(virtual: u64) Error!*PageTable {
+    const level4_index = (virtual >> 39) & 511;
+    const level3_index = (virtual >> 30) & 511;
+    const level2_index = (virtual >> 21) & 511;
+
+    // The kernel only uses the first 512 gigabytes of the address space,
+    // which is the range described by level 4 entry zero.
+    if (level4_index != 0) return error.RangeTooLarge;
+
+    if (level4.entries[level4_index] & Flags.present == 0) {
+        level4.entries[level4_index] = addressOf(&level3) | table_flags;
+    }
+    if (level3.entries[level3_index] & Flags.present == 0) {
+        const table = allocateLevel2() orelse return error.OutOfTables;
+        level3.entries[level3_index] = addressOf(table) | table_flags;
+    }
+
+    const level2 = tableOf(level3.entries[level3_index]);
+    const entry2 = level2.entries[level2_index];
+    if (entry2 & Flags.present != 0 and entry2 & Flags.large != 0) {
+        // The range is already covered by a large page, and a small page
+        // cannot be carved out of it without changing the mapping of the
+        // whole block.
+        return error.RangeTooLarge;
+    }
+    if (entry2 & Flags.present == 0) {
+        const table = allocateLevel1() orelse return error.OutOfTables;
+        level2.entries[level2_index] = addressOf(table) | table_flags;
+    }
+
+    return tableOf(level2.entries[level2_index]);
+}
+
 /// Maps a page.
 ///
 /// The entries of the upper levels always carry the bit that allows the
@@ -222,31 +278,101 @@ fn mapPage(virtual: u64, physical: u64, flags: u64) Error!void {
     if (virtual & (page_size - 1) != 0) return error.UnalignedPage;
     if (physical & (page_size - 1) != 0) return error.UnalignedPage;
 
+    const level1 = try ensureLevel1(virtual);
+    const level1_index = (virtual >> 12) & 511;
+    // Nao substitui silenciosamente um mapeamento existente.
+    const existing = level1.entries[level1_index];
+    if (existing & 1 != 0) return error.AlreadyMapped;
+    level1.entries[level1_index] = (physical & address_mask) | flags;
+}
+
+/// Reserves the page tables of a kernel virtual range without mapping pages.
+///
+/// The function is used for the DMA window. It must run before the address
+/// spaces of the processes are created: `createAddressSpace` copies the
+/// level 2 table of the kernel, and a level 1 table allocated later would
+/// not be visible through the copy.
+pub fn reserveKernelRange(virtual: u64, length: u64) Error!void {
+    if (length == 0) return;
+    if (virtual & (page_size - 1) != 0) return error.UnalignedPage;
+
+    const end = std.math.add(u64, virtual, length) catch return error.RangeTooLarge;
+    if (end <= virtual) return error.RangeTooLarge;
+
+    var address = virtual;
+    while (address < end) {
+        _ = try ensureLevel1(address);
+
+        const chunk_start = (address >> 21) << 21;
+        const chunk_limit = std.math.add(u64, chunk_start, large_page_size) catch
+            return error.RangeTooLarge;
+        const next = @min(end, chunk_limit);
+        if (next <= address) return error.RangeTooLarge;
+        address = next;
+    }
+}
+
+/// Removes one small page mapping of the kernel.
+///
+/// The TLB entry of the current processor is invalidated. Other processors
+/// are not interrupted: a caller that recycles a virtual address after this
+/// function must provide a TLB shootdown before the address is used again.
+pub fn unmapKernelPage(virtual: u64) Error!void {
+    if (virtual & (page_size - 1) != 0) return error.UnalignedPage;
+
     const level4_index = (virtual >> 39) & 511;
     const level3_index = (virtual >> 30) & 511;
     const level2_index = (virtual >> 21) & 511;
     const level1_index = (virtual >> 12) & 511;
 
-    // The kernel only uses the first gigabyte of the address space for the
-    // tables of the hierarchy, which covers 512 gigabytes.
-    if (level4_index != 0) return error.RangeTooLarge;
+    if (level4_index != 0) return error.NotMapped;
+    const entry4 = level4.entries[level4_index];
+    if (entry4 & Flags.present == 0) return error.NotMapped;
 
-    if (level4.entries[level4_index] & Flags.present == 0) {
-        level4.entries[level4_index] = addressOf(&level3) | table_flags;
-    }
-    if (level3.entries[level3_index] & Flags.present == 0) {
-        const table = allocateLevel2() orelse return error.OutOfTables;
-        level3.entries[level3_index] = addressOf(table) | table_flags;
+    const entry3 = tableOf(entry4).entries[level3_index];
+    if (entry3 & Flags.present == 0) return error.NotMapped;
+
+    const entry2 = tableOf(entry3).entries[level2_index];
+    if (entry2 & Flags.present == 0) return error.NotMapped;
+    if (entry2 & Flags.large != 0) return error.NotMapped;
+
+    const level1 = tableOf(entry2);
+    if (level1.entries[level1_index] & Flags.present == 0) return error.NotMapped;
+    level1.entries[level1_index] = 0;
+    cpu.invlpg(virtual);
+}
+
+/// Translates a virtual address in the address space of the kernel.
+pub fn translate(virtual: u64) ?u64 {
+    return translateFrom(&level4, virtual);
+}
+
+/// Translates a virtual address in the address space of a process.
+pub fn translateIn(space: *const AddressSpace, virtual: u64) ?u64 {
+    return translateFrom(space.root, virtual);
+}
+
+fn translateFrom(root: *const PageTable, virtual: u64) ?u64 {
+    const level4_index = (virtual >> 39) & 511;
+    const level3_index = (virtual >> 30) & 511;
+    const level2_index = (virtual >> 21) & 511;
+    const level1_index = (virtual >> 12) & 511;
+
+    const entry4 = root.entries[level4_index];
+    if (entry4 & Flags.present == 0) return null;
+
+    const entry3 = tableOf(entry4).entries[level3_index];
+    if (entry3 & Flags.present == 0) return null;
+
+    const entry2 = tableOf(entry3).entries[level2_index];
+    if (entry2 & Flags.present == 0) return null;
+    if (entry2 & Flags.large != 0) {
+        return (entry2 & address_mask) | (virtual & (large_page_size - 1));
     }
 
-    const level2 = tableOf(level3.entries[level3_index]);
-    if (level2.entries[level2_index] & Flags.present == 0) {
-        const table = allocateLevel1() orelse return error.OutOfTables;
-        level2.entries[level2_index] = addressOf(table) | table_flags;
-    }
-
-    const level1 = tableOf(level2.entries[level2_index]);
-    level1.entries[level1_index] = (physical & address_mask) | flags;
+    const entry1 = tableOf(entry2).entries[level1_index];
+    if (entry1 & Flags.present == 0) return null;
+    return (entry1 & address_mask) | (virtual & (page_size - 1));
 }
 
 /// The attributes of the entries of the upper levels of the hierarchy.
@@ -988,4 +1114,76 @@ test "the encoding of the user page flags never sets writable and executable" {
     try testing.expect(data & Flags.no_execute != 0);
     try testing.expect(read_only & Flags.writable == 0);
     try testing.expect(read_only & Flags.no_execute != 0);
+}
+
+test "reserving a kernel range allocates tables without mapping pages" {
+    try setup(0x400000, 0x500000, 0, 0);
+
+    const base: u64 = 0x4000_0000;
+    const level1_before = level1_used;
+    const level2_before = level2_used;
+
+    try reserveKernelRange(base, 4 * page_size);
+    try testing.expectEqual(level1_before + 1, level1_used);
+    try testing.expectEqual(level2_before + 1, level2_used);
+    try testing.expect(translate(base) == null);
+
+    // A second reservation of the same range reuses the tables.
+    try reserveKernelRange(base, 4 * page_size);
+    try testing.expectEqual(level1_before + 1, level1_used);
+    try testing.expectEqual(level2_before + 1, level2_used);
+}
+
+test "reserving a kernel range rejects invalid ranges" {
+    try setup(0x400000, 0x500000, 0, 0);
+    const base: u64 = 0x4000_0000;
+
+    try reserveKernelRange(base, 0);
+    try testing.expectError(error.UnalignedPage, reserveKernelRange(base + 1, page_size));
+    try testing.expectError(
+        error.RangeTooLarge,
+        reserveKernelRange(0x80_0000_0000, page_size),
+    );
+    try testing.expectError(
+        error.RangeTooLarge,
+        reserveKernelRange(std.math.maxInt(u64) - page_size + 1, 2 * page_size),
+    );
+}
+
+test "unmapping a kernel page removes the translation" {
+    try setup(0x400000, 0x500000, 0, 0);
+    const base: u64 = 0x4000_0000;
+
+    try reserveKernelRange(base, page_size);
+    try testing.expectError(error.NotMapped, unmapKernelPage(base));
+    try testing.expectError(error.UnalignedPage, unmapKernelPage(base + 1));
+
+    try mapKernelDataPage(base, 0x500000);
+    try testing.expectEqual(@as(?u64, 0x500000), translate(base));
+    try unmapKernelPage(base);
+    try testing.expect(translate(base) == null);
+    try testing.expectError(error.NotMapped, unmapKernelPage(base));
+}
+
+test "a reserved kernel range is shared with a process address space" {
+    try setup(0x400000, 0x500000, 0, 0);
+    process_spaces_used = 0;
+
+    const dma_base: u64 = 0x4000_0000;
+    try reserveKernelRange(dma_base, 2 * page_size);
+
+    // The user window lives in the block below the kernel image, so
+    // replacing its level 2 entry with the private table does not hide the
+    // kernel image from the process.
+    const window: u64 = 0x400000 - 0x4000;
+    const space = createAddressSpace(window).?;
+    try testing.expectEqual(@as(?u64, 0x400000), translateIn(space, 0x400000));
+
+    try mapKernelDataPage(dma_base, 0x500000);
+    try testing.expectEqual(@as(?u64, 0x500000), translate(dma_base));
+    try testing.expectEqual(@as(?u64, 0x500000), translateIn(space, dma_base));
+
+    try unmapKernelPage(dma_base);
+    try testing.expect(translate(dma_base) == null);
+    try testing.expect(translateIn(space, dma_base) == null);
 }

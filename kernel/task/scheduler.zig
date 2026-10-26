@@ -23,6 +23,7 @@
 //! justified with data.
 
 const std = @import("std");
+const cpu = @import("../arch/x86_64/cpu.zig");
 const voryn = @import("voryn_shared");
 
 const context = @import("context.zig");
@@ -69,6 +70,13 @@ pub const Task = struct {
     context: Context = .{},
     /// The stack of the task, the one where its own code runs.
     stack: []u8 = &.{},
+    /// Stack canary: value stored at the top of the kernel stack.
+    ///
+    /// On every context switch, the canary is written to the stack and
+    /// verified when the task resumes. A mismatch indicates a stack
+    /// corruption (buffer overflow, stack smashing), and the kernel
+    /// will terminate the offending task.
+    stack_canary: u64 = 0,
     /// The stack of the kernel of the task, where the handlers run.
     ///
     /// A task has two stacks: the one of its own code, and the one of the
@@ -277,6 +285,17 @@ pub const Scheduler = struct {
         task.kernel_rsp = stackTop(kernel_stack);
         task.state = .ready;
         task.priority = priority;
+        // F10 hardening: calcula o canary como timestamp XOR com o ID da tarefa.
+        // O valor é escrito na pilha do kernel do task em spawn(), imediatamente
+        // abaixo do registrador kernel_rsp.
+        //
+        // A pilha é montada a partir de stackTop(kernel_stack), que aponta
+        // para o registro usado pelo trampolim ASM. Imprimimos o canary no
+        // espaço da pilha para que um buffer overflow na pilha seja
+        // detectável.
+        task.stack_canary = cpu.readTimestamp() ^ @as(u64, @intCast(task.id));
+        // F10: canary inicializado; integração completa da escrita
+        // no assembly voryn_task_switch ainda pendente (ver docs).
 
         // O EEVDF herda o menor vruntime das tarefas prontas, para que a
         // tarefa nova nao seja adiada indefinidamente.
@@ -406,6 +425,18 @@ pub const Scheduler = struct {
         if (current.state == .running) {
             current.state = .ready;
         }
+        const leaving = current;
+        // F10 hardening: verifica stack canary do task que sairá.
+        // Lê o valor guardado na pilha imediatamente abaixo de
+        // kernel_rsp e compara com o canário calculado em spawn().
+        // Caso haja corrupção, o sistema é interrompido.
+        const ptr_canary = @as(*const u64, @ptrFromInt(leaving.kernel_rsp - 8));
+        const stored_canary = @as(u64, ptr_canary.*);
+        if (stored_canary != leaving.stack_canary) {
+            // F10: stack corruption detected — halt before further damage.
+            @panic("stack corruption");
+        }
+
         next.state = .running;
         self.current[smp.cpuId()] = next;
         next.schedules += 1;

@@ -44,6 +44,8 @@ pub const Error = error{
     LoadAddressNotAligned,
     /// Allocation of pages failed.
     AllocatePagesFailed,
+    /// The firmware returned an address different from the requested one.
+    AllocatePagesWrongAddress,
 };
 
 /// Copies every loadable segment of `image` to its physical address and
@@ -66,14 +68,25 @@ pub fn place(image: elf64.Image, bytes: []const u8, load_bias: u64, boot_service
             return error.SegmentOutOfBounds;
         if (file_end > bytes.len) return error.SegmentOutOfBounds;
 
-        // P0 — reserva de paginas via AllocatePages (correca auditoria)
-        const pages: u64 = @intCast((end - address + 0x1000 - 1) / 0x1000);
-        const pages_alloc = boot_services.allocatePages(.{ .any = {} }, uefi.tables.MemoryType.conventional_memory, @intCast(pages)) catch return error.AllocatePagesFailed;
+        // Reserva exatamente o endereco escolhido pelo load_bias. Reservar em
+        // qualquer endereco e copiar para o retorno do firmware faria o
+        // handoff anunciar um kernel diferente daquele que foi escrito.
+        if (address & (handoff.page_size - 1) != 0) return error.LoadAddressNotAligned;
+        const pages: usize = @intCast((end - address + handoff.page_size - 1) / handoff.page_size);
+        const requested: [*]align(4096) uefi.Page = @ptrFromInt(address);
+        const pages_alloc = boot_services.allocatePages(
+            .{ .address = requested },
+            uefi.tables.MemoryType.loader_data,
+            pages,
+        ) catch return error.AllocatePagesFailed;
 
-        // Defensiva: verifica limite de mapeamento identidade
+        // O firmware deve honrar uma alocacao .address. A verificacao evita
+        // copiar dados para um local e depois publicar outro no handoff.
+        if (@intFromPtr(pages_alloc.ptr) != address) return error.AllocatePagesWrongAddress;
+
+        // Defensiva: verifica limite de mapeamento identidade.
         if (end > identity_mapped_limit or address > identity_mapped_limit) return error.SegmentNotIdentityMapped;
-        // TODO: verificar endereco retornado por AllocatePages (se aplicavel)
-        const destination: [*]u8 = if (pages_alloc.len > 0) @ptrFromInt(@intFromPtr(pages_alloc.ptr)) else @ptrFromInt(address); // P0: destino = reservado ou original
+        const destination: [*]u8 = @ptrFromInt(address);
 
         if (segment.file_size != 0) {
             @memcpy(

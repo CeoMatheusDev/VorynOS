@@ -163,6 +163,48 @@ pub const Manager = struct {
         }
     }
 
+    /// Reserves a physically contiguous run of pages.
+    ///
+    /// `max_address` is an exclusive upper bound. The method never returns a
+    /// run that crosses it, which lets a DMA caller enforce a device address
+    /// width without truncating a physical address.
+    pub fn allocateContiguous(self: *Manager, pages: u32, max_address: u64) ?u64 {
+        if (pages == 0 or max_address == 0) return null;
+        // The bound is exclusive: a page is valid only when its entire end
+        // remains below max_address, so rounding it upward would violate the
+        // DMA limit for a non-page-aligned boundary.
+        const limit: u64 = @min(@as(u64, managed_pages), max_address / page_size);
+        if (limit < pages) return null;
+
+        var start = self.hint;
+        var attempts: u32 = 0;
+        while (attempts < managed_pages) : (attempts += 1) {
+            if (@as(u64, start) + pages > limit) start = 0;
+            if (@as(u64, start) + pages > limit) return null;
+
+            var page = start;
+            var free_available = true;
+            while (page < start + pages) : (page += 1) {
+                if (self.isPageUsed(page)) {
+                    free_available = false;
+                    break;
+                }
+            }
+            if (!free_available) {
+                start += 1;
+                if (start >= limit) start = 0;
+                continue;
+            }
+
+            self.markRange(start, start + pages, true);
+            self.statistics.used_pages += pages;
+            self.statistics.free_pages -= pages;
+            self.hint = start + pages;
+            return @as(u64, start) * page_size;
+        }
+        return null;
+    }
+
     /// Hands out a page, or returns null when there is no free page.
     ///
     /// The search starts at the hint, which keeps the allocations close
@@ -371,6 +413,41 @@ test "reserving a range marks every page of the range" {
     try testing.expect(test_manager.isUsed(0x107000));
     try testing.expect(!test_manager.isUsed(0x108000));
     try testing.expect(!test_manager.isUsed(0x103000));
+}
+
+test "the manager reserves contiguous pages under a DMA limit" {
+    var test_manager: Manager = .{};
+    const map = [_]handoff.MemoryDescriptor{.{
+        .memory_type = .conventional,
+        .physical_start = 0x100000,
+        .page_count = 16,
+    }};
+    test_manager.init(&map);
+
+    const address = test_manager.allocateContiguous(4, 0x104000).?;
+    try testing.expectEqual(@as(u64, 0x100000), address);
+    try testing.expect(test_manager.isUsed(address));
+    try testing.expect(test_manager.isUsed(address + 3 * page_size));
+    try testing.expect(test_manager.allocateContiguous(1, 0x104000) == null);
+
+    for (0..4) |index| test_manager.free(address + index * page_size);
+    try testing.expect(!test_manager.isUsed(address));
+}
+
+test "contiguous allocation rejects zero, overflow and insufficient limits" {
+    var test_manager: Manager = .{};
+    const map = [_]handoff.MemoryDescriptor{.{
+        .memory_type = .conventional,
+        .physical_start = 0x100000,
+        .page_count = 4,
+    }};
+    test_manager.init(&map);
+
+    try testing.expect(test_manager.allocateContiguous(0, 0x200000) == null);
+    try testing.expect(test_manager.allocateContiguous(1, 0) == null);
+    try testing.expect(test_manager.allocateContiguous(5, 0x105000) == null);
+    try testing.expect(test_manager.allocateContiguous(1, 0x100001) == null);
+    try testing.expect(test_manager.allocateContiguous(1, std.math.maxInt(u64)) != null);
 }
 
 test "the manager hands out every free page exactly once" {

@@ -1361,14 +1361,17 @@ fn copyTo(process: u64, destination: u64, source: u64, length: u64, privilege: u
     const saved = cpu.readCr3();
     const saved_space = paging.activeSpace();
 
+    // Buffer local por operacao: elimina concorrencia do buffer global compartilhado.
+    var local_buffer: [max_block_length]u8 align(16) = undefined;
+
     // The origin is read with the space of the caller active.
     const origin: [*]const u8 = @ptrFromInt(source);
-    @memcpy(copy_buffer[0..@intCast(length)], origin[0..@intCast(length)]);
+    @memcpy(local_buffer[0..@intCast(length)], origin[0..@intCast(length)]);
 
     // The destination is written with the space of the target active.
     paging.activateSpace(target);
     const target_address: [*]u8 = @ptrFromInt(destination);
-    @memcpy(target_address[0..@intCast(length)], copy_buffer[0..@intCast(length)]);
+    @memcpy(target_address[0..@intCast(length)], local_buffer[0..@intCast(length)]);
 
     // The space of the caller is restored, whatever happened above.
     cpu.writeCr3(saved);

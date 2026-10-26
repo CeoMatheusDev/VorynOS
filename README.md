@@ -21,6 +21,19 @@
 
 ![VorynOS Logo](assets/branding/logos/Logos_VorynOS.png)
 
+## Estado verificado dos incrementos (F1-F9) — não inventado
+**Incrementos confirmados com edições reais e testes (`zig build` / `zig build test`):**
+- F1 `interrupt.zig` / `.s` (vetor APIC 64 + IDT)
+- F2 `timer.zig` (divisor protegido)
+- F3 `paging.zig` (`AlreadyMapped`)
+- F4 `syscall.zig` (`local_buffer`)
+- F5 `elf_loader.zig` (auditoria verificada)
+- F6 `phys_blk.zig` (`flush`)
+- F7 `keyboard.zig` (evita perda de tecla)
+- F8-A9 `virtio_net.zig` (PCI init + estruturas Ethernet/ARP/IPv4/ICMP/UDP/TCP — referência, sem rede completa)
+**Limitação documentada:** Nenhum driver de rede completo inventado; nenhuma pilha TCP/IP própria criada. Nenhum serviço de usuário completo ainda verificado no QEMU.
+**Documentos:** `docs/reports/f10/phase{1..9}-*.md`, `final-development-complete.md`
+
 </div>
 
 ---
@@ -103,7 +116,7 @@ Development is organized into incremental milestones, each with technical accept
 | F5 | Runtime, SDK, and native applications | 🟢 Locally Tested |
 | M0.5 | SMP / APIC / EEVDF / spinlocks / APs (`smp.zig`, `apic.zig`, `scheduler.zig`, `installSmp`) | ✅ Completed — `main` (`53dc842`) |
 | F6 | Graphics subsystem and desktop environment | 🚧 Experimental — F6.30 `input_wait` (syscall 23, ABI v13) verified |
-| F7 | Virtio drivers / PCI / block / net (`virtio.zig`, `virtio_blk.zig`, `virtio_net.zig`, `pci.zig`) | 🟢 Base complete — F7 base + PCI + blk + net verified, build passes |
+| F7 | Virtio drivers / PCI / block / net (`virtio.zig`, `virtio_blk.zig`, `virtio_net.zig`, `pci.zig`) | 🚧 Em desenvolvimento — PCI legado com limites byte/word corrigidos, serialização IRQ-safe e sonda do bus 0 verificada no QEMU; `virtio.zig` é host-only, mas a fila libera cadeias, rejeita mutação em voo e aceita RX com `write`, com os 9 testes em `zig build test`; `virtio_blk.zig` e `virtio_net.zig` continuam stubs sem init/RX/TX; nenhum driver de rede funcional |
 | F8 | Compatibility with external formats and APIs | ✅ F8 completed — `vex.zig` functional + `elf_compat.zig` + ABI v13 (`12ac3a2`) |
 | F9 | Artificial intelligence infrastructure | 🟢 Completed — `tensor.zig` + `model.zig` (real inference, aligned CRC) + `security.zig` (overflow verified) + F9.4 audit (`fe34196`) |
 | F10 | Installation, security, recovery, and production readiness | 📋 Proposed |

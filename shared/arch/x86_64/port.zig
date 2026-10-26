@@ -35,6 +35,25 @@ pub inline fn inb(port: u16) u8 {
     return result;
 }
 
+/// Writes a 32-bit value to an I/O port.
+pub inline fn outl(port: u16, value: u32) void {
+    asm volatile ("outl %[value], %[port]"
+        :
+        : [value] "{eax}" (value),
+          [port] "{dx}" (port),
+        : .{ .memory = true });
+}
+
+/// Reads a 32-bit value from an I/O port.
+pub inline fn inl(port: u16) u32 {
+    var result: u32 = undefined;
+    asm volatile ("inl %[port], %[value]"
+        : [value] "={eax}" (result),
+        : [port] "{dx}" (port),
+        : .{ .memory = true });
+    return result;
+}
+
 /// Disables interrupts by clearing the interrupt enable flag.
 pub inline fn cli() void {
     asm volatile ("cli" ::: .{ .memory = true });

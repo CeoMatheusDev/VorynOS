@@ -1,5 +1,11 @@
 # Ciclo Fechado — M0.5 + F7 + F8 + Auditoria (2026-10-25)
 
+> **Correção pós-auditoria (2026-10-25):** a afirmação de F7 🟢/concluído
+> não corresponde ao código. `virtio_blk.zig` e `virtio_net.zig` são
+> stubs, os testes de `virtio.zig` não entram em `zig build test` e um
+> deles falha quando executado diretamente. O ciclo não está concluído
+> para F7; consulte a Fase Zero e `docs/roadmap/phase-status.md`.
+
 Estado final: `main` (`f55d5d7`).
 
 ## Publicado

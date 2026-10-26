@@ -34,6 +34,12 @@ pub const PhysBlock = struct {
     }
 };
 
+    /// Indica persistencia: o backing atual e apenas memoria volatils.
+    /// Falha simulada nao recupera dados; nao declarar como resistente a falhas.
+    pub fn flush(self: *PhysBlock) void {
+        _ = self;
+    }
+
 fn read(ctx: *anyopaque, lba: u64, count: usize, inside: usize, out: []u8) block.Error!void {
     const self: *PhysBlock = @ptrCast(@alignCast(ctx));
     if (self.sector_size == 0) return error.InvalidRequest;

@@ -65,6 +65,30 @@ pub fn isUsableRange(map: []const MemoryDescriptor, address: u64, length: u64) b
     return true;
 }
 
+/// Returns true when a range can contain an image allocated by the loader.
+///
+/// UEFI changes pages reserved with `AllocatePages` to `loader_code` or
+/// `loader_data` in the final memory map. Those pages are valid backing for
+/// the kernel image, but they must remain reserved from the physical allocator
+/// after the handoff, so they are deliberately not ordinary usable RAM.
+pub fn isKernelBackedRange(map: []const MemoryDescriptor, address: u64, length: u64) bool {
+    if (length == 0) return false;
+    const end = std.math.add(u64, address, length) catch return false;
+    if (end <= address) return false;
+
+    var cursor = address;
+    while (cursor < end) {
+        const descriptor = findRegion(map, cursor) orelse return false;
+        const backed = switch (descriptor.memory_type) {
+            .conventional, .persistent_memory, .loader_code, .loader_data => true,
+            else => false,
+        };
+        if (!backed) return false;
+        cursor = descriptor.endAddress();
+    }
+    return true;
+}
+
 /// Computes a summary of the memory described by `map`.
 pub fn summarize(map: []const MemoryDescriptor) Summary {
     var summary: Summary = .{ .entries = @intCast(map.len) };
@@ -186,6 +210,19 @@ test "isUsableRange rejects non RAM and overflowing ranges" {
     try std.testing.expect(!isUsableRange(&map, 0x3000, 0x1000));
     try std.testing.expect(!isUsableRange(&map, 0x1000, 0));
     try std.testing.expect(!isUsableRange(&map, std.math.maxInt(u64) - 0x10, 0x100));
+}
+
+test "kernel backed range accepts loader pages but ordinary range does not" {
+    const map = [_]MemoryDescriptor{
+        .{ .memory_type = .loader_data, .physical_start = 0x1000, .page_count = 2 },
+        .{ .memory_type = .conventional, .physical_start = 0x3000, .page_count = 2 },
+        .{ .memory_type = .reserved, .physical_start = 0x5000, .page_count = 1 },
+    };
+
+    try std.testing.expect(!isUsableRange(&map, 0x1000, page_size));
+    try std.testing.expect(isKernelBackedRange(&map, 0x1000, 4 * page_size));
+    try std.testing.expect(!isKernelBackedRange(&map, 0x1000, 5 * page_size));
+    try std.testing.expect(!isKernelBackedRange(&map, std.math.maxInt(u64) - 0x10, 0x100));
 }
 
 test "summarize aggregates the map" {

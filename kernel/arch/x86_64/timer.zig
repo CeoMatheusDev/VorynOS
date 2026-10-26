@@ -22,8 +22,10 @@
 const std = @import("std");
 const voryn = @import("voryn_shared");
 
+const serial = voryn.serial;
 const cpu = @import("cpu.zig");
 const apic = @import("apic.zig");
+const perf_tsc_hz: u32 = 2_800_000_000; // Valores de calibracao QEMU
 
 /// The frequency of the timer of the PC.
 pub const pit_frequency: u32 = 1_193_182;
@@ -85,6 +87,7 @@ pub fn init(ticks_per_second: u32) void {
 
     // Program the timer: channel zero, low and high byte of the divisor,
     // square wave mode.
+    if (ticks_per_second == 0) return;
     const divisor = pit_frequency / ticks_per_second;
     writePort(pit.command, 0x34);
     writePort(pit.channel0, @truncate(divisor & 0xFF));
@@ -141,14 +144,63 @@ pub fn initApicTimer(ticks_per_second: u32) void {
     if (!apic.isMapped()) return;
     if (ticks_per_second == 0) return;
 
-    // Frequencia do barramento do APIC (tipicamente 10 MHz no QEMU).
-    const bus_freq: u32 = 10_000_000;
-    const divisor: u32 = bus_freq / ticks_per_second;
+    // FASE 2 — Calibracao do APIC Timer. Utiliza o contador TSC para medir
+    // a frequencia real do barramento do APIC, substituindo a presuncao de
+    // 10 MHz. Nao depende de ACPI MADT nesta etapa.
+    //
+    // A calibracao envolve:
+    // 1. Parar o APIC timer.
+    // 2. Armar o timer em modo one-shot com um divisor conhecido (maximo).
+    // 3. Aguardar o timer disparar (usando `cpu.halt()`).
+    // 4. Medir o tempo decorrido usando `cpu.readTimestamp()`.
+    // 5. Calcular a frequencia do barramento com base nessa medição.
+
+    var bus_freq: u32 = 10_000_000; // Valor padrao se a calibracao falhar.
+
+    apic.timerStop(); // Garante que o timer APIC esteja parado.
+    apic.setTimerDivide(0); // Divisor 2, como padrao (00b = /2).
+
+    // Armar o timer em modo one-shot com um valor maximo para contar
+    // o numero de ciclos TSC para um periodo longo.
+    const calibration_ticks: u32 = 0xFFFFF;
+    apic.timerOneShot(calibration_ticks);
+
+    const tsc_start = cpu.readTimestamp();
+    var attempts: u64 = 0;
+    while (apic.read32(apic.ApicOffset.timer_current) != 0 and attempts < 1_000_000) : (attempts += 1) {
+        cpu.halt();
+    }
+    const tsc_end = cpu.readTimestamp();
+
+    // Se o timer nao disparou, ou houve algum problema, use a frequencia padrao.
+    if (attempts >= 1_000_000 or (tsc_end - tsc_start) == 0) {
+        serial.printLine("[VNK] APIC: falha na calibracao, usando 10 MHz padrao.", .{});
+    } else {
+        // Calcula a frequencia do barramento APIC.
+        // Sabemos que o TSC ja foi calibrado em kernel/main.zig.
+        // bus_freq = (calibration_ticks * perf_tsc_hz) / (tsc_end - tsc_start)
+        // Onde perf_tsc_hz eh a frequencia do TSC em Hz.
+        const tsc_elapsed = tsc_end - tsc_start;
+        bus_freq = @intCast(@as(u128, calibration_ticks) * perf_tsc_hz / tsc_elapsed);
+        serial.printLine("[VNK] APIC: bus freq calibrada: {d} Hz", .{bus_freq});
+    }
+
+    // Agora com a frequencia calibrada, configura o timer para o uso normal.
+    // FASE 2 — Evita divisor zero (se ticks > bus, truncado seria zero).
+    if (ticks_per_second > bus_freq) {
+        // Frequencia desejada excede a capacidade do timer APIC, usa o maximo possivel.
+        // Isso ainda pode levar a um divisor de 0 se bus_freq for muito baixo.
+        apic.timerPeriodic(1); // menor divisor possivel, 1Hz
+        return;
+    }
+    // divisor protegido contra zero: ticks_per_second > bus_freq nesta condicao.
+    const divisor: u32 = @intCast(@as(u128, bus_freq) / @as(u128, ticks_per_second));
+    // Garante divisor >= 1 para evitar timerPeriodic(0), a qual nao dispara o timer.
+    const safe_divisor: u32 = if (divisor < 1) 1 else divisor;
 
     // Configura o divisor e arma o modo periodico diretamente.
     // timerPeriodic() ja define periodico + vetor; nao precisa de timerStop/timerDivide separados.
-    apic.timerPeriodic(divisor);
+    apic.timerPeriodic(safe_divisor);
 
     frequency = ticks_per_second;
-    tick_count = 0;
 }
