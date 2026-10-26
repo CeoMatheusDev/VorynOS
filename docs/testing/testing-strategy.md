@@ -44,6 +44,18 @@ kernel and the loader:
 Rule: every module of `shared/` is born with tests, because it is the
 layer that the kernel will depend on to not repeat a firmware mistake.
 
+The kernel modules that do not depend on hardware are tested the same way
+and in the same `zig build test` run, through the binaries `kernel-tests`,
+`security-tests`, `arch-tests`, `ipc-tests` and `fs-loader-tests`:
+
+- `kernel/arch/x86_64/virtio_blk.zig`: the provisional block entry points
+  must return `error.NotImplemented`, and the declared error set must stay
+  the whole contract of the two functions. An empty `!void` body returns
+  success in Zig, so these tests are what stops a restored stub from
+  publishing a read or a write that never reached a device. They run on the
+  host, do not depend on hardware, and they fail — three of them at once —
+  if the empty bodies come back.
+
 ## 4. L2 — Boot test in QEMU
 
 `tests/integration/boot-qemu.sh` runs the disk image in QEMU with OVMF,

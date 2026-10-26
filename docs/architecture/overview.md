@@ -186,6 +186,12 @@ an explicit and documented layout.
     and one side.
 11. The kernel is loaded from a FAT volume through the simple file system
     protocol of the firmware; there is no block driver of its own.
+    `kernel/arch/x86_64/virtio_blk.zig` is **not** a driver: it holds the
+    provisional entry points `blk_read()`/`blk_write()`, which take no LBA,
+    buffer or sector count and always return `error.NotImplemented`. There
+    is no integration with `block.Device`, no physical disk persistence has
+    been validated, and the verified block backend is still the in-memory
+    ramdisk.
 12. The capability model of the VNC covers channels, address spaces, the
     display and the input queue; there is no capability of a range of
     memory nor of a generic device. The input call is non-blocking and has
