@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Permite reexecutar a validacao sem empurrar um commit novo.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,19 +30,50 @@ jobs:
           version: 0.17.0
 
       - name: Instalar OVMF
+        shell: bash
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo timeout --kill-after=15s 5m apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            update
-          sudo timeout --kill-after=15s 12m apt-get \
-            -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 \
-            -o Acquire::https::Timeout=30 \
-            install -y ovmf qemu-system-x86
+          set -uo pipefail
+          # O indice de pacotes do runner as vezes nao responde dentro do
+          # limite do `apt-get update`, e o passo falhava sem nunca chegar a
+          # compilar o projeto. Cada tentativa tem limite de tempo, e o passo
+          # so desiste depois de tres.
+          attempt=1
+          while true; do
+            if sudo timeout --kill-after=15s 7m apt-get \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 \
+              update; then
+              break
+            fi
+            if (( attempt >= 3 )); then
+              echo "::error::o indice de pacotes nao respondeu em 3 tentativas"
+              exit 1
+            fi
+            echo "tentativa $attempt do apt-get update falhou; repetindo"
+            attempt=$(( attempt + 1 ))
+            sleep $(( attempt * 10 ))
+          done
+
+          attempt=1
+          while true; do
+            if sudo timeout --kill-after=15s 15m apt-get \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 \
+              install -y ovmf qemu-system-x86; then
+              break
+            fi
+            if (( attempt >= 3 )); then
+              echo "::error::a instalacao de ovmf e qemu-system-x86 falhou em 3 tentativas"
+              exit 1
+            fi
+            echo "tentativa $attempt do apt-get install falhou; repetindo"
+            attempt=$(( attempt + 1 ))
+            sleep $(( attempt * 10 ))
+          done
 
       - name: Verificar a versão do Zig
         run: |
@@ -71,7 +104,7 @@ jobs:
             python3 - "zig build test" "$log_file" <<'PY'
           import pathlib, sys
           label, path = sys.argv[1:]
-          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = pathlib.Path(path).read_text(errors="replace")[-8000:]
           text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
           print(f"::error title={label} failed::{text}")
           PY
@@ -90,7 +123,7 @@ jobs:
             python3 - "zig build" "$log_file" <<'PY'
           import pathlib, sys
           label, path = sys.argv[1:]
-          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = pathlib.Path(path).read_text(errors="replace")[-8000:]
           text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
           print(f"::error title={label} failed::{text}")
           PY
@@ -106,12 +139,24 @@ jobs:
           else
             status=$?
             cat "$log_file"
+            # A anotacao da execucao e truncada em 4096 caracteres e mantem o
+            # inicio do texto. Por isso as linhas de diagnostico vem primeiro,
+            # e o fim do log so ocupa o espaco que sobrar: o que interessa
+            # (qual check falhou e o que o kernel imprimiu) cabe no inicio.
             python3 - "zig build qemu-test" "$log_file" <<'PY'
           import pathlib, sys
           label, path = sys.argv[1:]
-          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
-          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
-          print(f"::error title={label} failed::{text}")
+          text = pathlib.Path(path).read_text(errors="replace")
+          interesting = [
+              line
+              for line in text.splitlines()
+              if line.startswith(("qemu-boot-test:", "FAIL:")) or "check(s) failed" in line
+          ]
+          head = "\n".join(interesting)[:2200]
+          tail = text[-1200:]
+          body = f"{head}\n--- fim do log ---\n{tail}" if head else tail
+          escaped = body.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
+          print(f"::error title={label} failed::{escaped}")
           PY
             exit "$status"
           fi
@@ -128,7 +173,7 @@ jobs:
             python3 - "zig build check" "$log_file" <<'PY'
           import pathlib, sys
           label, path = sys.argv[1:]
-          text = pathlib.Path(path).read_text(errors="replace")[-3000:]
+          text = pathlib.Path(path).read_text(errors="replace")[-8000:]
           text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
           print(f"::error title={label} failed::{text}")
           PY
