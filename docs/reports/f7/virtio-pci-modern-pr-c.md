@@ -66,8 +66,8 @@ As dependências continuam apontando para dentro: `virtqueue.zig` recebe memóri
 
 ## Testes
 
-`virtio-modern-tests` (raiz `kernel/drivers/virtio/root.zig`): **65 → 105** testes
-(91 na abertura do PR, 105 depois das correções da auditoria).
+`virtio-modern-tests` (raiz `kernel/drivers/virtio/root.zig`): **65 → 110** testes
+(91 na abertura do PR, 105 depois das correções da auditoria, 110 depois da correção A-1).
 
 `virtqueue` (25):
 
@@ -99,7 +99,7 @@ Testes de regressão de D-1 (6 novos):
 - conclusão duplicada recusada (`UsedIdNotInflight`) sem alterar a posse de nenhum elo;
 - cadeia recusada por ciclo não deixa elo marcado como do dispositivo.
 
-`pci_transport` (7 novos, 3 deles de D-3):
+`pci_transport` (9 novos, 3 de D-3 e 2 de A-1):
 
 - programação de `queue_size` e dos três endereços de 64 bits (metade alta conferida);
 - recusa de fila inexistente, tamanho zero, tamanho acima do máximo, endereços
@@ -109,9 +109,13 @@ Testes de regressão de D-1 (6 novos):
 - fila que já se apresenta habilitada recusada **antes** da escrita (registrador em 2
   continua 2), e habilitação repetida recusada;
 - cada operação (`configureQueue`, `enableQueue`, `queueEnabled`) seleciona a fila em que
-  age, sem herdar a seleção da chamada anterior.
+  age, sem herdar a seleção da chamada anterior;
+- A-1: fila já habilitada não é reprogramada — `configureQueue` recusa e os três endereços e
+  o tamanho continuam os do dispositivo; `enableQueue` recusa e a fila continua habilitada;
+- A-1: configuração parcial (região comum que alcança `queue_desc` mas não `queue_driver`)
+  deixa o primeiro endereço gravado, provando que a falha não desfaz o acesso do dispositivo.
 
-`transport` (8 novos, 5 deles de D-2 e D-4):
+`transport` (11 novos, 5 de D-2/D-4 e 3 de A-1):
 
 - `DRIVER_OK` recusado sem fila registrada (`NoQueueConfigured`, `finish` com etapa);
 - `DRIVER_OK` escrito depois de `markQueueReady`, com o histórico de escritas do
@@ -124,14 +128,17 @@ Testes de regressão de D-1 (6 novos):
 - `QueueMemory`: memória do driver antes da entrega, presa depois dela, e liberada só com o
   reset confirmado — uma nova entrega rearma a proibição;
 - dispositivo em `DRIVER_OK` que confirma o reset devolve a posse; dispositivo que ignora o
-  reset (`ignore_reset`) mantém a memória reservada.
+  reset (`ignore_reset`) mantém a memória reservada;
+- A-1: `enableQueue` que falha (inclusive por fila já habilitada) não devolve a memória, e o
+  reset não confirmado a mantém reservada; a mesma checagem para `configureQueue`;
+- A-1: os quatro estados da política, um por asserção.
 
 ## Validação executada
 
 | Comando | Resultado |
 | --- | --- |
 | `zig version` | `0.17.0` |
-| `zig build test` | **passa** — 539 testes; `virtio-modern-tests` 105 (91 antes das correções), `arch-tests` 77, `kernel-tests` 22, `fs-loader-tests` 158 |
+| `zig build test` | **passa** — 544 testes; `virtio-modern-tests` 110 (91 antes das correções), `arch-tests` 77, `kernel-tests` 22, `fs-loader-tests` 158 |
 | `zig build` | **passa** — `voryn-boot.efi`, `voryn-kernel` (65,8 MB nesta build) e `vorynos.img` (128 MiB, 32731 clusters, FAT16) |
 | `zig build qemu-test` | **bloqueado pelo ambiente** — `qemu-boot-test: no OVMF firmware found`, saída 2; não há `qemu-system-x86_64` nem OVMF na sessão |
 | `zig build check` | **bloqueado pelo ambiente** — depende do `qemu-test` |
@@ -279,6 +286,35 @@ apresentasse habilitada era habilitada de novo às cegas.
 - o teste prova que nada foi escrito: um registrador em `2` continua `2` depois da recusa;
 - o contrato de `queue_select` está documentado nas três funções que dependem dele, com
   teste de que cada operação seleciona a fila em que age.
+
+### A-1 — a posse começa na primeira escrita, e não no `queue_enable`
+
+A revisão final de DMA encontrou uma janela na correção do D-4: `handOver()` era chamado
+**depois** do `catch` de `enableQueue`, então qualquer erro ali deixava `handed_over` falso
+e a memória era tratada como "nunca entregue". Combinado com um reset que não confirmasse,
+o resultado era liberar páginas com a fila habilitada. Reprodução: `enableQueue` devolve
+`QueueAlreadyEnabled` **com o dispositivo habilitado**, e `QueueMemory{}` responde
+`canReturnToAllocator() == true`.
+
+- `handOver()` passou para **antes** de `configureQueue`: é a primeira chamada que escreve
+  no dispositivo endereços desta memória, e um erro nela (ou na seguinte) não prova que o
+  dispositivo ficou sem acesso;
+- `configureQueue` passou a ler `queue_enable` e recusa `QueueAlreadyEnabled` quando a fila
+  já está ativa, sem escrever nada: reprogramar uma fila habilitada trocaria a memória
+  embaixo do dispositivo, e o driver não pode desabilitá-la (escrever 0 é proibido).
+
+A política fica com quatro estados, e o terceiro é o que faltava:
+
+| Estado | `canReturnToAllocator()` |
+|---|---|
+| antes da primeira escrita | `true` |
+| depois dela (dispositivo pode acessar) | `false` |
+| reset tentado e não confirmado | `false` |
+| reset confirmado | `true` |
+
+O log final de `bringUpVirtioDevices` passou a dizer `no modern virtio-blk was brought up`:
+a mensagem anterior (`reached FEATURES_OK`) descrevia a etapa errada quando a falha era
+posterior a FEATURES_OK.
 
 ## Limitações
 

@@ -1094,3 +1094,83 @@ test "an unconfirmed reset keeps the queue memory reserved" {
     try testing.expectError(error.DeviceDidNotReset, device.resetDevice());
     try testing.expect(!memory.canReturnToAllocator());
 }
+
+// ----------------------------------------------------------------------
+// Regressoes da correcao A-1: a posse da memoria comeca na primeira escrita
+// que aponta o dispositivo para os buffers, e nao no sucesso do
+// `queue_enable`.
+// ----------------------------------------------------------------------
+
+test "a failed enableQueue does not hand the memory back to the driver" {
+    Fake.reset();
+    Fake.device_feature_high = 0x0000_0001;
+
+    var device = fakeDevice();
+    try testing.expect(device.initialize(features.version_1).isInitialized());
+
+    // A ordem usada por `programVirtqueue`: a posse e registrada antes da
+    // primeira escrita que pode dar ao dispositivo acesso aos buffers, porque
+    // a escrita dos enderecos e a do `queue_enable` acontecem na mesma
+    // sequencia e um erro em qualquer uma delas nao prova que ele ficou sem
+    // acesso.
+    var memory: QueueMemory = .{};
+    memory.handOver();
+
+    // `enableQueue` falhou — inclusive no caso em que a fila ja se
+    // apresentava habilitada, que e o erro que a correcao A-1 trata.
+    // `handOver` ja foi chamado, entao a memoria nao volta.
+    try testing.expect(!memory.canReturnToAllocator());
+
+    // O reset nao confirma: a memoria continua reservada. Este e o par que
+    // faltava — o erro do `enableQueue` nao pode valer como "o dispositivo
+    // esta desabilitado".
+    Fake.ignore_reset = true;
+    try testing.expectError(error.DeviceDidNotReset, device.resetDevice());
+    try testing.expect(!memory.canReturnToAllocator());
+
+    // Depois de um reset confirmado a memoria pode voltar.
+    Fake.ignore_reset = false;
+    try device.resetDevice();
+    memory.deviceReleased();
+    try testing.expect(memory.canReturnToAllocator());
+}
+
+test "a failed configureQueue keeps the memory with the device" {
+    Fake.reset();
+    Fake.device_feature_high = 0x0000_0001;
+
+    var device = fakeDevice();
+    try testing.expect(device.initialize(features.version_1).isInitialized());
+
+    var memory: QueueMemory = .{};
+    memory.handOver();
+
+    // Uma configuracao parcial deixa enderecos gravados: o dispositivo pode
+    // alcancar a memoria mesmo sem a fila habilitada.
+    Fake.ignore_reset = true;
+    _ = device.resetDevice() catch {};
+    try testing.expect(!memory.canReturnToAllocator());
+
+    Fake.ignore_reset = false;
+    try device.resetDevice();
+    memory.deviceReleased();
+    try testing.expect(memory.canReturnToAllocator());
+}
+
+test "the queue memory follows the four states of the policy" {
+    // 1. antes de qualquer escrita: o driver e o dono, e a memoria pode voltar;
+    var memory: QueueMemory = .{};
+    try testing.expect(memory.canReturnToAllocator());
+
+    // 2. primeira escrita feita: o dispositivo pode alcancar a memoria;
+    memory.handOver();
+    try testing.expect(!memory.canReturnToAllocator());
+
+    // 3. reset tentado e nao confirmado: estado desconhecido, tratado como
+    //    potencialmente ativo;
+    try testing.expect(!memory.canReturnToAllocator());
+
+    // 4. reset confirmado: a posse volta ao driver.
+    memory.deviceReleased();
+    try testing.expect(memory.canReturnToAllocator());
+}

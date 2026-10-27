@@ -256,6 +256,14 @@ pub const Transport = struct {
     /// conferir o que foi programado antes de o dispositivo comecar a usar a
     /// memoria.
     ///
+    /// Uma fila que ja se apresenta habilitada e recusada
+    /// (`QueueAlreadyEnabled`), e nada e escrito: os campos desta funcao
+    /// apontam o dispositivo para a memoria da fila, e trocar o destino de uma
+    /// fila ativa entregaria ao dispositivo paginas de outro dono. O driver
+    /// nao pode desabilitar a fila para corrigir isso — escrever 0 em
+    /// `queue_enable` e proibido pela especificacao —, entao a recusa e o
+    /// unico desfecho seguro.
+    ///
     /// `queue_select` e escrito no inicio: ele escolhe a fila dos campos
     /// seguintes (`queue_size`, `queue_desc`, `queue_driver`, `queue_device`),
     /// e todos eles sao escritos na mesma chamada, sem depender de uma
@@ -276,6 +284,16 @@ pub const Transport = struct {
         if (addresses.device % 4 != 0) return error.Misaligned;
 
         common.write16(offset.queue_select, index) catch |err| return mapRegionError(err);
+
+        // Uma fila habilitada esta em uso pelo dispositivo: escrever o tamanho
+        // ou os enderecos dela trocaria a memoria embaixo de um dispositivo que
+        // ja a esta lendo. A especificacao exige que estes campos sejam
+        // configurados antes do `queue_enable`, e o driver nao tem como
+        // desabilitar a fila (escrever 0 em `queue_enable` e proibido), entao a
+        // programacao e recusada em vez de aplicada.
+        const enabled = common.read16(offset.queue_enable) catch |err| return mapRegionError(err);
+        if (enabled != 0) return error.QueueAlreadyEnabled;
+
         const max_size = common.read16(offset.queue_size) catch |err| return mapRegionError(err);
         if (size > max_size) return error.QueueSizeTooLarge;
 
@@ -1036,4 +1054,64 @@ test "every queue operation selects the queue it acts on" {
     FakeBar.poke16(@intCast(offset.queue_enable), 0);
     try device.enableQueue(0);
     try testing.expectEqual(@as(u8, 0), FakeBar.peek8(@intCast(offset.queue_select)));
+}
+
+// ----------------------------------------------------------------------
+// Regressoes da correcao A-1: uma fila habilitada nao e reprogramada, e o
+// erro nao e lido como "o dispositivo esta desabilitado".
+// ----------------------------------------------------------------------
+
+test "an enabled queue is not reprogrammed and keeps its state" {
+    var device = fakeTransport();
+    FakeBar.poke16(@intCast(offset.num_queues), 1);
+    FakeBar.poke16(@intCast(offset.queue_size), 64);
+
+    // O dispositivo se apresenta com a fila habilitada e com uma fila ja
+    // programada: e o estado que o driver nao criou e nao pode desfazer.
+    FakeBar.poke16(@intCast(offset.queue_enable), 1);
+    FakeBar.poke32(@intCast(offset.queue_desc), 0x1111_1000);
+    FakeBar.poke32(@intCast(offset.queue_driver), 0x2222_2000);
+    FakeBar.poke32(@intCast(offset.queue_device), 0x3333_3000);
+
+    // Reprogramar trocaria a memoria embaixo do dispositivo: recusado, e nada
+    // e escrito.
+    try testing.expectError(
+        error.QueueAlreadyEnabled,
+        device.configureQueue(0, 64, .{ .desc = 0x9000_0000, .driver = 0x9000_1000, .device = 0x9000_2000 }),
+    );
+    try testing.expectEqual(@as(u32, 0x1111_1000), FakeBar.peek32(@intCast(offset.queue_desc)));
+    try testing.expectEqual(@as(u32, 0x2222_2000), FakeBar.peek32(@intCast(offset.queue_driver)));
+    try testing.expectEqual(@as(u32, 0x3333_3000), FakeBar.peek32(@intCast(offset.queue_device)));
+    try testing.expectEqual(@as(u16, 64), FakeBar.peek16(@intCast(offset.queue_size)));
+
+    // A habilitacao tambem e recusada, e a fila continua habilitada: o erro
+    // nao e evidencia de que o dispositivo ficou desabilitado.
+    try testing.expectError(error.QueueAlreadyEnabled, device.enableQueue(0));
+    try testing.expect(try device.queueEnabled(0));
+    try testing.expectEqual(@as(u16, 1), FakeBar.peek16(@intCast(offset.queue_enable)));
+}
+
+test "a partial configuration failure leaves the queue addressable by the device" {
+    FakeBar.reset();
+    // Regiao comum que alcanca `queue_desc` (0x20) mas para antes de
+    // `queue_driver` (0x28): a escrita do segundo endereco falha depois de o
+    // primeiro ter sido aceito.
+    var narrow = try Transport.attach(identification, collection(0x24), FakeBar.region());
+    FakeBar.poke16(@intCast(offset.num_queues), 1);
+    FakeBar.poke16(@intCast(offset.queue_size), 64);
+
+    // `mapRegionError` reporta a faixa curta como `MissingCommonRegion`: e a
+    // mesma recusa do teste da regiao curta, agora com o estado do dispositivo
+    // a esquerda.
+    try testing.expectError(error.MissingCommonRegion, narrow.configureQueue(0, 64, .{
+        .desc = 0x5000_0000,
+        .driver = 0x5000_1000,
+        .device = 0x5000_2000,
+    }));
+
+    // A configuracao ficou pela metade: `queue_desc` aponta para a memoria da
+    // fila e nao pode ser desfeito. E este o estado em que o chamador precisa
+    // tratar o dispositivo como capaz de acessar os buffers.
+    try testing.expectEqual(@as(u32, 0x5000_0000), FakeBar.peek32(@intCast(offset.queue_desc)));
+    try testing.expect(!try narrow.queueEnabled(0));
 }

@@ -205,7 +205,16 @@ mesmo índice duas vezes é recusado (`QueueAlreadyReady`) em vez de contar duas
 
 **`queue_enable` lido antes de escrito.** A especificação exige 0 depois do reset e proíbe o
 driver de escrever 0; uma fila que já se apresente habilitada é recusada
-(`QueueAlreadyEnabled`) em vez de habilitada às cegas.
+(`QueueAlreadyEnabled`) em vez de habilitada às cegas. `configureQueue` faz a mesma leitura
+antes de escrever o tamanho e os endereços: reprogramar uma fila ativa trocaria a memória
+embaixo do dispositivo, e o driver não tem como desabilitá-la.
+
+**A posse começa na primeira escrita.** `handOver()` é chamado antes de `configureQueue`, e
+não depois do `queue_enable`. A primeira escreve endereços desta memória; a segunda habilita
+a fila. Um erro em qualquer uma delas não prova que o dispositivo ficou sem acesso, e só o
+reset confirmado devolve a memória. A política fica com quatro estados — dono é o driver,
+dono é o dispositivo, reset não confirmado, reset confirmado — e apenas o primeiro e o
+último liberam.
 
 ## Consequências
 

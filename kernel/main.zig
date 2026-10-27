@@ -1271,7 +1271,7 @@ fn bringUpVirtioDevices() void {
     if (found == 0) {
         serial.printLine("[VNK] virtio: no function of vendor 0x1af4 on bus 0", .{});
     } else if (!ready) {
-        serial.printLine("[VNK] virtio-pci: no modern virtio-blk reached FEATURES_OK", .{});
+        serial.printLine("[VNK] virtio-pci: no modern virtio-blk was brought up", .{});
     }
 }
 
@@ -1666,6 +1666,17 @@ fn programVirtqueue(
     );
 
     // 4. Programacao: tamanho e os tres enderecos fisicos.
+    //
+    // A posse da memoria pelo dispositivo comeca aqui, e nao depois do
+    // `queue_enable`. `configureQueue` ja escreve no dispositivo os enderecos
+    // desta memoria, e uma falha no meio pode deixa-los gravados: o erro nao
+    // prova que o dispositivo ficou sem acesso a ela. Marcar a posse antes da
+    // primeira escrita mantem a regra do modulo — so o reset confirmado
+    // devolve a memoria — verdadeira em todas as saidas de erro seguintes,
+    // inclusive quando o dispositivo se apresenta habilitado e nenhuma
+    // escrita chega a acontecer.
+    virtqueue_state.ownership.handOver();
+
     device_transport.configureQueue(0, size, .{
         .desc = addresses.desc,
         .driver = addresses.driver,
@@ -1687,17 +1698,15 @@ fn programVirtqueue(
             device,
             @errorName(err),
         });
-        // Falha ambigua: o `queue_enable` pode ter sido aceito. O reset e a
-        // unica confirmacao de que o dispositivo parou de usar a fila.
+        // Falha ambigua em dois sentidos: o `queue_enable` pode ter sido
+        // aceito, e o proprio erro pode ter vindo de uma fila que ja se
+        // apresentava habilitada. Nenhum dos dois casos prova que o
+        // dispositivo parou de usar a memoria; a posse ja foi registrada
+        // antes de `configureQueue`, e so o reset confirmado a devolve.
         abandonVirtqueue(target, device);
         return false;
     };
 
-    // Daqui em diante a memoria e do dispositivo tambem. A posse e registrada
-    // antes de qualquer verificacao seguinte, e nao depois: entre a escrita de
-    // `queue_enable` e a leitura de volta existe uma janela em que o
-    // dispositivo ja pode estar lendo a fase de descritores.
-    virtqueue_state.ownership.handOver();
     const enabled = device_transport.queueEnabled(0) catch |err| {
         serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 enable check failed: {s}", .{
             device,
