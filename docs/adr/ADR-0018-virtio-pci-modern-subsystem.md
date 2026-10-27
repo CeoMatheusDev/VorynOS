@@ -5,6 +5,10 @@
     (norma do driver), a variante `cap64` é recusada com erro em vez de lida
     como padding, e `status.transition` não aceita mais apagar um bit já
     ligado. Ver `docs/reports/f7/virtio-pci-modern-pr-a.md`.
+  - Continuado pelo [ADR-0019](ADR-0019-virtio-pci-modern-transport.md)
+    (PR B): MMIO próprio, BAR medido e validado, configuração comum lida do
+    hardware e negociação até `FEATURES_OK`. O validador de BAR deixou de ser
+    `null` no kernel.
 - **Data:** 2026-10-26
 - **Escopo:** `kernel/drivers/virtio/`, `kernel/arch/x86_64/pci.zig`,
   `kernel/main.zig`, `build.zig`
@@ -120,12 +124,15 @@ nenhuma virtqueue foi programada. O teste de boot exige as duas linhas.
 - Existe uma pequena duplicação de constante (`caps.max_bar_index` = 5) que o
   `pci.zig` também conhece; a fronteira de módulo impede o compartilhamento
   direto. É um limite documentado, não um segundo subsistema.
-- O validador de BAR recebe `null` no kernel até existir a sonda de tamanho de
-  BAR (que exige escrever no BAR).
+- O validador de BAR recebia `null` no kernel. O PR B passou a ligá-lo a
+  `pci.probeBarSizes`/`pci.barSupportsRegion`, como registrado no
+  [ADR-0019](ADR-0019-virtio-pci-modern-transport.md).
 - As features específicas de cada tipo de dispositivo continuam no módulo
   legado, com a divergência registrada em
   [`../reports/f7/virtio-pci-modern-pr-a.md`](../reports/f7/virtio-pci-modern-pr-a.md).
-- Nada é inicializado: este ADR registra uma fundação, não um driver.
+- Nada é inicializado por este ADR: ele registra uma fundação, não um
+  driver. O PR B (ADR-0019) inicializa o transporte até `FEATURES_OK`; as
+  virtqueues e o `DRIVER_OK` continuam pendentes.
 
 ## Alternativas descartadas
 

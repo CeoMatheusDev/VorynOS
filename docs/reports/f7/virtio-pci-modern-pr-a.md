@@ -351,6 +351,9 @@ obrigatório.
 
 ## Próximo incremento (PR B)
 
+> Entregue em `docs/reports/f7/virtio-pci-modern-pr-b.md` e no
+> `docs/adr/ADR-0019-virtio-pci-modern-transport.md`.
+
 Transporte PCI moderno: mapear o BAR da configuração comum, ler
 `device_feature` em duas palavras, executar `features.negotiate`, escrever
 `FEATURES_OK` com `status.transition` e conferir a leitura de volta, além de
