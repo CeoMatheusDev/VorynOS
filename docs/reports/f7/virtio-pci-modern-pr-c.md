@@ -66,9 +66,10 @@ As dependências continuam apontando para dentro: `virtqueue.zig` recebe memóri
 
 ## Testes
 
-`virtio-modern-tests` (raiz `kernel/drivers/virtio/root.zig`): **65 → 91** testes.
+`virtio-modern-tests` (raiz `kernel/drivers/virtio/root.zig`): **65 → 105** testes
+(91 na abertura do PR, 105 depois das correções da auditoria).
 
-`virtqueue` (19):
+`virtqueue` (25):
 
 - layout de 256 descritores com os offsets da especificação (4096 / 4096+518 / 4616) e
   alinhamento de cada área; fila de 1 e de 32768 descritores;
@@ -88,29 +89,50 @@ As dependências continuam apontando para dentro: `virtqueue.zig` recebe memóri
 - cadeia com ciclo recusada na publicação e **recuperada** na liberação sem duplicar elos;
 - alocação de cadeia que falha pela metade devolve o que tomou.
 
-`pci_transport` (4 novos):
+Testes de regressão de D-1 (6 novos):
+
+- os três elos de uma cadeia publicada ficam em voo, e não só a cabeça;
+- elo do meio em voo recusa `setBuffer`, `setWritable` e `release`, sem mudar o estado;
+- a conclusão devolve os três elos, e a mesma cadeia pode ser descrita e publicada de novo;
+- elo do meio recusado depois da conclusão (`DescriptorNotChainHead`), sem tocar na cadeia
+  seguinte nem no `freeCount`;
+- conclusão duplicada recusada (`UsedIdNotInflight`) sem alterar a posse de nenhum elo;
+- cadeia recusada por ciclo não deixa elo marcado como do dispositivo.
+
+`pci_transport` (7 novos, 3 deles de D-3):
 
 - programação de `queue_size` e dos três endereços de 64 bits (metade alta conferida);
 - recusa de fila inexistente, tamanho zero, tamanho acima do máximo, endereços
   desalinhados — e o dispositivo não é tocado nas recusas;
 - `queue_enable` confirmado e dispositivo que descarta a escrita recusado;
-- região comum curta (`queue_desc` fora da faixa) recusada.
+- região comum curta (`queue_desc` fora da faixa) recusada;
+- fila que já se apresenta habilitada recusada **antes** da escrita (registrador em 2
+  continua 2), e habilitação repetida recusada;
+- cada operação (`configureQueue`, `enableQueue`, `queueEnabled`) seleciona a fila em que
+  age, sem herdar a seleção da chamada anterior.
 
-`transport` (3 novos):
+`transport` (8 novos, 5 deles de D-2 e D-4):
 
 - `DRIVER_OK` recusado sem fila registrada (`NoQueueConfigured`, `finish` com etapa);
 - `DRIVER_OK` escrito depois de `markQueueReady`, com o histórico de escritas do
   dispositivo simulado provando que o bit 2 aparece uma única vez e por último;
 - `DRIVER_OK` recusado fora de `FEATURES_OK` e recusado quando o dispositivo não mantém a
-  escrita (`StatusNotConfirmed`).
+  escrita (`StatusNotConfirmed`);
+- filas prontas por índice: fila 1 não fica pronta por causa da 0 nem da 2, índice repetido
+  é recusado, e o reset zera o conjunto;
+- índice acima do limite do transporte recusado (`TooManyQueues`) em vez de ignorado;
+- `QueueMemory`: memória do driver antes da entrega, presa depois dela, e liberada só com o
+  reset confirmado — uma nova entrega rearma a proibição;
+- dispositivo em `DRIVER_OK` que confirma o reset devolve a posse; dispositivo que ignora o
+  reset (`ignore_reset`) mantém a memória reservada.
 
 ## Validação executada
 
 | Comando | Resultado |
 | --- | --- |
 | `zig version` | `0.17.0` |
-| `zig build test` | **passa** — 525 testes; `virtio-modern-tests` 91, `arch-tests` 77, `kernel-tests` 22, `fs-loader-tests` 158 |
-| `zig build` | **passa** — `voryn-boot.efi`, `voryn-kernel` (72,0 MB) e `vorynos.img` (128 MiB, 32731 clusters, FAT16) |
+| `zig build test` | **passa** — 539 testes; `virtio-modern-tests` 105 (91 antes das correções), `arch-tests` 77, `kernel-tests` 22, `fs-loader-tests` 158 |
+| `zig build` | **passa** — `voryn-boot.efi`, `voryn-kernel` (65,8 MB nesta build) e `vorynos.img` (128 MiB, 32731 clusters, FAT16) |
 | `zig build qemu-test` | **bloqueado pelo ambiente** — `qemu-boot-test: no OVMF firmware found`, saída 2; não há `qemu-system-x86_64` nem OVMF na sessão |
 | `zig build check` | **bloqueado pelo ambiente** — depende do `qemu-test` |
 
@@ -170,6 +192,86 @@ firmware. Alternativas descartadas:
 Esta é a única mudança do PR fora do subsistema VirtIO, e ela é consequência direta do
 tamanho do kernel que já existia.
 
+Medição posterior, com cache limpo: o mesmo kernel Debug sai com **65,8 MB** (21,2 MB
+carregáveis e 41,6 MB de vãos entre segmentos), contra 70,1 MB numa build incremental
+anterior. A diferença de 4 MB não é código — é a folga que o ligador deixa entre os
+segmentos carregáveis, que muda com o alinhamento de página. Isso confirma que o limite de
+64 MiB era atingido por **enchimento**, e não por conteúdo: a dívida real é o layout do ELF,
+não o tamanho da imagem.
+
+## Correções da auditoria (D-1 a D-4)
+
+A auditoria do PR encontrou quatro defeitos. As correções estão neste PR, com testes de
+regressão que reproduzem cada um.
+
+### D-1 — posse por descritor em cadeias publicadas (`virtqueue.zig`)
+
+`publish` marcava `inflight` apenas na cabeça; os elos do meio ficavam parecendo livres e
+`setBuffer`/`release` os aceitavam em voo. Reproduzido antes da correção: `setBuffer(1)`
+sobrescrevia o endereço de um descritor já publicado e `release(1)` devolvia o resto da
+cadeia à free list com o dispositivo ainda lendo, permitindo liberação cruzada entre
+cadeias.
+
+- `publish` marca **todos** os elos (`markChain`), e `pollUsed` desmarca **todos** — a
+  conclusão devolve a cadeia inteira ao driver;
+- `linked` registra quais descritores são `next` de outro, e `release` recusa elo do meio
+  (`error.DescriptorNotChainHead`) mesmo depois da conclusão, o que fecha a liberação
+  cruzada entre cadeias;
+- um `publish` recusado (ciclo, `next` fora da tabela) não deixa nenhum elo marcado.
+
+Reprodução da auditoria, refeita contra o código corrigido:
+
+```text
+posse depois de publish: [0]=true [1]=true [2]=true
+setBuffer(1) recusado: DescriptorAlreadyPublished
+release(1) recusado: DescriptorInFlight
+free apos os ataques: 5 (esperado 5)
+apos a conclusao: inflight(1)=false free=5
+release(1) pos-conclusao recusado: DescriptorNotChainHead
+free final: 5 (esperado 5)
+```
+
+A hipótese da auditoria de que `setBuffer` também descartava o `next` do elo **não se
+confirmou**: a função escreve apenas `address` e `length`. O defeito era só a marca de
+posse, e o teste novo fixa esse comportamento.
+
+### D-4 — ciclo de vida da memória de DMA (`main.zig`, `transport.zig`)
+
+`programmed` era marcado **depois** de `enableQueue` e da verificação seguinte: uma falha
+em `queueEnabled` devolvia ao alocador páginas que o dispositivo já podia estar lendo, e
+nenhum caminho de falha resetava o dispositivo.
+
+- `transport.QueueMemory` guarda duas marcas independentes — `handed_over` (a memória foi
+  entregue ao dispositivo) e `device_released` (o reset foi confirmado). Só
+  `canReturnToAllocator` autoriza a liberação;
+- `handOver()` é chamado imediatamente depois de `enableQueue` retornar sucesso, antes da
+  leitura de volta;
+- toda falha a partir de `configureQueue` passa por `abandonVirtqueue`: reset do
+  dispositivo, leitura de volta em zero, e só então a liberação. Se o reset não for
+  confirmado, **a memória fica reservada** e o boot registra `FATAL`.
+
+### D-2 — filas prontas por índice (`transport.zig`)
+
+`ready_queues` contava chamadas: `markQueueReady(0)` duas vezes anunciava duas filas
+prontas num dispositivo de duas filas. O limite `contador >= filas` acertava o número pelo
+motivo errado, e o teste existente consagrava a semântica.
+
+- `ready: std.StaticBitSet(max_tracked_queues)`, com um bit por índice;
+- índice repetido é recusado (`error.QueueAlreadyReady`) em vez de contar;
+- índice acima do limite é recusado (`error.TooManyQueues`), e não ignorado;
+- `readyQueues()` e `isQueueReady()` expõem o conjunto; o teste que esperava o segundo
+  registro da fila 0 ser aceito foi reescrito para exigir a recusa.
+
+### D-3 — `queue_enable` lido antes de ser escrito (`pci_transport.zig`)
+
+A confirmação pós-escrita já existia; faltava a leitura prévia. Uma fila que já se
+apresentasse habilitada era habilitada de novo às cegas.
+
+- `enableQueue` lê `queue_enable` e recusa com `error.QueueAlreadyEnabled` se não for 0;
+- o teste prova que nada foi escrito: um registrador em `2` continua `2` depois da recusa;
+- o contrato de `queue_select` está documentado nas três funções que dependem dele, com
+  teste de que cada operação seleciona a fila em que age.
+
 ## Limitações
 
 - A fila está pronta e vazia: não há publicação de pedido, consumo de conclusão em uso nem
@@ -184,7 +286,7 @@ tamanho do kernel que já existia.
   `probeVirtqueueLayout` e pelos stubs de rede) não foi alterado. Ele será removido quando
   o driver de bloco migrar para `virtqueue.zig`; manter os dois por enquanto é
   deliberado, para não misturar a migração com a implementação.
-- A validação de QEMU não foi executada nesta sessão.
+- A validação de QEMU é feita pela CI; a sessão local não tem firmware OVMF.
 
 ## Próxima etapa
 

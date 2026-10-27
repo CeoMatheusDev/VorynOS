@@ -178,6 +178,35 @@ no toolchain 0.17.0, e a alternativa de compilar o kernel sem depuração por pa
 mudaria o artefato instalado e o objeto de todos os perfis de desempenho já registrados.
 O volume continua FAT16 (32731 clusters de 4 KiB), legível pelo firmware.
 
+### 11. A posse é por descritor, e a memória só volta com reset confirmado
+
+Duas regras fecham a janela entre o driver e o dispositivo. As duas nasceram da auditoria
+do PR #13, que reproduziu os defeitos antes da correção.
+
+**Posse por descritor.** Marcar `inflight` apenas na cabeça da cadeia deixava os elos do
+meio parecendo livres: `setBuffer` os sobrescrevia e `release` os devolvia à free list com
+o dispositivo ainda lendo. `publish` passa a marcar **todos** os elos, e `pollUsed`
+desmarca todos — a conclusão devolve a cadeia inteira. Além disso, `linked` registra os
+descritores que são `next` de outro, e `release` recusa elo do meio
+(`error.DescriptorNotChainHead`) mesmo depois da conclusão: só a cabeça representa a
+cadeia, e liberar um elo deixaria a cabeça apontando para memória que outra cadeia pode
+receber.
+
+**Posse da memória.** `transport.QueueMemory` guarda `handed_over` (a memória foi entregue
+no `queue_enable`) e `device_released` (o reset foi confirmado). O kernel marca
+`handOver()` imediatamente depois de `enableQueue` retornar sucesso, antes de qualquer
+leitura de volta, e nenhuma falha posterior libera a memória por conta própria: cada uma
+passa por `abandonVirtqueue`, que reseta o dispositivo, exige a leitura em zero e só então
+devolve as páginas ao alocador. Sem essa confirmação a memória fica reservada — vazar uma
+fila é melhor do que o alocador entregar ao dispositivo páginas de outro dono.
+
+**Filas prontas por índice.** `ready` é um `StaticBitSet` com um bit por fila: registrar o
+mesmo índice duas vezes é recusado (`QueueAlreadyReady`) em vez de contar duas filas.
+
+**`queue_enable` lido antes de escrito.** A especificação exige 0 depois do reset e proíbe o
+driver de escrever 0; uma fila que já se apresente habilitada é recusada
+(`QueueAlreadyEnabled`) em vez de habilitada às cegas.
+
 ## Consequências
 
 **Positivas**
