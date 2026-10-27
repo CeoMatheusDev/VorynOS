@@ -135,6 +135,127 @@ pub fn readConfigDword(bus: u8, device: u8, function: u8, offset: u8) u32 {
     return port.inl(PCI_CONFIG_DATA);
 }
 
+/// Escreve um DWORD no espaco de configuracao PCI.
+///
+/// A escrita existe para a sondagem de tamanho de BAR, que e a unica operacao
+/// do driver que altera o espaco de configuracao de um dispositivo que ele
+/// ainda nao conduz. O par de portas e serializado pelo mesmo lock da leitura.
+pub fn writeConfigDword(bus: u8, device: u8, function: u8, offset: u8, value: u32) void {
+    if (!isValidDwordOffset(offset)) return;
+
+    const flags = config_lock.lockIrqSave();
+    defer config_lock.unlockIrqRestore(flags);
+
+    port.outl(PCI_CONFIG_ADDRESS, configAddress(bus, device, function, offset));
+    port.outl(PCI_CONFIG_DATA, value);
+}
+
+fn readConfigDwordLocked(bus: u8, device: u8, function: u8, offset: u8) u32 {
+    port.outl(PCI_CONFIG_ADDRESS, configAddress(bus, device, function, offset));
+    return port.inl(PCI_CONFIG_DATA);
+}
+
+fn writeConfigDwordLocked(bus: u8, device: u8, function: u8, offset: u8, value: u32) void {
+    port.outl(PCI_CONFIG_ADDRESS, configAddress(bus, device, function, offset));
+    port.outl(PCI_CONFIG_DATA, value);
+}
+
+/// Acesso de leitura e escrita a um espaco de configuracao.
+///
+/// A sonda de tamanho de BAR e escrita uma unica vez e roda em dois contextos:
+/// nas portas `0xCF8`/`0xCFC` do kernel e numa imagem em memoria, no host. A
+/// interface e o que permite testar a logica — mascara, BAR de 64 bits e
+/// restauracao — sem tocar em hardware.
+pub const ConfigAccess = struct {
+    ctx: *anyopaque,
+    read_fn: *const fn (ctx: *anyopaque, offset: u8) u32,
+    write_fn: *const fn (ctx: *anyopaque, offset: u8, value: u32) void,
+
+    fn read(self: ConfigAccess, offset: u8) u32 {
+        return self.read_fn(self.ctx, offset);
+    }
+
+    fn write(self: ConfigAccess, offset: u8, value: u32) void {
+        self.write_fn(self.ctx, offset, value);
+    }
+};
+
+/// Alvo da sonda quando o acesso sao as portas do kernel.
+///
+/// O lock de configuracao e tomado antes da escrita, e o valor so existe
+/// enquanto ele esta tomado: duas sondagens nunca se intercalam.
+var probe_target: [3]u8 = .{ 0, 0, 0 };
+
+fn probeRead(_: *anyopaque, offset: u8) u32 {
+    return readConfigDwordLocked(probe_target[0], probe_target[1], probe_target[2], offset);
+}
+
+fn probeWrite(_: *anyopaque, offset: u8, value: u32) void {
+    writeConfigDwordLocked(probe_target[0], probe_target[1], probe_target[2], offset, value);
+}
+
+/// Sondagem dos tamanhos dos BARs de uma funcao.
+///
+/// O tamanho de um BAR nao esta escrito em lugar nenhum do espaco de
+/// configuracao: ele e descoberto escrevendo todos os bits de endereco em 1 e
+/// lendo a mascara que o dispositivo devolve. A sequencia inteira acontece sob
+/// o lock, porque duas sondagens intercaladas em CPUs diferentes deixariam o
+/// BAR com a mascara de uma e a leitura da outra.
+///
+/// A metade alta de um BAR de 64 bits e sondada e restaurada junto com a
+/// baixa, e o par consome dois indices. Um BAR ausente (todos os bits em zero)
+/// nao tem tamanho e fica nulo.
+pub fn probeBarSizes(bus: u8, device: u8, function: u8) BarSizes {
+    const flags = config_lock.lockIrqSave();
+    defer config_lock.unlockIrqRestore(flags);
+
+    probe_target = .{ bus, device, function };
+    return probeBarSizesWith(.{
+        .ctx = @ptrCast(&probe_target),
+        .read_fn = probeRead,
+        .write_fn = probeWrite,
+    });
+}
+
+/// Corpo da sondagem, independente de onde o espaco de configuracao mora.
+///
+/// Nao toma o lock: quem chama garante a exclusao. E essa separacao que deixa o
+/// teste usar uma imagem em memoria com a mesma logica que roda no kernel.
+pub fn probeBarSizesWith(access: ConfigAccess) BarSizes {
+    var sizes: BarSizes = @splat(null);
+
+    var index: usize = 0;
+    while (index < bar_count) : (index += 1) {
+        const offset: u8 = bar_register_base + @as(u8, @intCast(index)) * 4;
+        const low = access.read(offset);
+        if (low == 0 or low == 0xFFFF_FFFF) continue;
+
+        const wide = barKind(low) == .memory64;
+        var high: u32 = 0;
+        if (wide) {
+            if (index + 1 >= bar_count) continue;
+            high = access.read(offset + 4);
+        }
+
+        access.write(offset, 0xFFFF_FFFF);
+        if (wide) access.write(offset + 4, 0xFFFF_FFFF);
+
+        const mask_low = access.read(offset);
+        const mask_high = if (wide) access.read(offset + 4) else 0;
+
+        access.write(offset, low);
+        if (wide) access.write(offset + 4, high);
+
+        sizes[index] = barSize(mask_low, mask_high);
+        if (wide) index += 1;
+    }
+    return sizes;
+}
+
+/// Tamanho de cada um dos seis BARs, ou nulo quando o BAR nao existe ou a
+/// mascara nao descreve um tamanho potencia de dois.
+pub const BarSizes = [bar_count]?u64;
+
 // ----------------------------------------------------------------------
 // Acesso generico ao espaco de configuracao.
 //
@@ -952,6 +1073,76 @@ test "pci bar size is derived from the all ones mask" {
     try std.testing.expect(barSize(0xFFFF_F7F0, 0) == null);
     try std.testing.expect(barSize(0x0000_0004, 0) == null);
     try std.testing.expect(barSize(0x0000_FF01, 0) == null);
+}
+
+test "pci bar size probe masks, measures and restores every bar" {
+    // Imagem de configuracao que se comporta como um dispositivo: um BAR
+    // mascarado devolve a mascara de tamanho quando recebe todos os bits de
+    // endereco em 1, e guarda qualquer outro valor.
+    const Image = struct {
+        var words: [config_space_size / 4]u32 = @splat(0);
+        var masks: [config_space_size / 4]u32 = @splat(0);
+        var writes: usize = 0;
+
+        fn reset() void {
+            words = @splat(0);
+            masks = @splat(0);
+            writes = 0;
+        }
+
+        fn read(_: *anyopaque, offset: u8) u32 {
+            return words[offset / 4];
+        }
+
+        fn write(_: *anyopaque, offset: u8, value: u32) void {
+            const at: usize = offset / 4;
+            writes += 1;
+            if (value == 0xFFFF_FFFF) {
+                words[at] = masks[at];
+            } else {
+                words[at] = value;
+            }
+        }
+
+        fn access() ConfigAccess {
+            return .{ .ctx = @ptrCast(&words), .read_fn = read, .write_fn = write };
+        }
+    };
+
+    Image.reset();
+
+    // BAR 0: memoria de 32 bits em 0xFE00_0000, 64 KiB.
+    Image.words[bar_register_base / 4] = 0xFE00_0000;
+    Image.masks[bar_register_base / 4] = 0xFFFF_0000;
+
+    // BAR 2: memoria de 64 bits. A metade alta tem mascara propria e nao e
+    // sondada como um BAR independente.
+    Image.words[bar_register_base / 4 + 2] = 0xFE10_0004;
+    Image.words[bar_register_base / 4 + 3] = 0x0000_0001;
+    Image.masks[bar_register_base / 4 + 2] = 0xFFFF_0004;
+    Image.masks[bar_register_base / 4 + 3] = 0xFFFF_FFFF;
+
+    const sizes = probeBarSizesWith(Image.access());
+    try std.testing.expectEqual(@as(?u64, 0x1_0000), sizes[0]);
+    try std.testing.expectEqual(@as(?u64, 0x1_0000), sizes[2]);
+
+    // BAR ausente, metade alta do par e os BARs nao implementados nao tem
+    // tamanho.
+    try std.testing.expect(sizes[1] == null);
+    try std.testing.expect(sizes[3] == null);
+    try std.testing.expect(sizes[4] == null);
+    try std.testing.expect(sizes[5] == null);
+
+    // A sonda restaura o valor de cada BAR que ela mascarou.
+    try std.testing.expectEqual(@as(u32, 0xFE00_0000), Image.words[bar_register_base / 4]);
+    try std.testing.expectEqual(@as(u32, 0xFE10_0004), Image.words[bar_register_base / 4 + 2]);
+    try std.testing.expectEqual(@as(u32, 0x0000_0001), Image.words[bar_register_base / 4 + 3]);
+
+    // Dois BARs sondados: duas escritas de mascara e duas restauracoes para o
+    // BAR de 32 bits, o dobro para o par de 64 bits. Nenhum registrador alheio
+    // e tocado.
+    try std.testing.expectEqual(@as(usize, 6), Image.writes);
+    try std.testing.expectEqual(@as(u32, 0), Image.words[bar_register_base / 4 + 1]);
 }
 
 test "pci bar table decodes sixty four bit pairs and rejects malformed tables" {
