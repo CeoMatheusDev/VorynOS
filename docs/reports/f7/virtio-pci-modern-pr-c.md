@@ -168,6 +168,13 @@ verdes — *Testes de unidade* (539 testes), *Construir*, **Teste de boot no QEM
 o que inclui as asserções de ordem do `DRIVER_OK` e a checagem negativa de `status=0xf`
 depois da mudança de `ready_queues` para conjunto de índices.
 
+**Depois da correção A-1**, commit `9961350`, run
+[`40523151252`](https://github.com/CeoMatheusDev/VorynOS/actions/runs/40523151252):
+**conclusão `success`**, com os onze passos verdes — *Testes de unidade* (544 testes),
+*Construir*, **Teste de boot no QEMU**, *Verificação agregada* e *Verificar os artefatos*.
+O boot completo passa com a ordem nova de `handOver()` e com a recusa de reprogramar fila
+ativa.
+
 O ambiente da sessão não traz Zig nem QEMU instalados. O toolchain 0.17.0 foi obtido do
 pacote `ziglang` do PyPI (`zig version` → `0.17.0`); o QEMU e o OVMF não estão disponíveis
 e não há rede para instalá-los (o `apt` não responde e o acesso é limitado a GitHub,
