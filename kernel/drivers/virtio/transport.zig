@@ -35,12 +35,13 @@
 //!     lido de volta depois de cada escrita; nao existe um estado interno que
 //!     possa divergir do hardware. Se o dispositivo nao confirmar o valor
 //!     escrito, a inicializacao falha em vez de seguir;
-//!   * **nao existe caminho para DRIVER_OK.** A interface termina em
-//!     `FEATURES_OK`, que e o estado correto antes das virtqueues. Escrever
-//!     DRIVER_OK sem filas programadas anunciaria um dispositivo funcional que
-//!     nao funciona, e por isso nao ha funcao publica que o faca — a API sera
-//!     acrescentada pelo incremento das virtqueues, junto com a programacao
-//!     que a justifica.
+//!   * **DRIVER_OK tem porta, e a porta tem fechadura.** `initialize`
+//!     termina em `FEATURES_OK`, que e o estado correto antes das virtqueues.
+//!     `activate` escreve DRIVER_OK, e so o faz quando uma fila foi
+//!     programada e habilitada (`markQueueReady`) e quando o dispositivo
+//!     confirma `FEATURES_OK`. Escrever DRIVER_OK sem filas anunciaria um
+//!     dispositivo funcional que nao funciona; a fechadura e o que impede que
+//!     isso aconteca por descuido, e nao apenas por disciplina do chamador.
 //!
 //! A especificacao 2.4 e explicita: *"The driver MUST NOT clear a device
 //! status bit"*. A validacao da escrita passa por `status.transition`, que ja
@@ -86,6 +87,11 @@ pub const Error = error{
     PackedRingUnsupported,
     /// O indice de fila pedido nao existe no dispositivo.
     InvalidQueue,
+    /// Nenhuma fila foi programada e habilitada: DRIVER_OK anunciaria um
+    /// dispositivo que nao tem por onde receber pedidos.
+    NoQueueConfigured,
+    /// DRIVER_OK foi pedido fora do estado FEATURES_OK.
+    NotReadyForDriverOk,
     /// O contrato de registradores falhou (leitura fora da regiao, por
     /// exemplo).
     RegisterAccess,
@@ -125,6 +131,8 @@ pub const Stage = enum {
     write_features,
     features_ok,
     queue_scan,
+    queue_setup,
+    driver_ok,
 
     /// Nome estavel da etapa, para o diagnostico.
     pub fn label(self: Stage) []const u8 {
@@ -172,6 +180,15 @@ pub const Device = struct {
 
     /// Quantidade de filas informada pelo dispositivo.
     queues: u16 = 0,
+
+    /// Quantidade de filas programadas e habilitadas pelo driver.
+    ///
+    /// O protocolo nao tem como descobrir sozinho que os enderecos e o
+    /// `queue_enable` do dispositivo foram escritos: quem programa a fila
+    /// registra o fato aqui, e `activate` recusa DRIVER_OK enquanto este
+    /// contador for zero. E o que separa "as filas deveriam estar prontas" de
+    /// "as filas estao prontas".
+    ready_queues: u16 = 0,
 
     /// Executa a sequencia completa ate FEATURES_OK.
     ///
@@ -229,6 +246,7 @@ pub const Device = struct {
         self.offered = 0;
         self.accepted = 0;
         self.queues = 0;
+        self.ready_queues = 0;
     }
 
     /// Le o conjunto de 64 bits que o dispositivo oferece.
@@ -326,7 +344,62 @@ pub const Device = struct {
         const current = self.phase() catch return false;
         return current == .features_ok;
     }
+
+    /// Registra que a fila `index` foi programada e habilitada.
+    ///
+    /// A funcao nao toca no dispositivo: quem escreve os enderecos e o
+    /// `queue_enable` e o transporte concreto (`pci_transport.zig`), porque
+    /// so ele conhece o layout. O que o protocolo guarda aqui e o fato de que
+    /// aquilo aconteceu, e e isso que `activate` exige.
+    pub fn markQueueReady(self: *Device, index: u16) Error!void {
+        if (self.queues == 0) return error.InvalidQueue;
+        if (index >= self.queues) return error.InvalidQueue;
+        // Cada fila conta uma vez: chamar de novo para a mesma fila nao pode
+        // fazer o contador passar da quantidade de filas do dispositivo.
+        if (self.ready_queues >= self.queues) return error.InvalidQueue;
+        self.ready_queues += 1;
+    }
+
+    /// Escreve DRIVER_OK: o ultimo passo da sequencia 3.1.1.
+    ///
+    /// So existe depois das virtqueues, e por isso as tres condicoes:
+    ///
+    ///   1. o estado confirmado pelo dispositivo precisa ser FEATURES_OK;
+    ///   2. ao menos uma fila precisa ter sido programada e habilitada;
+    ///   3. a escrita precisa ser mantida na leitura de volta.
+    ///
+    /// A partir daqui o dispositivo pode usar a fila e entregar conclusoes;
+    /// o driver nao pode mais mudar features nem o layout das filas sem um
+    /// reset.
+    pub fn activate(self: *Device) Error!void {
+        if (self.ready_queues == 0) return error.NoQueueConfigured;
+
+        const current = try self.readStatus();
+        const current_phase = status.phase(current) catch |err| return mapStatusError(err);
+        if (current_phase != .features_ok) return error.NotReadyForDriverOk;
+
+        try self.setStatusSync(status.bitsOf(.driver_ok), .driver_ok);
+    }
+
+    /// Ativacao com etapa e motivo, no mesmo formato de `initialize`.
+    pub fn finish(self: *Device) Outcome {
+        self.activate() catch |err| return failure(.driver_ok, err);
+        return .{ .initialized = {} };
+    }
 };
+
+/// Traduz o erro da maquina de estados para o contrato do transporte.
+fn mapStatusError(err: anyerror) Error {
+    return switch (err) {
+        error.StatusBitCleared => error.StatusBitCleared,
+        error.DeviceBitWrittenByDriver => error.DeviceBitWrittenByDriver,
+        error.InvalidCombination => error.InvalidStatusCombination,
+        error.IllegalTransition => error.IllegalStatusTransition,
+        error.SuspendUnsupported => error.StatusSuspendUnsupported,
+        error.ReservedBitSet => error.StatusReservedBitSet,
+        else => error.RegisterAccess,
+    };
+}
 
 fn mapFeatureError(err: anyerror) Error {
     return switch (err) {
@@ -721,4 +794,97 @@ test "virtio transport outcome names the stage it failed at" {
             try testing.expectEqualStrings("read_features", failure.stage.label());
         },
     }
+}
+
+test "virtio transport refuses DRIVER_OK before a queue is configured" {
+    Fake.reset();
+    Fake.device_feature_high = 0x0000_0001;
+
+    var device = fakeDevice();
+    try testing.expect(device.initialize(features.version_1).isInitialized());
+    try testing.expect(device.isAwaitingQueues());
+    try testing.expectEqual(@as(u16, 0), device.ready_queues);
+
+    // Sem fila programada nao existe caminho para o bit 2.
+    try testing.expectError(error.NoQueueConfigured, device.activate());
+    const refused = device.finish();
+    try testing.expect(!refused.isInitialized());
+    try testing.expectEqual(Stage.driver_ok, refused.failed.stage);
+    try testing.expectEqual(@as(Error, error.NoQueueConfigured), refused.failed.reason);
+    try testing.expect(!Fake.wroteDriverOk());
+    try testing.expectEqual(status.acknowledge | status.driver | status.features_ok, Fake.device_status);
+
+    // Um indice fora da faixa informada pelo dispositivo tambem nao conta como
+    // fila pronta.
+    try testing.expectError(error.InvalidQueue, device.markQueueReady(1));
+    try testing.expectEqual(@as(u16, 0), device.ready_queues);
+}
+
+test "virtio transport writes DRIVER_OK after the queue is ready" {
+    Fake.reset();
+    Fake.device_feature_high = 0x0000_0001;
+    Fake.num_queues = 2;
+
+    var device = fakeDevice();
+    try testing.expect(device.initialize(features.version_1).isInitialized());
+
+    try device.markQueueReady(0);
+    try testing.expectEqual(@as(u16, 1), device.ready_queues);
+    // Registrar de novo a mesma fila nao infla o contador alem das filas que
+    // o dispositivo tem.
+    try device.markQueueReady(0);
+    try testing.expectEqual(@as(u16, 2), device.ready_queues);
+    try testing.expectError(error.InvalidQueue, device.markQueueReady(0));
+
+    try device.activate();
+    try testing.expectEqual(@as(u8, 0x0F), device.status);
+    try testing.expectEqual(status.Phase.driver_ok, try device.phase());
+    try testing.expect(status.isReady(device.status));
+    try testing.expect(Fake.wroteDriverOk());
+
+    // A escrita de DRIVER_OK foi a ultima, e veio depois de FEATURES_OK.
+    try testing.expectEqual(@as(usize, 5), Fake.status_write_count);
+    try testing.expectEqual(
+        status.acknowledge | status.driver | status.features_ok,
+        Fake.status_writes[3],
+    );
+    try testing.expectEqual(@as(u8, 0x0F), Fake.status_writes[4]);
+    try testing.expect(!device.isAwaitingQueues());
+
+    // Uma segunda ativacao nao reescreve o bit: a transicao de driver_ok para
+    // driver_ok nao e um passo da sequencia.
+    try testing.expectError(error.NotReadyForDriverOk, device.activate());
+    try testing.expectEqual(@as(usize, 5), Fake.status_write_count);
+}
+
+test "virtio transport refuses DRIVER_OK outside FEATURES_OK" {
+    Fake.reset();
+    Fake.device_feature_high = 0x0000_0001;
+
+    var device = fakeDevice();
+    try testing.expect(device.initialize(features.version_1).isInitialized());
+    try device.markQueueReady(0);
+
+    // O dispositivo voltou para DRIVER antes da ativacao: DRIVER_OK nao pode
+    // ser escrito sobre um estado que nao e FEATURES_OK.
+    Fake.device_status = status.acknowledge | status.driver;
+    const failure = device.finish().failed;
+    try testing.expectEqual(Stage.driver_ok, failure.stage);
+    try testing.expectEqual(@as(Error, error.NotReadyForDriverOk), failure.reason);
+    try testing.expect(!Fake.wroteDriverOk());
+
+    // E um dispositivo que nao mantem a escrita de DRIVER_OK falha na
+    // confirmacao, em vez de ser dado como pronto.
+    Fake.device_status = status.acknowledge | status.driver | status.features_ok;
+    device.registers.write_status = swallowDriverOk;
+    const swallowed = device.finish().failed;
+    try testing.expectEqual(Stage.driver_ok, swallowed.stage);
+    try testing.expectEqual(@as(Error, error.StatusNotConfirmed), swallowed.reason);
+    try testing.expectEqualStrings("driver_ok", Stage.driver_ok.label());
+}
+
+/// Escrita de status que descarta DRIVER_OK, para o teste acima.
+fn swallowDriverOk(_: *anyopaque, value: u8) Error!void {
+    if (value == status.acknowledge | status.driver | status.features_ok | status.driver_ok) return;
+    Fake.device_status = value;
 }

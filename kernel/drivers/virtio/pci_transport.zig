@@ -53,6 +53,10 @@ pub const Error = error{
     MissingDeviceRegion,
     /// O indice de fila nao existe.
     InvalidQueue,
+    /// O tamanho pedido para a fila passa do maximo que o dispositivo informa.
+    QueueSizeTooLarge,
+    /// O dispositivo nao manteve `queue_enable` em 1 depois da escrita.
+    QueueEnableNotConfirmed,
     /// O deslocamento nao esta alinhado para a largura do registrador.
     Misaligned,
 };
@@ -233,6 +237,79 @@ pub const Transport = struct {
         return std.math.add(u64, region.virtual, scaled) catch return error.InvalidQueue;
     }
 
+    /// Programa a fila `index`: tamanho e as tres areas, na ordem da
+    /// especificacao 4.1.4.3.2.
+    ///
+    /// O driver escolhe um tamanho menor ou igual ao maximo que o dispositivo
+    /// informa em `queue_size` (§2.7.5). Os enderecos sao fisicos, e cada um
+    /// e checado contra o alinhamento que a area exige (16 para descritores,
+    /// 2 para o anel `available` e 4 para o `used`, §2.7.4 a §2.7.8): um
+    /// descritor desalinhado nao e um erro que o dispositivo reporte, e sim
+    /// um barramento que le outra coisa.
+    ///
+    /// A funcao escreve e confere o tamanho relido; nao habilita a fila.
+    /// `queue_enable` e o passo seguinte, e separa-lo deixa o chamador
+    /// conferir o que foi programado antes de o dispositivo comecar a usar a
+    /// memoria.
+    pub fn configureQueue(
+        self: *Transport,
+        index: u16,
+        size: u16,
+        addresses: QueueAddresses,
+    ) Error!void {
+        const common = self.regions.common;
+        const queues = common.read16(offset.num_queues) catch |err| return mapRegionError(err);
+        if (index >= queues) return error.InvalidQueue;
+        if (size == 0) return error.InvalidQueue;
+
+        if (addresses.desc % 16 != 0) return error.Misaligned;
+        if (addresses.driver % 2 != 0) return error.Misaligned;
+        if (addresses.device % 4 != 0) return error.Misaligned;
+
+        common.write16(offset.queue_select, index) catch |err| return mapRegionError(err);
+        const max_size = common.read16(offset.queue_size) catch |err| return mapRegionError(err);
+        if (size > max_size) return error.QueueSizeTooLarge;
+
+        common.write16(offset.queue_size, size) catch |err| return mapRegionError(err);
+        const confirmed = common.read16(offset.queue_size) catch |err| return mapRegionError(err);
+        if (confirmed != size) return error.QueueSizeTooLarge;
+
+        try writeAddress(common, offset.queue_desc, addresses.desc);
+        try writeAddress(common, offset.queue_driver, addresses.driver);
+        try writeAddress(common, offset.queue_device, addresses.device);
+    }
+
+    /// Habilita a fila `index` e confirma o estado lido de volta.
+    ///
+    /// A especificacao 4.1.4.3.2 exige que o dispositivo devolva 1 em
+    /// `queue_enable` depois da escrita. Um dispositivo que aceita a escrita e
+    /// nao a mantem seria conduzido como se a fila existisse, e o primeiro
+    /// pedido ficaria esperando uma conclusao que nunca chega — por isso a
+    /// leitura de volta faz parte da operacao, e nao do chamador.
+    pub fn enableQueue(self: *Transport, index: u16) Error!void {
+        const common = self.regions.common;
+
+        common.write16(offset.queue_select, index) catch |err| return mapRegionError(err);
+        common.write16(offset.queue_enable, 1) catch |err| return mapRegionError(err);
+        const confirmed = common.read16(offset.queue_enable) catch |err| return mapRegionError(err);
+        if (confirmed != 1) return error.QueueEnableNotConfirmed;
+    }
+
+    /// True quando o dispositivo mantem a fila `index` habilitada.
+    pub fn queueEnabled(self: *Transport, index: u16) Error!bool {
+        const common = self.regions.common;
+
+        common.write16(offset.queue_select, index) catch |err| return mapRegionError(err);
+        const enabled = common.read16(offset.queue_enable) catch |err| return mapRegionError(err);
+        return enabled == 1;
+    }
+
+    /// Escreve os 64 bits de um endereco de fila como dois DWORDs.
+    fn writeAddress(common: mmio.Region, at: u64, value: u64) Error!void {
+        common.write32(at, @truncate(value)) catch |err| return mapRegionError(err);
+        common.write32(at + 4, @truncate(value >> 32)) catch |err| return mapRegionError(err);
+    }
+
     /// Le a configuracao especifica do tipo de dispositivo.
     ///
     /// A leitura acontece byte a byte porque o comprimento e escolhido pelo
@@ -336,6 +413,7 @@ fn registerQueueNotifyOffset(ctx: *anyopaque, index: u16) transport.Error!u16 {
 
 const testing = std.testing;
 const features = @import("features.zig");
+const virtqueue = @import("virtqueue.zig");
 
 // ----------------------------------------------------------------------
 // BAR simulado.
@@ -358,11 +436,14 @@ const FakeBar = struct {
     var device_words: [2]u32 = @splat(0);
     /// As duas palavras que o driver publicou.
     var driver_words: [2]u32 = @splat(0);
+    /// Dispositivo que aceita a escrita de `queue_enable` e nao a mantem.
+    var ignore_queue_enable: bool = false;
 
     fn reset() void {
         bytes = @splat(0);
         device_words = @splat(0);
         driver_words = @splat(0);
+        ignore_queue_enable = false;
     }
 
     fn selected(select_offset: usize) usize {
@@ -390,6 +471,8 @@ const FakeBar = struct {
 
     fn write(_: ?*const anyopaque, address: u64, width: mmio.Width, value: u64) void {
         const start: usize = @intCast(address - base);
+
+        if (ignore_queue_enable and start == offset.queue_enable) return;
 
         // A escrita em driver_feature cai na palavra selecionada, e nao em
         // quatro bytes soltos.
@@ -747,4 +830,129 @@ test "virtio pci queue addresses are read from the selected queue" {
     FakeBar.reset();
     var narrow = try Transport.attach(identification, collection(0x28), FakeBar.region());
     try testing.expectError(error.MissingCommonRegion, narrow.queueAddresses(0));
+}
+
+test "virtio pci programs a queue size and the three physical addresses" {
+    var device = fakeTransport();
+    FakeBar.poke16(@intCast(offset.num_queues), 2);
+    FakeBar.poke16(@intCast(offset.queue_size), 256);
+
+    // Fila 0 com 128 descritores: 2048 bytes de tabela, 262 de anel
+    // available e o used depois do alinhamento.
+    const layout = virtqueue.Layout.compute(128) catch unreachable;
+    const physical: u64 = 0x0000_0001_3000_0000;
+    const addresses = layout.addresses(physical) catch unreachable;
+
+    try device.configureQueue(0, 128, .{
+        .desc = addresses.desc,
+        .driver = addresses.driver,
+        .device = addresses.device,
+    });
+
+    try testing.expectEqual(@as(u8, 0), FakeBar.peek8(@intCast(offset.queue_select)));
+    try testing.expectEqual(@as(u16, 128), FakeBar.peek16(@intCast(offset.queue_size)));
+
+    // Os tres enderecos sao gravados como dois DWORDs cada: o truncamento
+    // para 32 bits apareceria na metade alta.
+    try testing.expectEqual(@as(u32, 0x3000_0000), FakeBar.peek32(@intCast(offset.queue_desc)));
+    try testing.expectEqual(@as(u32, 0x0000_0001), FakeBar.peek32(@intCast(offset.queue_desc + 4)));
+    try testing.expectEqual(
+        @as(u32, @truncate(addresses.driver)),
+        FakeBar.peek32(@intCast(offset.queue_driver)),
+    );
+    try testing.expectEqual(
+        @as(u32, @truncate(addresses.device)),
+        FakeBar.peek32(@intCast(offset.queue_device)),
+    );
+
+    // A segunda fila recebe os proprios enderecos, e a selecao muda antes.
+    try device.configureQueue(1, 64, .{
+        .desc = 0x4000_0000,
+        .driver = 0x4000_0800,
+        .device = 0x4000_0900,
+    });
+    try testing.expectEqual(@as(u8, 1), FakeBar.peek8(@intCast(offset.queue_select)));
+    try testing.expectEqual(@as(u16, 64), FakeBar.peek16(@intCast(offset.queue_size)));
+    try testing.expectEqual(@as(u32, 0x4000_0000), FakeBar.peek32(@intCast(offset.queue_desc)));
+    try testing.expectEqual(@as(u32, 0x4000_0900), FakeBar.peek32(@intCast(offset.queue_device)));
+}
+
+test "virtio pci refuses queue sizes and addresses the specification forbids" {
+    var device = fakeTransport();
+    FakeBar.poke16(@intCast(offset.num_queues), 1);
+    FakeBar.poke16(@intCast(offset.queue_size), 256);
+
+    // Fila inexistente.
+    try testing.expectError(
+        error.InvalidQueue,
+        device.configureQueue(1, 64, .{ .desc = 0x1000, .driver = 0x2000, .device = 0x3000 }),
+    );
+    // Tamanho zero.
+    try testing.expectError(
+        error.InvalidQueue,
+        device.configureQueue(0, 0, .{ .desc = 0x1000, .driver = 0x2000, .device = 0x3000 }),
+    );
+    // Acima do maximo que o dispositivo informa.
+    try testing.expectError(
+        error.QueueSizeTooLarge,
+        device.configureQueue(0, 512, .{ .desc = 0x1000, .driver = 0x2000, .device = 0x3000 }),
+    );
+    // Desalinhamentos: 16 para descritores, 2 para available, 4 para used.
+    try testing.expectError(
+        error.Misaligned,
+        device.configureQueue(0, 64, .{ .desc = 0x1008, .driver = 0x2000, .device = 0x3000 }),
+    );
+    try testing.expectError(
+        error.Misaligned,
+        device.configureQueue(0, 64, .{ .desc = 0x1000, .driver = 0x2001, .device = 0x3000 }),
+    );
+    try testing.expectError(
+        error.Misaligned,
+        device.configureQueue(0, 64, .{ .desc = 0x1000, .driver = 0x2000, .device = 0x3002 }),
+    );
+
+    // Nada foi escrito na fila depois das recusas: o tamanho continua o que o
+    // dispositivo informou.
+    try testing.expectEqual(@as(u16, 256), FakeBar.peek16(@intCast(offset.queue_size)));
+    try testing.expectEqual(@as(u32, 0), FakeBar.peek32(@intCast(offset.queue_desc)));
+}
+
+test "virtio pci enables a queue and confirms the reading" {
+    // O BAR simulado tem uma copia unica de cada registrador de fila acima da
+    // selecao, e nao uma por fila: o teste usa uma fila so para que o valor
+    // lido seja o que o driver escreveu para ela.
+    var device = fakeTransport();
+    FakeBar.poke16(@intCast(offset.num_queues), 1);
+
+    try testing.expect(!try device.queueEnabled(0));
+    try device.enableQueue(0);
+    try testing.expect(try device.queueEnabled(0));
+    try testing.expectEqual(@as(u16, 1), FakeBar.peek16(@intCast(offset.queue_enable)));
+    try testing.expectEqual(@as(u8, 0), FakeBar.peek8(@intCast(offset.queue_select)));
+
+    // Um dispositivo que descarta a escrita nao pode ser dado como pronto.
+    FakeBar.ignore_queue_enable = true;
+    FakeBar.poke16(@intCast(offset.queue_enable), 0);
+    try testing.expectError(error.QueueEnableNotConfirmed, device.enableQueue(0));
+    try testing.expect(!try device.queueEnabled(0));
+}
+
+test "virtio pci queue programming is refused when the common region is short" {
+    FakeBar.reset();
+    // 0x1E bytes alcancam queue_enable (0x1C), mas nao a area do driver
+    // (0x28).
+    var narrow = try Transport.attach(identification, collection(0x1E), FakeBar.region());
+    FakeBar.poke16(@intCast(offset.num_queues), 1);
+    FakeBar.poke16(@intCast(offset.queue_size), 64);
+
+    narrow.configureQueue(0, 64, .{
+        .desc = 0x1000,
+        .driver = 0x2000,
+        .device = 0x3000,
+    }) catch |err| {
+        // O primeiro registrador que passa da faixa declarada e queue_desc.
+        try testing.expectEqual(@as(anyerror, error.MissingCommonRegion), err);
+        return;
+    };
+    return error.TestUnexpectedResult;
 }
