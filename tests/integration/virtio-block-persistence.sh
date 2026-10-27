@@ -182,7 +182,7 @@ verify_device_and_queue() {
     require_line "$stage" "[VNK] vvdi: modern device detected"
     require_line "$stage" "virtqueue 0 enabled"
     require_line "$stage" "DRIVER_OK status=0xf"
-    grep -Eq '\[VNK\] vvdi: 00:[0-9]+\.0 block I/O ready sectors=[1-9][0-9]* sector_size=512 flush=1$' "$WORK/$stage.serial" ||
+    tr -d '\r' < "$WORK/$stage.serial" | grep -Eq '\[VNK\] vvdi: 00:[0-9]+\.0 block I/O ready sectors=[1-9][0-9]* sector_size=512 flush=1$' ||
         fail_with_log "$stage" "dedicated VirtIO Block geometry/FLUSH assertion missing"
     require_line "$stage" "storage-test signature recognized on dedicated data disk"
     require_line "$stage" "storage-test complete boot=${stage#boot}"
