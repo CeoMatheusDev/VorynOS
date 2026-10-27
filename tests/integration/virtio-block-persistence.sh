@@ -110,7 +110,8 @@ run_boot() {
     local serial="$WORK/$stage.serial"
     local qemu_err="$WORK/$stage.qemu.err"
     local vars="$WORK/$stage.vars.fd"
-    local ready_marker="[VNK] vvdi: storage-test complete $stage"
+    local boot_number="${stage#boot}"
+    local ready_marker="[VNK] vvdi: storage-test complete boot=$boot_number"
     cp "$OVMF_VARS_PATH" "$vars"
 
     echo "virtio-block-test: starting $stage with dedicated disk $DATA_DISK"
@@ -184,7 +185,7 @@ verify_device_and_queue() {
     grep -Eq '\[VNK\] vvdi: 00:[0-9]+\.0 block I/O ready sectors=[1-9][0-9]* sector_size=512 flush=1$' "$WORK/$stage.serial" ||
         fail_with_log "$stage" "dedicated VirtIO Block geometry/FLUSH assertion missing"
     require_line "$stage" "storage-test signature recognized on dedicated data disk"
-    require_line "$stage" "storage-test complete $stage"
+    require_line "$stage" "storage-test complete boot=${stage#boot}"
 }
 
 run_boot boot1
