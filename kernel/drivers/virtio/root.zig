@@ -15,21 +15,29 @@
 
 //! Raiz do subsistema VirtIO do VorynOS.
 //!
-//! Este incremento entrega a fundacao do transporte PCI moderno:
+//! O subsistema esta dividido por responsabilidade, e a dependencia aponta
+//! para dentro:
 //!
-//!   * `types`    - tipos de dispositivo e identificadores PCI;
-//!   * `status`   - estados da inicializacao e transicoes validas;
-//!   * `features` - features de transporte e negociacao;
-//!   * `caps`     - capabilities VirtIO PCI modernas.
+//!   * `types`         - tipos de dispositivo e identificadores PCI;
+//!   * `status`        - estados da inicializacao e transicoes validas;
+//!   * `features`      - features de transporte e negociacao;
+//!   * `caps`          - capabilities VirtIO PCI modernas;
+//!   * `mmio`          - faixas mapeadas, janela virtual e acesso volatil;
+//!   * `transport`     - sequencia da especificacao contra `Registers`,
+//!                       inclusive `DRIVER_OK` depois das filas;
+//!   * `pci_transport` - layout 4.1.4.3, mapeamento do BAR e programacao das
+//!                       filas no dispositivo;
+//!   * `virtqueue`     - a fila dividida: descritores, anel `available` e
+//!                       anel `used`.
 //!
-//! Nada aqui toca em hardware: os modulos interpretam valores e bytes que o
-//! chamador leu do espaco de configuracao PCI, e por isso os testes rodam no
-//! host. O que ainda NAO existe, e que nao pode ser anunciado como pronto:
+//! Nada aqui le ou escreve setor. O incremento atual leva a inicializacao ate
+//! `DRIVER_OK` com a fila 0 programada, habilitada e vazia; publicar pedidos,
+//! consumir conclusoes e notificar o dispositivo sao operacoes da fila, e o
+//! driver de bloco que as usa ainda nao existe:
 //!
-//!   * mapeamento de BAR e acesso MMIO;
-//!   * escrita do registro de status e negociacao real com o dispositivo;
-//!   * virtqueues programadas, notificacoes e conclusoes;
-//!   * qualquer driver funcional, inclusive o de blocos.
+//!   * nenhuma leitura ou escrita de disco;
+//!   * nenhuma interrupcao do dispositivo (o `used` e observado por consulta);
+//!   * nenhum driver funcional, inclusive o de blocos.
 //!
 //! O modulo nao importa `pci.zig`: a raiz de um modulo Zig precisa estar
 //! acima de todos os arquivos que ele importa, e o subsistema e testado e
@@ -44,6 +52,7 @@ pub const caps = @import("caps.zig");
 pub const mmio = @import("mmio.zig");
 pub const transport = @import("transport.zig");
 pub const pci_transport = @import("pci_transport.zig");
+pub const virtqueue = @import("virtqueue.zig");
 
 // Os testes dos modulos vivem neles mesmos; este bloco e o que os traz para
 // o binario de teste. Sem ele o binario e construido com zero testes e passa
@@ -56,6 +65,7 @@ test {
     _ = mmio;
     _ = transport;
     _ = pci_transport;
+    _ = virtqueue;
 }
 
 const std = @import("std");

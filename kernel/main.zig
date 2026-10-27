@@ -1109,7 +1109,7 @@ fn probeVirtqueueLayout() void {
 }
 
 // ----------------------------------------------------------------------
-// F7/PR B: transporte VirtIO PCI moderno.
+// F7/PR B e PR C: transporte VirtIO PCI moderno e virtqueue dividida.
 //
 // A ordem da sequencia e a da especificacao e a do boot:
 //
@@ -1118,16 +1118,18 @@ fn probeVirtqueueLayout() void {
 //   -> descoberta do dispositivo
 //   -> mapeamento do BAR com cache desabilitado
 //   -> negocacao de features ate FEATURES_OK
+//   -> memoria DMA da fila -> programacao e habilitacao da fila 0
+//   -> DRIVER_OK
 //
 // A janela virtual e reservada junto com as tabelas de pagina, antes de
 // qualquer espaco de processo, pelo mesmo motivo da janela de DMA: os
 // espacos copiam a tabela de nivel 2, e uma tabela de nivel 1 criada depois
 // nao apareceria nos espacos que ja existem.
 //
-// O que este incremento NAO faz: nao programa virtqueue, nao escreve
-// DRIVER_OK e nao le nem escreve setor. O dispositivo para em FEATURES_OK,
-// que e o estado correto antes das filas, e a mensagem final diz isso com
-// todas as letras.
+// O que este incremento NAO faz: nao publica pedido, nao consome conclusao e
+// nao le nem escreve setor. Ele entrega o dispositivo pronto — fila 0 com as
+// tres areas em memoria DMA, `queue_size` programado, `queue_enable`
+// confirmado e DRIVER_OK escrito por ultimo — e para ali.
 // ----------------------------------------------------------------------
 
 /// Janela virtual onde os BARs dos dispositivos sao mapeados.
@@ -1269,7 +1271,7 @@ fn bringUpVirtioDevices() void {
     if (found == 0) {
         serial.printLine("[VNK] virtio: no function of vendor 0x1af4 on bus 0", .{});
     } else if (!ready) {
-        serial.printLine("[VNK] virtio-pci: no modern virtio-blk reached FEATURES_OK", .{});
+        serial.printLine("[VNK] virtio-pci: no modern virtio-blk was brought up", .{});
     }
 }
 
@@ -1456,8 +1458,325 @@ fn bringUpVirtioFunction(
         target.status,
     });
     serial.printLine(
-        "[VNK] virtio-pci: 00:{d}.0 awaiting virtqueue setup queues={d} status=0x{x}; DRIVER_OK not written",
+        "[VNK] virtio-pci: 00:{d}.0 awaiting virtqueue setup queues={d} status=0x{x}",
         .{ device, target.queues, target.status },
+    );
+
+    // PR C: a fila 0 recebe as tres areas em memoria DMA, e so depois dela
+    // programada e habilitada DRIVER_OK e escrito.
+    if (!programVirtqueue(&target, &transport, device)) {
+        window.unmap(&region);
+        return false;
+    }
+
+    return true;
+}
+
+// ----------------------------------------------------------------------
+// F7/PR C: virtqueue dividida nativa.
+//
+// A fila do boot e a fila 0 do dispositivo alvo, com as tres areas no mesmo
+// buffer fisicamente contiguo do alocador de DMA e um `Queue` que mantem o
+// estado do driver. A ordem e a da especificacao 2.7 e 4.1.4.3.2:
+//
+//   tamanho -> memoria -> layout -> queue_size -> enderecos -> queue_enable
+//   -> DRIVER_OK
+//
+// Nenhum pedido e publicado e nenhuma conclusao e consumida: o incremento
+// termina com a fila pronta e vazia.
+// ----------------------------------------------------------------------
+
+/// Capacidade da fila do boot.
+///
+/// E o maior tamanho que o virtio-blk do QEMU anuncia, e dimensiona o estado
+/// auxiliar de `virtqueue.Queue` (dois bitsets de 256 bits) em vez dos 32768
+/// que a especificacao permite.
+const virtqueue_capacity: u16 = 256;
+
+const Virtqueue = virtio_modern.virtqueue.Queue(virtqueue_capacity);
+
+/// Memoria e estado da fila 0 do dispositivo alvo.
+///
+/// A reserva de DMA, o mapeamento virtual e a fila ficam vivos pelo resto do
+/// boot: depois de `queue_enable` o dispositivo pode ler e escrever essa
+/// memoria a qualquer momento, e devolve-la ao alocador enquanto ele ainda a
+/// referencia entregaria ao dispositivo paginas de outro dono. Nao existe
+/// `defer` para eles.
+const VirtqueueState = struct {
+    buffer: ?dma.Buffer = null,
+    mapped: ?dma.MappedBuffer = null,
+    queue: ?Virtqueue = null,
+    size: u16 = 0,
+    /// Posse da memoria depois da escrita de `queue_enable`.
+    ///
+    /// A marca e do transporte porque e ele que conhece a sequencia: a
+    /// memoria sai das maos do driver no `queue_enable` e so volta quando o
+    /// dispositivo confirma o reset.
+    ownership: virtio_modern.transport.QueueMemory = .{},
+};
+
+var virtqueue_state: VirtqueueState = .{};
+
+/// Devolve a memoria da fila ao alocador, e so quando o dispositivo largou.
+///
+/// A pergunta e feita a `QueueMemory`: antes da entrega a memoria e do driver
+/// e qualquer falha pode devolve-la; depois dela so um reset confirmado
+/// devolve a posse. Sem essa confirmacao a memoria fica reservada — vazar uma
+/// fila e melhor do que o alocador entregar ao dispositivo paginas que outro
+/// dono ja recebeu.
+fn releaseVirtqueueMemory() void {
+    if (!virtqueue_state.ownership.canReturnToAllocator()) {
+        serial.printLine("[VNK] FATAL: the virtqueue memory stays reserved, the device did not release the queue", .{});
+        return;
+    }
+
+    if (virtqueue_state.mapped) |*mapped| dma.unmapVirtual(mapped, &physical.manager);
+    if (virtqueue_state.buffer) |*buffer| buffer.release(&physical.manager);
+    virtqueue_state = .{};
+}
+
+/// Desfaz a programacao da fila depois de uma falha.
+///
+/// Uma falha em `configureQueue`, em `enableQueue` ou em `queueEnabled` e
+/// ambigua: o dispositivo pode ter recebido os enderecos ou o `queue_enable` e
+/// estar lendo a memoria da fila. Antes de devolver as paginas ao alocador a
+/// funcao reseta o dispositivo e exige a leitura de volta em zero; sem essa
+/// confirmacao a memoria continua reservada.
+fn abandonVirtqueue(target: *virtio_modern.transport.Device, device: u8) void {
+    if (target.resetDevice()) |_| {
+        virtqueue_state.ownership.deviceReleased();
+        serial.printLine(
+            "[VNK] virtio-pci: 00:{d}.0 device reset after the virtqueue failure, status={d}",
+            .{ device, target.status },
+        );
+    } else |err| {
+        serial.printLine(
+            "[VNK] FATAL: 00:{d}.0 the device did not confirm the reset after the virtqueue failure: {s}",
+            .{ device, @errorName(err) },
+        );
+    }
+
+    releaseVirtqueueMemory();
+}
+
+/// Reserva a memoria da fila e a mapeia na janela de DMA.
+///
+/// Reusa `memory/dma.zig`: a reserva e de paginas fisicas contiguas abaixo de
+/// 4 GiB (`dma32_limit`), e o mapeamento virtual passa por
+/// `paging.mapKernelDataPage`, como qualquer outro buffer de DMA do kernel.
+fn allocateVirtqueueMemory(byte_length: u64) ?dma.MappedBuffer {
+    var buffer = dma.allocate(&physical.manager, byte_length, dma.dma32_limit) orelse return null;
+    const mapped = dma.mapVirtual(buffer) orelse {
+        buffer.release(&physical.manager);
+        return null;
+    };
+    virtqueue_state.buffer = buffer;
+    virtqueue_state.mapped = mapped;
+    return mapped;
+}
+
+/// Programa a fila 0, habilita e escreve DRIVER_OK.
+///
+/// Cada etapa verifica o que a anterior produziu: o tamanho vem do dispositivo,
+/// o layout do tamanho, os enderecos do layout, e o `queue_enable` e lido de
+/// volta. So depois de tudo isso o protocolo aceita DRIVER_OK — sem fila
+/// pronta, `transport.Device.activate` recusa a escrita.
+fn programVirtqueue(
+    target: *virtio_modern.transport.Device,
+    device_transport: *virtio_modern.pci_transport.Transport,
+    device: u8,
+) bool {
+    if (virtqueue_state.queue != null or virtqueue_state.buffer != null) {
+        serial.printLine("[VNK] FATAL: the virtqueue memory is already in use", .{});
+        return false;
+    }
+
+    // 1. Tamanho: o maior valor da especificacao que o dispositivo aceita.
+    const device_max = target.queueMaxSize(0) catch |err| {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 max size failed: {s}", .{
+            device,
+            @errorName(err),
+        });
+        return false;
+    };
+    const size = virtio_modern.virtqueue.Layout.negotiateSize(device_max) catch |err| {
+        serial.printLine(
+            "[VNK] virtio-pci: 00:{d}.0 virtqueue 0 rejected max={d}: {s}",
+            .{ device, device_max, @errorName(err) },
+        );
+        return false;
+    };
+    const layout = virtio_modern.virtqueue.Layout.compute(size) catch |err| {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 layout failed: {s}", .{
+            device,
+            @errorName(err),
+        });
+        return false;
+    };
+
+    // 2. Memoria: paginas fisicas contiguas, mapeadas na janela de DMA.
+    const mapped = allocateVirtqueueMemory(layout.total_size) orelse {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 has no DMA memory for {d} bytes", .{
+            device,
+            layout.total_size,
+        });
+        return false;
+    };
+    const buffer = virtqueue_state.buffer.?;
+
+    // 3. Filas vazias, free list completa e aneis zerados.
+    var queue = Virtqueue.init(.{
+        .physical = buffer.physical_address,
+        .bytes = mapped.virtual[0..layout.total_size],
+    }, size) catch |err| {
+        releaseVirtqueueMemory();
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 init failed: {s}", .{
+            device,
+            @errorName(err),
+        });
+        return false;
+    };
+    if (queue.freeCount() != size or queue.inFlightCount() != 0) {
+        releaseVirtqueueMemory();
+        serial.printLine("[VNK] FATAL: the virtqueue did not start empty", .{});
+        return false;
+    }
+
+    const addresses = queue.addresses() catch |err| {
+        releaseVirtqueueMemory();
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 addresses failed: {s}", .{
+            device,
+            @errorName(err),
+        });
+        return false;
+    };
+
+    serial.printLine(
+        "[VNK] virtio-pci: 00:{d}.0 virtqueue 0 dma phys=0x{x} virt=0x{x} size={d} bytes={d} desc=0x{x} avail=0x{x} used=0x{x}",
+        .{
+            device,
+            buffer.physical_address,
+            @intFromPtr(mapped.virtual),
+            size,
+            layout.total_size,
+            addresses.desc,
+            addresses.driver,
+            addresses.device,
+        },
+    );
+
+    // 4. Programacao: tamanho e os tres enderecos fisicos.
+    //
+    // A posse da memoria pelo dispositivo comeca aqui, e nao depois do
+    // `queue_enable`. `configureQueue` ja escreve no dispositivo os enderecos
+    // desta memoria, e uma falha no meio pode deixa-los gravados: o erro nao
+    // prova que o dispositivo ficou sem acesso a ela. Marcar a posse antes da
+    // primeira escrita mantem a regra do modulo — so o reset confirmado
+    // devolve a memoria — verdadeira em todas as saidas de erro seguintes,
+    // inclusive quando o dispositivo se apresenta habilitado e nenhuma
+    // escrita chega a acontecer.
+    virtqueue_state.ownership.handOver();
+
+    device_transport.configureQueue(0, size, .{
+        .desc = addresses.desc,
+        .driver = addresses.driver,
+        .device = addresses.device,
+    }) catch |err| {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 programming failed: {s}", .{
+            device,
+            @errorName(err),
+        });
+        // Os enderecos podem ter sido escritos em parte: o dispositivo nao
+        // pode ficar apontando para uma fila que vai voltar ao alocador.
+        abandonVirtqueue(target, device);
+        return false;
+    };
+
+    // 5. Habilitacao, com o estado lido de volta.
+    device_transport.enableQueue(0) catch |err| {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 enable failed: {s}", .{
+            device,
+            @errorName(err),
+        });
+        // Falha ambigua em dois sentidos: o `queue_enable` pode ter sido
+        // aceito, e o proprio erro pode ter vindo de uma fila que ja se
+        // apresentava habilitada. Nenhum dos dois casos prova que o
+        // dispositivo parou de usar a memoria; a posse ja foi registrada
+        // antes de `configureQueue`, e so o reset confirmado a devolve.
+        abandonVirtqueue(target, device);
+        return false;
+    };
+
+    const enabled = device_transport.queueEnabled(0) catch |err| {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 enable check failed: {s}", .{
+            device,
+            @errorName(err),
+        });
+        abandonVirtqueue(target, device);
+        return false;
+    };
+    if (!enabled) {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 did not stay enabled", .{device});
+        abandonVirtqueue(target, device);
+        return false;
+    }
+
+    // A fila fica guardada para o resto do boot; a memoria so volta ao
+    // alocador se o dispositivo confirmar um reset (`abandonVirtqueue`).
+    virtqueue_state.queue = queue;
+    virtqueue_state.size = size;
+
+    target.markQueueReady(0) catch |err| {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 ready failed: {s}", .{
+            device,
+            @errorName(err),
+        });
+        abandonVirtqueue(target, device);
+        return false;
+    };
+
+    serial.printLine(
+        "[VNK] virtio-pci: 00:{d}.0 virtqueue 0 enabled size={d} queues={d} free={d} avail={d} used={d}",
+        .{
+            device,
+            size,
+            target.queues,
+            queue.freeCount(),
+            queue.availableIndex(),
+            queue.usedIndex(),
+        },
+    );
+
+    // 6. DRIVER_OK, e so agora: a fila existe, tem enderecos e esta habilitada.
+    switch (target.finish()) {
+        .failed => |failure| {
+            serial.printLine("[VNK] virtio-pci: 00:{d}.0 activation failed at {s}: {s}", .{
+                device,
+                failure.stage.label(),
+                @errorName(failure.reason),
+            });
+            // O chamador desmapeia o BAR em seguida: um dispositivo que fique
+            // com filas habilitadas e sem BAR mapeado nao tem como ser
+            // conduzido. O reset devolve a memoria ao driver.
+            abandonVirtqueue(target, device);
+            return false;
+        },
+        .initialized => {},
+    }
+
+    const phase: ?virtio_modern.status.Phase = target.phase() catch null;
+    if (target.status != 0x0F or phase != .driver_ok or !virtio_modern.status.isReady(target.status)) {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 DRIVER_OK was not confirmed status=0x{x}", .{
+            device,
+            target.status,
+        });
+        abandonVirtqueue(target, device);
+        return false;
+    }
+
+    serial.printLine(
+        "[VNK] virtio-pci: 00:{d}.0 DRIVER_OK status=0x{x} queues_ready={d} virtqueue=0",
+        .{ device, target.status, target.readyQueues() },
     );
 
     return true;

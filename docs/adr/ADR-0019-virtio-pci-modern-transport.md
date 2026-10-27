@@ -8,6 +8,10 @@
 - **Especificação de referência:** VirtIO 1.x, seções 2.4, 3.1.1, 4.1.2, 4.1.4.3,
   4.1.4.4 e 4.1.5
 - **Continua:** [ADR-0018](ADR-0018-virtio-pci-modern-subsystem.md) (fundação)
+- **Continua em:** [ADR-0020](ADR-0020-split-virtqueue.md) (virtqueue e `DRIVER_OK`)
+- **Nota:** a afirmação abaixo de que "não existe função que escreva `DRIVER_OK`" descreve
+  este incremento; o ADR-0020 acrescenta `markQueueReady`/`activate`, com a fechadura que
+  exige uma fila programada antes do bit 2.
 - **Relatório:** [`../reports/f7/virtio-pci-modern-pr-b.md`](../reports/f7/virtio-pci-modern-pr-b.md)
 
 ## Contexto

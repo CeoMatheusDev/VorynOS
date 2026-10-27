@@ -404,13 +404,33 @@ require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 capabilities validated bar=[0-
 require_pattern '\[VNK\] virtio-pci: MMIO mapped 00:[0-9]+\.0 bar[0-9]+ phys=0x[0-9a-f]+ size=0x[0-9a-f]+ virt=0x[0-9a-f]+' 'the mapped device BAR'
 require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 VERSION_1 negotiated features=0x[0-9a-f]+ offered=0x[0-9a-f]+' 'VIRTIO_F_VERSION_1 negotiation over the features read from the device'
 require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 FEATURES_OK accepted status=0x[0-9a-f]+' 'the FEATURES_OK confirmation'
-require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 awaiting virtqueue setup queues=[1-9][0-9]* status=0xb; DRIVER_OK not written' 'the final state before the virtqueues'
+require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 awaiting virtqueue setup queues=[1-9][0-9]* status=0xb' 'FEATURES_OK confirmed before the virtqueue'
 
-# O estado do dispositivo tem que ser 0x0b (ACKNOWLEDGE|DRIVER|FEATURES_OK).
-# Qualquer linha com DRIVER_OK (0x0f) provaria uma ativacao antes das
-# virtqueues, e o teste tem que falhar.
-if grep -qE '\[VNK\] virtio-pci: .*status=0x[fF]' "$SERIAL_LOG"; then
-    record_failure 'DRIVER_OK was written before the virtqueues (status=0x0f)'
+# PR C do VirtIO moderno: a fila 0 tem de existir em memoria DMA, ser
+# programada com tamanho e tres enderecos, ficar habilitada e so entao
+# receber DRIVER_OK. As linhas vem na ordem da especificacao 4.1.4.3.2, e o
+# teste exige as quatro.
+require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 virtqueue 0 dma phys=0x[0-9a-f]+ virt=0x[0-9a-f]+ size=[1-9][0-9]* bytes=[1-9][0-9]* desc=0x[0-9a-f]+ avail=0x[0-9a-f]+ used=0x[0-9a-f]+' 'the DMA memory of the virtqueue'
+require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 virtqueue 0 enabled size=[1-9][0-9]* queues=[1-9][0-9]* free=[1-9][0-9]* avail=0 used=0' 'the enabled and empty virtqueue'
+require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 DRIVER_OK status=0xf queues_ready=1 virtqueue=0' 'DRIVER_OK after the virtqueue'
+
+# A ordem e parte do contrato: DRIVER_OK (status 0x0f) anunciado antes de a
+# fila estar habilitada seria o falso sucesso que o incremento impede.
+VIRTQUEUE_LINE="$(grep -nE '\[VNK\] virtio-pci: 00:[0-9]+\.0 virtqueue 0 enabled size=' "$SERIAL_LOG" | head -n 1 | cut -d: -f1 || true)"
+DRIVER_OK_LINE="$(grep -nE '\[VNK\] virtio-pci: 00:[0-9]+\.0 DRIVER_OK status=0xf queues_ready=1 virtqueue=0' "$SERIAL_LOG" | head -n 1 | cut -d: -f1 || true)"
+if [[ -z "$VIRTQUEUE_LINE" || -z "$DRIVER_OK_LINE" ]]; then
+    record_failure 'the virtqueue and DRIVER_OK lines are not in the log'
+elif (( DRIVER_OK_LINE < VIRTQUEUE_LINE )); then
+    record_failure 'DRIVER_OK was written before the virtqueue was enabled'
+fi
+
+# Nenhuma outra linha de virtio-pci pode trazer status=0xf: o unico lugar em
+# que DRIVER_OK aparece e a linha da ativacao.
+STRAY_DRIVER_OK="$(grep -E '\[VNK\] virtio-pci:' "$SERIAL_LOG" \
+    | grep -E 'status=0x[fF]' \
+    | grep -vE 'DRIVER_OK status=0xf' || true)"
+if [[ -n "$STRAY_DRIVER_OK" ]]; then
+    record_failure 'status=0xf outside the DRIVER_OK line'
 fi
 require_marker "[VNK] timer:"
 require_marker "[VNK] keyboard: ready for PS/2 input"
