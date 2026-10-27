@@ -1343,6 +1343,7 @@ fn verifyVirtioBlockPersistenceProbe() void {
             port.haltForever();
         }
         serial.printLine("[VNK] vvdi: storage data compare verified bytes={d}", .{storage_test_actual.len});
+        serial.printLine("[VNK] vvdi: storage-test complete boot=1", .{});
     } else if (std.mem.eql(u8, &storage_test_expected, &storage_test_actual)) {
         serial.printLine("[VNK] vvdi: storage-test phase=boot2", .{});
         serial.printLine("[VNK] vvdi: storage read completed lba={d} bytes={d}", .{
@@ -1354,6 +1355,7 @@ fn verifyVirtioBlockPersistenceProbe() void {
             storage_test_lba,
             storage_test_actual.len,
         });
+        serial.printLine("[VNK] vvdi: storage-test complete boot=2", .{});
     } else {
         serial.printLine("[VNK] FATAL: storage-test sector has unexpected nonzero data", .{});
         port.haltForever();

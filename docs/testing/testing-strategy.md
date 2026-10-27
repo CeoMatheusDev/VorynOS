@@ -122,7 +122,8 @@ through Boot 1 and Boot 2. The guest writes a deterministic 512-byte payload
 at LBA 64, requires a completed VirtIO FLUSH, reads it back and compares all
 bytes; the second boot performs a read-only comparison and emits the persistence
 marker only for the matching data. Each QEMU process has an external timeout
-and is terminated through the monitor after the guest reaches its ready marker.
+and is terminated through the monitor after the guest emits a stage-specific
+storage-test completion marker (after all Boot 1 or Boot 2 assertions).
 `zig build check` includes this test. The script is present; until its QEMU/OVMF
 run succeeds in CI, no real-I/O or persistence result is claimed.
 

@@ -110,6 +110,7 @@ run_boot() {
     local serial="$WORK/$stage.serial"
     local qemu_err="$WORK/$stage.qemu.err"
     local vars="$WORK/$stage.vars.fd"
+    local ready_marker="[VNK] vvdi: storage-test complete $stage"
     cp "$OVMF_VARS_PATH" "$vars"
 
     echo "virtio-block-test: starting $stage with dedicated disk $DATA_DISK"
@@ -129,7 +130,7 @@ run_boot() {
 
     local ready=0
     for _ in $(seq 1 600); do
-        if [[ -s "$serial" ]] && grep -qF "VORYN-KERNEL-READY" "$serial"; then
+        if [[ -s "$serial" ]] && grep -qF "$ready_marker" "$serial"; then
             ready=1
             break
         fi
@@ -141,10 +142,11 @@ run_boot() {
         fi
         sleep 0.2
     done
-    [[ "$ready" -eq 1 ]] || fail_with_log "$stage" "external timeout waiting for VORYN-KERNEL-READY"
+    [[ "$ready" -eq 1 ]] || fail_with_log "$stage" "external timeout waiting for $ready_marker"
 
     # HMP quit closes QEMU normally, allowing the block backend to commit its
-    # host-side cache. The guest must already have completed FLUSH before this.
+    # host-side cache. The stage-specific marker follows every required I/O
+    # assertion (including FLUSH on Boot 1) before shutdown is requested.
     python3 - "$monitor" <<'PY' || fail_with_log "$stage" "could not request controlled QEMU shutdown"
 import socket, sys, time
 path = sys.argv[1]
@@ -182,7 +184,7 @@ verify_device_and_queue() {
     grep -Eq '\[VNK\] vvdi: 00:[0-9]+\.0 block I/O ready sectors=[1-9][0-9]* sector_size=512 flush=1$' "$WORK/$stage.serial" ||
         fail_with_log "$stage" "dedicated VirtIO Block geometry/FLUSH assertion missing"
     require_line "$stage" "storage-test signature recognized on dedicated data disk"
-    require_line "$stage" "VORYN-KERNEL-READY"
+    require_line "$stage" "storage-test complete $stage"
 }
 
 run_boot boot1
