@@ -22,7 +22,7 @@ Uma operação só retorna sucesso depois que a used ring devolve o head publica
 - **Boot 2:** o script mantém o mesmo arquivo, verifica o mesmo inode e não o trunca nem recria. O kernel lê LBA 64, compara com o padrão e só então emite `storage persistence confirmed boot=2`. O script reprova se Boot 2 publicar escrita ou FLUSH, ou se qualquer marcador estiver ausente.
 - Cada execução QEMU é limitada por `timeout`; após os marcadores de boot, o HMP `quit` pede encerramento controlado.
 
-O teste está incluído como `zig build qemu-storage-test` e como dependência de `zig build check`. Na primeira CI (#15), testes de unidade, construção e o passo dedicado de boot QEMU passaram, mas `zig build check` falhou; a revisão encontrou uma expressão regular super-escapada na asserção de geometria/FLUSH do script e a corrigiu. A CI precisa ser repetida para confirmar que essa era a falha e para obter evidência de I/O/persistência. O QEMU/OVMF do ambiente local não estão disponíveis; nenhum resultado de Boot 2 é declarado ainda.
+O teste está incluído como `zig build qemu-storage-test` e como dependência de `zig build check`. As execuções CI #15 até agora passaram nos testes de unidade, construção e no passo dedicado de boot QEMU, mas `zig build check` falhou dentro do novo teste: QEMU Boot 1 expirou (status 124) antes de `VORYN-KERNEL-READY`. Uma expressão regular de asserção também foi corrigida; isso não resolveu o timeout. O build agora serializa o boot QEMU existente antes da integração de armazenamento, e o harness/CI preservam linhas curtas de VVDI/FATAL para diagnóstico. Outra execução CI é necessária; não há evidência de I/O concluído nem de persistência em Boot 2. QEMU/OVMF não estão disponíveis no ambiente local.
 
 ## Verificações locais atuais
 

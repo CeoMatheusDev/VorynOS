@@ -569,6 +569,9 @@ pub fn build(b: *std.Build) void {
     storage_test.has_side_effects = true;
     storage_test.step.dependOn(&image_step.step);
     storage_test_step.dependOn(&image_step.step);
+    // Both integration suites boot QEMU/TCG. Serialize them so the existing
+    // boot regression cannot starve the two-boot storage deadline.
+    storage_test_step.dependOn(qemu_test_step);
     storage_test_step.dependOn(&storage_test.step);
 
     const interactive_test_step = b.step("qemu-interactive-test", "Verify persistent PS/2 graphics input in QEMU");

@@ -88,11 +88,15 @@ fail_with_log() {
     local stage="$1" reason="$2"
     echo "FAIL: $stage: $reason" >&2
     if [[ -f "$WORK/$stage.serial" ]]; then
-        echo "----- $stage serial -----" >&2
-        cat "$WORK/$stage.serial" >&2
-        echo "-------------------------" >&2
+        echo "----- $stage VVDI/boot serial diagnostics -----" >&2
+        grep -E '^\[VNK\] (vvdi:|FATAL:)|VORYN-KERNEL-READY|storage-test' "$WORK/$stage.serial" \
+            | tail -n 80 \
+            | sed 's/^/virtio-block-test: serial: /' >&2 || true
+        echo "-----------------------------------------------" >&2
     fi
-    if [[ -f "$WORK/$stage.qemu.err" ]]; then cat "$WORK/$stage.qemu.err" >&2; fi
+    if [[ -f "$WORK/$stage.qemu.err" && -s "$WORK/$stage.qemu.err" ]]; then
+        sed 's/^/virtio-block-test: qemu: /' "$WORK/$stage.qemu.err" >&2
+    fi
     exit 1
 }
 require_line() {
