@@ -1507,24 +1507,56 @@ const VirtqueueState = struct {
     mapped: ?dma.MappedBuffer = null,
     queue: ?Virtqueue = null,
     size: u16 = 0,
-    programmed: bool = false,
+    /// Posse da memoria depois da escrita de `queue_enable`.
+    ///
+    /// A marca e do transporte porque e ele que conhece a sequencia: a
+    /// memoria sai das maos do driver no `queue_enable` e so volta quando o
+    /// dispositivo confirma o reset.
+    ownership: virtio_modern.transport.QueueMemory = .{},
 };
 
 var virtqueue_state: VirtqueueState = .{};
 
-/// Devolve a memoria da fila ao alocador.
+/// Devolve a memoria da fila ao alocador, e so quando o dispositivo largou.
 ///
-/// So e chamada antes de a fila ser programada no dispositivo: depois disso a
-/// memoria pertence tambem ao dispositivo, e devolve-la seria pior do que
-/// mante-la reservada.
+/// A pergunta e feita a `QueueMemory`: antes da entrega a memoria e do driver
+/// e qualquer falha pode devolve-la; depois dela so um reset confirmado
+/// devolve a posse. Sem essa confirmacao a memoria fica reservada — vazar uma
+/// fila e melhor do que o alocador entregar ao dispositivo paginas que outro
+/// dono ja recebeu.
 fn releaseVirtqueueMemory() void {
-    // Depois da programacao a memoria e do dispositivo tambem: devolve-la
-    // deixaria o alocador entregando paginas que o dispositivo ainda escreve.
-    if (virtqueue_state.programmed) return;
+    if (!virtqueue_state.ownership.canReturnToAllocator()) {
+        serial.printLine("[VNK] FATAL: the virtqueue memory stays reserved, the device did not release the queue", .{});
+        return;
+    }
 
     if (virtqueue_state.mapped) |*mapped| dma.unmapVirtual(mapped, &physical.manager);
     if (virtqueue_state.buffer) |*buffer| buffer.release(&physical.manager);
     virtqueue_state = .{};
+}
+
+/// Desfaz a programacao da fila depois de uma falha.
+///
+/// Uma falha em `configureQueue`, em `enableQueue` ou em `queueEnabled` e
+/// ambigua: o dispositivo pode ter recebido os enderecos ou o `queue_enable` e
+/// estar lendo a memoria da fila. Antes de devolver as paginas ao alocador a
+/// funcao reseta o dispositivo e exige a leitura de volta em zero; sem essa
+/// confirmacao a memoria continua reservada.
+fn abandonVirtqueue(target: *virtio_modern.transport.Device, device: u8) void {
+    if (target.resetDevice()) |_| {
+        virtqueue_state.ownership.deviceReleased();
+        serial.printLine(
+            "[VNK] virtio-pci: 00:{d}.0 device reset after the virtqueue failure, status={d}",
+            .{ device, target.status },
+        );
+    } else |err| {
+        serial.printLine(
+            "[VNK] FATAL: 00:{d}.0 the device did not confirm the reset after the virtqueue failure: {s}",
+            .{ device, @errorName(err) },
+        );
+    }
+
+    releaseVirtqueueMemory();
 }
 
 /// Reserva a memoria da fila e a mapeia na janela de DMA.
@@ -1639,48 +1671,58 @@ fn programVirtqueue(
         .driver = addresses.driver,
         .device = addresses.device,
     }) catch |err| {
-        releaseVirtqueueMemory();
         serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 programming failed: {s}", .{
             device,
             @errorName(err),
         });
+        // Os enderecos podem ter sido escritos em parte: o dispositivo nao
+        // pode ficar apontando para uma fila que vai voltar ao alocador.
+        abandonVirtqueue(target, device);
         return false;
     };
 
     // 5. Habilitacao, com o estado lido de volta.
     device_transport.enableQueue(0) catch |err| {
-        releaseVirtqueueMemory();
         serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 enable failed: {s}", .{
             device,
             @errorName(err),
         });
+        // Falha ambigua: o `queue_enable` pode ter sido aceito. O reset e a
+        // unica confirmacao de que o dispositivo parou de usar a fila.
+        abandonVirtqueue(target, device);
         return false;
     };
+
+    // Daqui em diante a memoria e do dispositivo tambem. A posse e registrada
+    // antes de qualquer verificacao seguinte, e nao depois: entre a escrita de
+    // `queue_enable` e a leitura de volta existe uma janela em que o
+    // dispositivo ja pode estar lendo a fase de descritores.
+    virtqueue_state.ownership.handOver();
     const enabled = device_transport.queueEnabled(0) catch |err| {
-        releaseVirtqueueMemory();
         serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 enable check failed: {s}", .{
             device,
             @errorName(err),
         });
+        abandonVirtqueue(target, device);
         return false;
     };
     if (!enabled) {
-        releaseVirtqueueMemory();
         serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 did not stay enabled", .{device});
+        abandonVirtqueue(target, device);
         return false;
     }
 
-    // A partir daqui a memoria e do dispositivo tambem: ela nao volta para o
-    // alocador, mesmo que o DRIVER_OK seguinte falhe.
+    // A fila fica guardada para o resto do boot; a memoria so volta ao
+    // alocador se o dispositivo confirmar um reset (`abandonVirtqueue`).
     virtqueue_state.queue = queue;
     virtqueue_state.size = size;
-    virtqueue_state.programmed = true;
 
     target.markQueueReady(0) catch |err| {
         serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 ready failed: {s}", .{
             device,
             @errorName(err),
         });
+        abandonVirtqueue(target, device);
         return false;
     };
 
@@ -1704,6 +1746,10 @@ fn programVirtqueue(
                 failure.stage.label(),
                 @errorName(failure.reason),
             });
+            // O chamador desmapeia o BAR em seguida: um dispositivo que fique
+            // com filas habilitadas e sem BAR mapeado nao tem como ser
+            // conduzido. O reset devolve a memoria ao driver.
+            abandonVirtqueue(target, device);
             return false;
         },
         .initialized => {},
@@ -1715,12 +1761,13 @@ fn programVirtqueue(
             device,
             target.status,
         });
+        abandonVirtqueue(target, device);
         return false;
     }
 
     serial.printLine(
         "[VNK] virtio-pci: 00:{d}.0 DRIVER_OK status=0x{x} queues_ready={d} virtqueue=0",
-        .{ device, target.status, target.ready_queues },
+        .{ device, target.status, target.readyQueues() },
     );
 
     return true;

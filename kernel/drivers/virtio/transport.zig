@@ -87,6 +87,11 @@ pub const Error = error{
     PackedRingUnsupported,
     /// O indice de fila pedido nao existe no dispositivo.
     InvalidQueue,
+    /// A fila ja foi registrada como pronta. Registrar de novo nao e uma
+    /// segunda fila: seria o mesmo indice contado duas vezes.
+    QueueAlreadyReady,
+    /// O indice passa do que este transporte acompanha.
+    TooManyQueues,
     /// Nenhuma fila foi programada e habilitada: DRIVER_OK anunciaria um
     /// dispositivo que nao tem por onde receber pedidos.
     NoQueueConfigured,
@@ -162,6 +167,14 @@ pub const Outcome = union(enum) {
     }
 };
 
+/// Quantidade de filas que o transporte acompanha por dispositivo.
+///
+/// O estado e um conjunto de bits com um bit por indice: 64 filas custam oito
+/// bytes. Um dispositivo real deste escopo anuncia uma fila (bloco) ou duas
+/// (rede), e um indice acima do limite e recusado explicitamente em vez de
+/// ser silenciosamente ignorado.
+pub const max_tracked_queues: usize = 64;
+
 /// Dispositivo cuja inicializacao parou antes de DRIVER_OK.
 pub const Device = struct {
     registers: Registers,
@@ -181,14 +194,18 @@ pub const Device = struct {
     /// Quantidade de filas informada pelo dispositivo.
     queues: u16 = 0,
 
-    /// Quantidade de filas programadas e habilitadas pelo driver.
+    /// Filas programadas e habilitadas pelo driver, por indice.
     ///
     /// O protocolo nao tem como descobrir sozinho que os enderecos e o
     /// `queue_enable` do dispositivo foram escritos: quem programa a fila
-    /// registra o fato aqui, e `activate` recusa DRIVER_OK enquanto este
-    /// contador for zero. E o que separa "as filas deveriam estar prontas" de
-    /// "as filas estao prontas".
-    ready_queues: u16 = 0,
+    /// registra o indice aqui, e `activate` recusa DRIVER_OK enquanto o
+    /// conjunto estiver vazio. E o que separa "as filas deveriam estar
+    /// prontas" de "as filas estao prontas".
+    ///
+    /// O conjunto, e nao um contador: contar chamadas fazia `markQueueReady`
+    /// da mesma fila duas vezes anunciar duas filas prontas, e o limite
+    /// `contador >= filas` escondia o erro sem corrigi-lo.
+    ready: std.StaticBitSet(max_tracked_queues) = .empty,
 
     /// Executa a sequencia completa ate FEATURES_OK.
     ///
@@ -246,7 +263,7 @@ pub const Device = struct {
         self.offered = 0;
         self.accepted = 0;
         self.queues = 0;
-        self.ready_queues = 0;
+        self.ready = .empty;
     }
 
     /// Le o conjunto de 64 bits que o dispositivo oferece.
@@ -354,10 +371,21 @@ pub const Device = struct {
     pub fn markQueueReady(self: *Device, index: u16) Error!void {
         if (self.queues == 0) return error.InvalidQueue;
         if (index >= self.queues) return error.InvalidQueue;
-        // Cada fila conta uma vez: chamar de novo para a mesma fila nao pode
-        // fazer o contador passar da quantidade de filas do dispositivo.
-        if (self.ready_queues >= self.queues) return error.InvalidQueue;
-        self.ready_queues += 1;
+        if (index >= max_tracked_queues) return error.TooManyQueues;
+        // Uma fila e o seu indice: registrar o mesmo indice duas vezes nao
+        // cria uma segunda fila pronta.
+        if (self.ready.isSet(index)) return error.QueueAlreadyReady;
+        self.ready.set(index);
+    }
+
+    /// Quantas filas distintas o driver ja programou e habilitou.
+    pub fn readyQueues(self: Device) u16 {
+        return @intCast(self.ready.count());
+    }
+
+    /// True quando a fila `index` foi registrada como pronta.
+    pub fn isQueueReady(self: Device, index: u16) bool {
+        return index < max_tracked_queues and self.ready.isSet(index);
     }
 
     /// Escreve DRIVER_OK: o ultimo passo da sequencia 3.1.1.
@@ -372,7 +400,7 @@ pub const Device = struct {
     /// o driver nao pode mais mudar features nem o layout das filas sem um
     /// reset.
     pub fn activate(self: *Device) Error!void {
-        if (self.ready_queues == 0) return error.NoQueueConfigured;
+        if (self.ready.count() == 0) return error.NoQueueConfigured;
 
         const current = try self.readStatus();
         const current_phase = status.phase(current) catch |err| return mapStatusError(err);
@@ -385,6 +413,51 @@ pub const Device = struct {
     pub fn finish(self: *Device) Outcome {
         self.activate() catch |err| return failure(.driver_ok, err);
         return .{ .initialized = {} };
+    }
+};
+
+/// Posse da memoria de uma fila ja programada no dispositivo.
+///
+/// Existe por causa de uma janela curta e irreversivel: entre a escrita de
+/// `queue_enable` e a conclusao da inicializacao, o dispositivo pode ler a
+/// tabela de descritores, os aneis e os buffers. Devolver essa memoria ao
+/// alocador nesse intervalo entrega ao dispositivo paginas que outro
+/// subsistema ja pode ter recebido.
+///
+/// O estado tem duas marcas independentes:
+///
+///   * `handed_over` - a memoria foi entregue ao dispositivo (`queue_enable`
+///     confirmado). A partir daqui o driver nao pode libera-la por conta
+///     propria;
+///   * `device_released` - o dispositivo confirmou o reset, e com ele a
+///     promessa de nao tocar mais na fila. So esta marca devolve a posse.
+///
+/// `canReturnToAllocator` e a unica pergunta que o chamador precisa fazer
+/// antes de liberar: antes da entrega a memoria e do driver; depois dela, so
+/// volta se o dispositivo confirmou que largou a fila.
+pub const QueueMemory = struct {
+    /// A memoria foi entregue ao dispositivo.
+    handed_over: bool = false,
+    /// O dispositivo confirmou o reset e nao usa mais a fila.
+    device_released: bool = false,
+
+    /// Registra a entrega da memoria ao dispositivo.
+    pub fn handOver(self: *QueueMemory) void {
+        self.handed_over = true;
+        self.device_released = false;
+    }
+
+    /// Registra que o dispositivo confirmou o reset.
+    ///
+    /// Chamada so depois de uma leitura de `device_status` que devolveu zero:
+    /// a leitura e a confirmacao, e nao a escrita.
+    pub fn deviceReleased(self: *QueueMemory) void {
+        self.device_released = true;
+    }
+
+    /// True quando a memoria pode voltar para o alocador.
+    pub fn canReturnToAllocator(self: QueueMemory) bool {
+        return !self.handed_over or self.device_released;
     }
 };
 
@@ -803,7 +876,8 @@ test "virtio transport refuses DRIVER_OK before a queue is configured" {
     var device = fakeDevice();
     try testing.expect(device.initialize(features.version_1).isInitialized());
     try testing.expect(device.isAwaitingQueues());
-    try testing.expectEqual(@as(u16, 0), device.ready_queues);
+    try testing.expectEqual(@as(u16, 0), device.readyQueues());
+    try testing.expect(!device.isQueueReady(0));
 
     // Sem fila programada nao existe caminho para o bit 2.
     try testing.expectError(error.NoQueueConfigured, device.activate());
@@ -817,7 +891,7 @@ test "virtio transport refuses DRIVER_OK before a queue is configured" {
     // Um indice fora da faixa informada pelo dispositivo tambem nao conta como
     // fila pronta.
     try testing.expectError(error.InvalidQueue, device.markQueueReady(1));
-    try testing.expectEqual(@as(u16, 0), device.ready_queues);
+    try testing.expectEqual(@as(u16, 0), device.readyQueues());
 }
 
 test "virtio transport writes DRIVER_OK after the queue is ready" {
@@ -829,12 +903,20 @@ test "virtio transport writes DRIVER_OK after the queue is ready" {
     try testing.expect(device.initialize(features.version_1).isInitialized());
 
     try device.markQueueReady(0);
-    try testing.expectEqual(@as(u16, 1), device.ready_queues);
-    // Registrar de novo a mesma fila nao infla o contador alem das filas que
-    // o dispositivo tem.
-    try device.markQueueReady(0);
-    try testing.expectEqual(@as(u16, 2), device.ready_queues);
-    try testing.expectError(error.InvalidQueue, device.markQueueReady(0));
+    try testing.expectEqual(@as(u16, 1), device.readyQueues());
+    try testing.expect(device.isQueueReady(0));
+    try testing.expect(!device.isQueueReady(1));
+
+    // A fila 0 registrada de novo e o mesmo indice: nao existe uma segunda
+    // fila pronta, e a chamada e recusada em vez de inflar o numero.
+    try testing.expectError(error.QueueAlreadyReady, device.markQueueReady(0));
+    try testing.expectEqual(@as(u16, 1), device.readyQueues());
+
+    // A fila 1 e outra fila, e conta como uma segunda.
+    try device.markQueueReady(1);
+    try testing.expectEqual(@as(u16, 2), device.readyQueues());
+    try testing.expect(device.isQueueReady(1));
+    try testing.expectError(error.QueueAlreadyReady, device.markQueueReady(1));
 
     try device.activate();
     try testing.expectEqual(@as(u8, 0x0F), device.status);
@@ -887,4 +969,128 @@ test "virtio transport refuses DRIVER_OK outside FEATURES_OK" {
 fn swallowDriverOk(_: *anyopaque, value: u8) Error!void {
     if (value == status.acknowledge | status.driver | status.features_ok | status.driver_ok) return;
     Fake.device_status = value;
+}
+
+// ----------------------------------------------------------------------
+// Filas prontas por indice (correcao D-2) e posse da memoria da fila
+// (correcao D-4).
+// ----------------------------------------------------------------------
+
+test "queue readiness is tracked per index, not per call" {
+    Fake.reset();
+    Fake.device_feature_high = 0x0000_0001;
+    Fake.num_queues = 3;
+
+    var device = fakeDevice();
+    try testing.expect(device.initialize(features.version_1).isInitialized());
+
+    // Filas nao precisam ser registradas em ordem, e o conjunto guarda quais
+    // foram: a fila 1 nao fica pronta por causa da 0 nem da 2.
+    try device.markQueueReady(0);
+    try device.markQueueReady(2);
+    try testing.expectEqual(@as(u16, 2), device.readyQueues());
+    try testing.expect(device.isQueueReady(0));
+    try testing.expect(!device.isQueueReady(1));
+    try testing.expect(device.isQueueReady(2));
+
+    // A mesma fila duas vezes nao vira duas filas prontas.
+    try testing.expectError(error.QueueAlreadyReady, device.markQueueReady(0));
+    try testing.expectError(error.QueueAlreadyReady, device.markQueueReady(2));
+    try testing.expectEqual(@as(u16, 2), device.readyQueues());
+
+    // A terceira fila e distinta e completa o conjunto.
+    try device.markQueueReady(1);
+    try testing.expectEqual(@as(u16, 3), device.readyQueues());
+
+    // Um indice fora do que o dispositivo anuncia continua recusado.
+    try testing.expectError(error.InvalidQueue, device.markQueueReady(3));
+
+    // O reset zera o conjunto inteiro.
+    try device.resetDevice();
+    try testing.expectEqual(@as(u16, 0), device.readyQueues());
+    try testing.expect(!device.isQueueReady(0));
+}
+
+test "a device with more queues than the transport tracks is refused by index" {
+    Fake.reset();
+    Fake.device_feature_high = 0x0000_0001;
+    Fake.num_queues = 100;
+
+    var device = fakeDevice();
+    try testing.expect(device.initialize(features.version_1).isInitialized());
+
+    // Ate o limite o registro funciona.
+    try device.markQueueReady(max_tracked_queues - 1);
+    try testing.expectEqual(@as(u16, 1), device.readyQueues());
+
+    // Acima dele o transporte recusa em vez de ignorar a fila.
+    try testing.expectError(error.TooManyQueues, device.markQueueReady(max_tracked_queues));
+    try testing.expectEqual(@as(u16, 1), device.readyQueues());
+}
+
+test "queue memory is the driver's until the device confirms the reset" {
+    var memory: QueueMemory = .{};
+
+    // Antes da entrega a memoria e do driver: qualquer falha anterior pode
+    // devolve-la ao alocador.
+    try testing.expect(memory.canReturnToAllocator());
+    memory.deviceReleased();
+    try testing.expect(memory.canReturnToAllocator());
+
+    // Depois de `queue_enable` o dispositivo pode ler a fila a qualquer
+    // momento, e a memoria nao pode voltar.
+    memory.handOver();
+    try testing.expect(!memory.canReturnToAllocator());
+
+    // Nem declarar o dispositivo liberado antes da hora muda isso: a marca so
+    // e escrita quando o reset e confirmado.
+    memory.deviceReleased();
+    try testing.expect(memory.canReturnToAllocator());
+
+    // Uma nova entrega rearma a proibicao: a marca antiga nao vale para a
+    // programacao seguinte.
+    memory.handOver();
+    try testing.expect(!memory.canReturnToAllocator());
+}
+
+test "the device releasing the queue memory requires a confirmed reset" {
+    Fake.reset();
+    Fake.device_feature_high = 0x0000_0001;
+
+    var device = fakeDevice();
+    try testing.expect(device.initialize(features.version_1).isInitialized());
+    try device.markQueueReady(0);
+    try device.activate();
+    try testing.expectEqual(@as(u8, 0x0F), device.status);
+
+    var memory: QueueMemory = .{};
+    memory.handOver();
+    // Com DRIVER_OK escrito o dispositivo usa a fila: a memoria fica presa.
+    try testing.expect(!memory.canReturnToAllocator());
+
+    // O reset confirmado (escrita de zero e leitura de volta em zero) e o que
+    // devolve a posse.
+    try device.resetDevice();
+    try testing.expectEqual(@as(u8, 0), device.status);
+    memory.deviceReleased();
+    try testing.expect(memory.canReturnToAllocator());
+}
+
+test "an unconfirmed reset keeps the queue memory reserved" {
+    Fake.reset();
+    Fake.device_feature_high = 0x0000_0001;
+
+    var device = fakeDevice();
+    try testing.expect(device.initialize(features.version_1).isInitialized());
+    try device.markQueueReady(0);
+    try device.activate();
+
+    var memory: QueueMemory = .{};
+    memory.handOver();
+
+    // O dispositivo ignora o reset. Sem a confirmacao o driver nao tem como
+    // saber que ele parou de usar a fila, e a memoria continua reservada.
+    Fake.ignore_reset = true;
+    try testing.expectError(error.DeviceDidNotReset, device.resetDevice());
+    try testing.expect(!memory.canReturnToAllocator());
 }

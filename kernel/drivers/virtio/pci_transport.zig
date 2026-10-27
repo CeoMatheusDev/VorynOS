@@ -57,6 +57,10 @@ pub const Error = error{
     QueueSizeTooLarge,
     /// O dispositivo nao manteve `queue_enable` em 1 depois da escrita.
     QueueEnableNotConfirmed,
+    /// A fila ja se apresenta habilitada: o driver nao escreve 0 em
+    /// `queue_enable`, e habilitar de novo esconderia um dispositivo que nao
+    /// esta no estado que este driver deixou.
+    QueueAlreadyEnabled,
     /// O deslocamento nao esta alinhado para a largura do registrador.
     Misaligned,
 };
@@ -251,6 +255,11 @@ pub const Transport = struct {
     /// `queue_enable` e o passo seguinte, e separa-lo deixa o chamador
     /// conferir o que foi programado antes de o dispositivo comecar a usar a
     /// memoria.
+    ///
+    /// `queue_select` e escrito no inicio: ele escolhe a fila dos campos
+    /// seguintes (`queue_size`, `queue_desc`, `queue_driver`, `queue_device`),
+    /// e todos eles sao escritos na mesma chamada, sem depender de uma
+    /// selecao anterior.
     pub fn configureQueue(
         self: *Transport,
         index: u16,
@@ -286,16 +295,33 @@ pub const Transport = struct {
     /// nao a mantem seria conduzido como se a fila existisse, e o primeiro
     /// pedido ficaria esperando uma conclusao que nunca chega — por isso a
     /// leitura de volta faz parte da operacao, e nao do chamador.
+    ///
+    /// O valor e lido **antes** da escrita. A especificacao exige que o
+    /// dispositivo apresente 0 depois do reset e proibe o driver de escrever
+    /// 0: uma fila que ja se apresenta habilitada nao esta no estado que este
+    /// driver deixou, e a habilitacao e recusada em vez de repetida.
+    ///
+    /// `queue_select` e escrito aqui porque ele seleciona a fila dos campos
+    /// seguintes e o dispositivo nao promete mante-lo: cada operacao escolhe a
+    /// fila de novo, e nenhuma delas depende da selecao deixada pela anterior.
     pub fn enableQueue(self: *Transport, index: u16) Error!void {
         const common = self.regions.common;
 
         common.write16(offset.queue_select, index) catch |err| return mapRegionError(err);
+
+        const current = common.read16(offset.queue_enable) catch |err| return mapRegionError(err);
+        if (current != 0) return error.QueueAlreadyEnabled;
+
         common.write16(offset.queue_enable, 1) catch |err| return mapRegionError(err);
         const confirmed = common.read16(offset.queue_enable) catch |err| return mapRegionError(err);
         if (confirmed != 1) return error.QueueEnableNotConfirmed;
     }
 
     /// True quando o dispositivo mantem a fila `index` habilitada.
+    ///
+    /// A selecao e refeita aqui: `queue_select` escolhe a fila dos campos
+    /// seguintes, e o driver nao presume que a selecao de uma chamada
+    /// anterior continue valendo para a proxima.
     pub fn queueEnabled(self: *Transport, index: u16) Error!bool {
         const common = self.regions.common;
 
@@ -955,4 +981,59 @@ test "virtio pci queue programming is refused when the common region is short" {
         return;
     };
     return error.TestUnexpectedResult;
+}
+
+// ----------------------------------------------------------------------
+// `queue_enable` lido antes de ser escrito, e o contrato de `queue_select`
+// (correcao D-3).
+// ----------------------------------------------------------------------
+
+test "a queue that is already enabled is refused before the write" {
+    var device = fakeTransport();
+    FakeBar.poke16(@intCast(offset.num_queues), 1);
+
+    // O dispositivo se apresenta com um valor que nao e o que este driver
+    // deixaria: a habilitacao e recusada antes de qualquer escrita.
+    FakeBar.poke16(@intCast(offset.queue_enable), 2);
+    try testing.expectError(error.QueueAlreadyEnabled, device.enableQueue(0));
+
+    // A prova de que nada foi escrito: o valor continua 2, e nao virou 1.
+    try testing.expectEqual(@as(u16, 2), FakeBar.peek16(@intCast(offset.queue_enable)));
+}
+
+test "enabling the same queue twice is refused instead of repeated" {
+    var device = fakeTransport();
+    FakeBar.poke16(@intCast(offset.num_queues), 1);
+
+    try device.enableQueue(0);
+    try testing.expectEqual(@as(u16, 1), FakeBar.peek16(@intCast(offset.queue_enable)));
+
+    // A segunda habilitacao encontra a fila ja habilitada pelo driver: repetir
+    // esconderia uma reinicializacao do dispositivo por fora.
+    try testing.expectError(error.QueueAlreadyEnabled, device.enableQueue(0));
+    try testing.expect(try device.queueEnabled(0));
+}
+
+test "every queue operation selects the queue it acts on" {
+    var device = fakeTransport();
+    FakeBar.poke16(@intCast(offset.num_queues), 2);
+    FakeBar.poke16(@intCast(offset.queue_size), 64);
+
+    // O dispositivo nao promete manter `queue_select`: cada operacao escolhe a
+    // fila de novo, e a selecao observada e a da operacao, nao a anterior.
+    try device.configureQueue(1, 64, .{ .desc = 0x1000, .driver = 0x2000, .device = 0x3000 });
+    try testing.expectEqual(@as(u8, 1), FakeBar.peek8(@intCast(offset.queue_select)));
+
+    try device.enableQueue(1);
+    try testing.expectEqual(@as(u8, 1), FakeBar.peek8(@intCast(offset.queue_select)));
+
+    _ = try device.queueEnabled(1);
+    try testing.expectEqual(@as(u8, 1), FakeBar.peek8(@intCast(offset.queue_select)));
+
+    // E a fila 0 e selecionada do zero, sem herdar a selecao da fila 1. O BAR
+    // simulado guarda uma copia por campo, e nao uma por fila, entao o
+    // `queue_enable` da fila 0 e zerado a mao antes da chamada.
+    FakeBar.poke16(@intCast(offset.queue_enable), 0);
+    try device.enableQueue(0);
+    try testing.expectEqual(@as(u8, 0), FakeBar.peek8(@intCast(offset.queue_select)));
 }
