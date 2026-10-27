@@ -150,6 +150,10 @@ pub const Error = error{
     UsedIdInvalid,
     /// O `id` devolvido nao estava em voo.
     UsedIdNotInflight,
+    /// O descritor e um elo de cadeia: so a cabeca representa a cadeia, e
+    /// liberar um elo do meio deixaria a cabeca apontando para memoria
+    /// liberada.
+    DescriptorNotChainHead,
 };
 
 /// Descritor da tabela (§2.7.4). O layout e o da especificacao, byte a byte.
@@ -341,7 +345,20 @@ pub fn Queue(comptime capacity: u16) type {
         /// Descritores entregues por `allocate` e ainda nao liberados.
         allocated: std.StaticBitSet(@as(usize, capacity)) = .empty,
         /// Descritores publicados e ainda nao consumidos do anel `used`.
+        ///
+        /// O bit e por descritor, e nao por cadeia: enquanto a cadeia esta
+        /// publicada o dispositivo pode ler *qualquer* elo dela, e um elo do
+        /// meio que se apresentasse livre seria reescrito por `setBuffer` ou
+        /// devolvido ao alocador por `release` com o dispositivo ainda o
+        /// usando.
         inflight: std.StaticBitSet(@as(usize, capacity)) = .empty,
+        /// Descritores que sao o `next` de outro descritor alocado.
+        ///
+        /// So a cabeca representa a cadeia: liberar um elo do meio deixaria a
+        /// cabeca apontando para um descritor que ja voltou para a free list e
+        /// que outra cadeia pode receber. A marca e mantida em
+        /// `allocateChain` e limpa na liberacao.
+        linked: std.StaticBitSet(@as(usize, capacity)) = .empty,
 
         /// Prepara a fila sobre uma memoria ja mapeada.
         ///
@@ -402,6 +419,7 @@ pub fn Queue(comptime capacity: u16) type {
             self.no_interrupt = false;
             self.allocated = .empty;
             self.inflight = .empty;
+            self.linked = .empty;
         }
 
         /// Enderecos fisicos das tres areas.
@@ -457,6 +475,11 @@ pub fn Queue(comptime capacity: u16) type {
 
             entry.* = .{ .address = 0, .length = 0, .flags = 0, .next = no_descriptor };
             self.allocated.set(index);
+            // Um descritor recem-alocado nao e elo de ninguem: a marca de elo
+            // e refeita por `allocateChain` quando a cadeia e montada. Zerar
+            // aqui impede que uma marca antiga sobreviva ao reaproveitamento e
+            // faca a cabeca de uma cadeia nova parecer um elo do meio.
+            self.linked.unset(index);
             return index;
         }
 
@@ -478,6 +501,7 @@ pub fn Queue(comptime capacity: u16) type {
                 self.descriptorAt(current).next = next;
                 self.descriptorAt(current).flags |= descriptor_flags.next;
                 self.descriptorAt(current).flags &= ~descriptor_flags.indirect;
+                self.linked.set(next);
                 current = next;
             }
             return head;
@@ -489,7 +513,10 @@ pub fn Queue(comptime capacity: u16) type {
             return self.allocated.isSet(index);
         }
 
-        /// True quando o descritor foi publicado e aguarda conclusao.
+        /// True quando o descritor pertence a uma cadeia publicada.
+        ///
+        /// Vale para qualquer elo da cadeia, e nao so para a cabeca: o
+        /// dispositivo pode ler todos eles.
         pub fn isInFlight(self: *const Self, index: u16) bool {
             if (index >= self.size) return false;
             return self.inflight.isSet(index);
@@ -546,6 +573,12 @@ pub fn Queue(comptime capacity: u16) type {
 
         /// Devolve a cadeia a free list. O(1) por descritor.
         ///
+        /// So a cabeca libera a cadeia. Um elo do meio e recusado
+        /// (`DescriptorNotChainHead`) mesmo depois da conclusao: liberar
+        /// apenas o elo deixaria a cabeca apontando para um descritor que
+        /// voltou para a free list e que outra cadeia pode receber — a
+        /// liberacao cruzada entre cadeias.
+        ///
         /// A liberacao nao depende de a cadeia estar intacta: a caminhada para
         /// quando encontra um elo nao alocado, um `next` fora da tabela ou o
         /// limite de passos. Assim uma cadeia corrompida nao duplica elos na
@@ -555,6 +588,7 @@ pub fn Queue(comptime capacity: u16) type {
             if (head >= self.size) return error.InvalidDescriptor;
             if (!self.allocated.isSet(head)) return error.DescriptorNotAllocated;
             if (self.inflight.isSet(head)) return error.DescriptorInFlight;
+            if (self.linked.isSet(head)) return error.DescriptorNotChainHead;
 
             self.freeChainUnchecked(head);
         }
@@ -570,6 +604,7 @@ pub fn Queue(comptime capacity: u16) type {
                 const next = entry.next;
                 if (!self.allocated.isSet(index)) return;
                 self.allocated.unset(index);
+                self.linked.unset(index);
                 self.free_count += 1;
                 entry.* = .{
                     .address = 0,
@@ -608,6 +643,30 @@ pub fn Queue(comptime capacity: u16) type {
             return error.InvalidChain;
         }
 
+        /// Liga ou desliga a marca de posse em todos os descritores da cadeia.
+        ///
+        /// O percurso e limitado pelo tamanho da fila, como `validateChain`:
+        /// uma cadeia com ciclo, montada por um caminho que nao passou pela
+        /// validacao, nao pode prender a funcao. A cadeia publicada ja passou
+        /// por `validateChain`, entao o limite nunca e atingido no caminho
+        /// normal.
+        fn markChain(self: *Self, head: u16, owned_by_device: bool) void {
+            var index = head;
+            var steps: u16 = 0;
+            while (steps < self.size) : (steps += 1) {
+                if (owned_by_device) {
+                    self.inflight.set(index);
+                } else {
+                    self.inflight.unset(index);
+                }
+
+                const entry = self.descriptorAt(index);
+                if (entry.flags & descriptor_flags.next == 0) return;
+                if (entry.next >= self.size) return;
+                index = entry.next;
+            }
+        }
+
         // ------------------------------------------------------------------
         // Anel `available`.
         // ------------------------------------------------------------------
@@ -632,7 +691,10 @@ pub fn Queue(comptime capacity: u16) type {
             memoryBarrier();
 
             self.avail_index = index +% 1;
-            self.inflight.set(head);
+            // A posse e de todos os elos, e nao so da cabeca: o dispositivo
+            // pode ler qualquer descritor da cadeia a partir do momento em que
+            // o `avail.idx` publicou a cabeca.
+            self.markChain(head, true);
             self.published += 1;
         }
 
@@ -676,7 +738,10 @@ pub fn Queue(comptime capacity: u16) type {
             const head: u16 = @intCast(id);
             if (!self.inflight.isSet(head)) return error.UsedIdNotInflight;
 
-            self.inflight.unset(head);
+            // A conclusao devolve a cadeia inteira ao driver. Sem isso, os
+            // elos do meio continuariam marcados e a cadeia nunca poderia ser
+            // reaproveitada nem liberada.
+            self.markChain(head, false);
             self.published -= 1;
             self.last_used_index +%= 1;
             return .{ .head = head, .length = length };
@@ -1310,4 +1375,184 @@ test "the queue state is per instance and survives a second init" {
     try testing.expectEqual(@as(u16, 0), fresh.usedIndex());
     try testing.expectEqual(@as(u16, 0), fresh.inFlightCount());
     try testing.expect(!fresh.isAllocated(head));
+}
+
+// ----------------------------------------------------------------------
+// Posse dos descritores de uma cadeia publicada (correcao D-1).
+//
+// O estado de posse e por descritor: enquanto a cadeia esta publicada o
+// dispositivo pode ler todos os seus descritores, e nao apenas a cabeca.
+// ----------------------------------------------------------------------
+
+test "the device owns every descriptor of a published chain" {
+    var queue = try TestQueue.init(testMemory(16), 16);
+    const head = try queue.allocateChain(3);
+    try testing.expectEqual(@as(u16, 0), head);
+
+    // Antes da publicacao os tres elos pertencem ao driver.
+    var index: u16 = 0;
+    while (index < 3) : (index += 1) {
+        try testing.expect(queue.isAllocated(index));
+        try testing.expect(!queue.isInFlight(index));
+    }
+
+    try queue.publish(head);
+
+    // Depois dela, os tres pertencem ao dispositivo.
+    index = 0;
+    while (index < 3) : (index += 1) {
+        try testing.expect(queue.isAllocated(index));
+        try testing.expect(queue.isInFlight(index));
+    }
+}
+
+test "a descriptor in the middle of a published chain cannot be written or released" {
+    var queue = try TestQueue.init(testMemory(16), 16);
+    const head = try queue.allocateChain(3);
+    try queue.setBuffer(0, 0x3000_0000, 512);
+    try queue.setBuffer(1, 0x3000_0200, 512);
+    try queue.setBuffer(2, 0x3000_0400, 512);
+    try queue.publish(head);
+
+    // O elo do meio nao aceita nada enquanto o dispositivo o pode ler.
+    try testing.expectError(
+        error.DescriptorAlreadyPublished,
+        queue.setBuffer(1, 0x3000_9000, 64),
+    );
+    try testing.expectError(error.DescriptorAlreadyPublished, queue.setWritable(1, true));
+    try testing.expectError(error.DescriptorInFlight, queue.release(1));
+
+    // Nem o estado do driver nem a cadeia mudaram.
+    try testing.expectEqual(@as(u16, 13), queue.freeCount());
+    try testing.expectEqual(@as(u16, 1), queue.availableIndex());
+    try testing.expectEqual(@as(u16, 1), queue.inFlightCount());
+    try testing.expectEqual(@as(u64, 0x3000_0200), (try queue.descriptor(1)).address);
+    try testing.expectEqual(@as(u16, 1), (try queue.descriptor(0)).next);
+    try testing.expectEqual(@as(u16, 2), (try queue.descriptor(1)).next);
+}
+
+test "a completed chain returns every descriptor to the driver" {
+    var queue = try TestQueue.init(testMemory(16), 16);
+    const head = try queue.allocateChain(3);
+    try queue.setBuffer(0, 0x3000_0000, 512);
+    try queue.setBuffer(1, 0x3000_0200, 512);
+    try queue.setBuffer(2, 0x3000_0400, 512);
+    try queue.publish(head);
+
+    complete(TestQueue, &queue, head, 1536);
+    const used = (try queue.pollUsed()).?;
+    try testing.expectEqual(head, used.head);
+    try testing.expectEqual(@as(u32, 1536), used.length);
+    try testing.expectEqual(@as(u16, 0), queue.inFlightCount());
+
+    // A conclusao devolve os tres elos: nenhum continua em voo, e o driver
+    // pode descrever de novo qualquer um deles.
+    var index: u16 = 0;
+    while (index < 3) : (index += 1) {
+        try testing.expect(queue.isAllocated(index));
+        try testing.expect(!queue.isInFlight(index));
+    }
+    try queue.setBuffer(1, 0x4000_0000, 64);
+    try testing.expectEqual(@as(u64, 0x4000_0000), (try queue.descriptor(1)).address);
+
+    // E a mesma cadeia pode ser publicada outra vez.
+    try queue.publish(head);
+    try testing.expect(queue.isInFlight(0));
+    try testing.expect(queue.isInFlight(2));
+    complete(TestQueue, &queue, head, 64);
+    try testing.expectEqual(head, (try queue.pollUsed()).?.head);
+
+    // Consumida, a cabeca libera a cadeia inteira.
+    try queue.release(head);
+    try testing.expectEqual(@as(u16, 16), queue.freeCount());
+    index = 0;
+    while (index < 16) : (index += 1) {
+        try testing.expect(!queue.isAllocated(index));
+        try testing.expect(!queue.isInFlight(index));
+    }
+}
+
+test "releasing a middle descriptor cannot cross chains" {
+    var queue = try TestQueue.init(testMemory(16), 16);
+    const first = try queue.allocateChain(3);
+    try queue.setBuffer(0, 0x3000_0000, 512);
+    try queue.setBuffer(1, 0x3000_0200, 512);
+    try queue.setBuffer(2, 0x3000_0400, 512);
+    try queue.publish(first);
+    complete(TestQueue, &queue, first, 1536);
+    try testing.expectEqual(first, (try queue.pollUsed()).?.head);
+
+    // Concluida, a cadeia continua sendo uma cadeia: liberar um elo do meio
+    // deixaria a cabeca apontando para memoria que outra cadeia pode receber.
+    try testing.expectError(error.DescriptorNotChainHead, queue.release(1));
+    try testing.expectError(error.DescriptorNotChainHead, queue.release(2));
+    try testing.expectEqual(@as(u16, 13), queue.freeCount());
+    try testing.expect(queue.isAllocated(1));
+
+    // A cadeia seguinte recebe descritores proprios, e nao o elo da primeira.
+    const second = try queue.allocateChain(2);
+    try testing.expectEqual(@as(u16, 3), second);
+    try queue.setBuffer(second, 0x3000_1000, 512);
+    try queue.setBuffer(second + 1, 0x3000_1200, 512);
+    try queue.publish(second);
+    // A primeira cadeia ja foi concluida: so a segunda esta em voo.
+    try testing.expectEqual(@as(u16, 1), queue.inFlightCount());
+
+    // Liberar a cabeca da primeira devolve so os tres elos dela: 11 livres
+    // com a segunda alocada, e 14 depois da liberacao.
+    try testing.expectEqual(@as(u16, 11), queue.freeCount());
+    try queue.release(first);
+    try testing.expectEqual(@as(u16, 14), queue.freeCount());
+    try testing.expect(!queue.isAllocated(0));
+    try testing.expect(!queue.isAllocated(1));
+    try testing.expect(!queue.isAllocated(2));
+    try testing.expect(queue.isAllocated(3));
+    try testing.expect(queue.isInFlight(3));
+    try testing.expect(queue.isInFlight(4));
+}
+
+test "duplicate completions do not touch the ownership of the chain" {
+    var queue = try TestQueue.init(testMemory(16), 16);
+    const head = try queue.allocateChain(2);
+    try queue.publish(head);
+
+    complete(TestQueue, &queue, head, 32);
+    try testing.expectEqual(head, (try queue.pollUsed()).?.head);
+    try testing.expectEqual(@as(u16, 0), queue.inFlightCount());
+    try testing.expect(!queue.isInFlight(1));
+
+    // O dispositivo entrega a mesma cadeia de novo: o id ja nao esta em voo,
+    // e a fila recusa em vez de liberar descritores por engano.
+    complete(TestQueue, &queue, head, 32);
+    try testing.expectError(error.UsedIdNotInflight, queue.pollUsed());
+
+    // O estado permanece o que era: a cadeia continua alocada e fora de voo.
+    try testing.expect(queue.isAllocated(0));
+    try testing.expect(queue.isAllocated(1));
+    try testing.expect(!queue.isInFlight(0));
+    try testing.expect(!queue.isInFlight(1));
+    try testing.expectEqual(@as(u16, 14), queue.freeCount());
+    try testing.expectEqual(@as(u16, 0), queue.inFlightCount());
+    try queue.release(head);
+    try testing.expectEqual(@as(u16, 16), queue.freeCount());
+}
+
+test "a refused chain leaves no descriptor owned by the device" {
+    var queue = try TestQueue.init(testMemory(8), 8);
+    const head = try queue.allocateChain(3);
+    // O ultimo elo aponta de volta para a cabeca: a cadeia tem ciclo.
+    queue.descriptorAt(2).next = head;
+    queue.descriptorAt(2).flags |= descriptor_flags.next;
+
+    try testing.expectError(error.InvalidChain, queue.publish(head));
+    try testing.expectEqual(@as(u16, 0), queue.availableIndex());
+    try testing.expectEqual(@as(u16, 0), queue.inFlightCount());
+
+    // Nenhum elo foi marcado: o driver ainda e o dono dos tres.
+    var index: u16 = 0;
+    while (index < 3) : (index += 1) {
+        try testing.expect(!queue.isInFlight(index));
+    }
+    try queue.release(head);
+    try testing.expectEqual(@as(u16, 8), queue.freeCount());
 }
