@@ -111,6 +111,12 @@ jobs:
             exit "$status"
           fi
 
+      - name: Testes das asserções do log de boot (VVDI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/integration/log-assertions-test.sh
+
       - name: Construir
         shell: bash
         run: |

@@ -11,6 +11,7 @@
   (publicação e consumo), 3.1.1 (sequência de inicialização) e 4.1.4.3.2
   (programação da fila no transporte PCI)
 - **Continua:** [ADR-0019](ADR-0019-virtio-pci-modern-transport.md) (transporte PCI moderno)
+- **Continua em:** [ADR-0021](ADR-0021-vvdi-virtual-device-interface.md) (identidade nativa VVDI: `kernel/drivers/vvdi/`, `vvdi`, `vvdi-tests` e `[VNK] vvdi:`)
 - **Relatório:** [`../reports/f7/virtio-pci-modern-pr-c.md`](../reports/f7/virtio-pci-modern-pr-c.md)
 
 ## Contexto

@@ -472,24 +472,25 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(arch_tests).step);
 
-    // PR A, PR B e PR C do VirtIO PCI moderno: tipos, identificadores,
-    // estados, features, capabilities, MMIO, transporte e a virtqueue
-    // dividida. Os modulos sao puros: o acesso a memoria de dispositivo e
-    // injetado, o mapeamento e injetado, a configuracao comum e lida por um
-    // `Registers` que os testes implementam sobre memoria e a fila roda sobre
-    // um buffer comum. Por isso os testes rodam no host, sem port I/O e sem
-    // hardware. A raiz fica em `kernel/drivers/virtio/root.zig` porque a raiz
-    // de um modulo Zig precisa estar acima de todos os arquivos importados.
-    const virtio_modern_test_module = b.createModule(.{
-        .root_source_file = b.path("kernel/drivers/virtio/root.zig"),
+    // VVDI (Voryn Virtual Device Interface) — transporte moderno e virtqueue
+    // dividida (VirtIO 1.2): tipos, identificadores, estados, features,
+    // capabilities, MMIO, transporte e a virtqueue dividida. Os modulos sao
+    // puros: o acesso a memoria de dispositivo e injetado, o mapeamento e
+    // injetado, a configuracao comum e lida por um `Registers` que os testes
+    // implementam sobre memoria e a fila roda sobre um buffer comum. Por isso
+    // os testes rodam no host, sem port I/O e sem hardware. A raiz fica em
+    // `kernel/drivers/vvdi/root.zig` porque a raiz de um modulo Zig precisa
+    // estar acima de todos os arquivos importados.
+    const vvdi_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/drivers/vvdi/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const virtio_modern_tests = b.addTest(.{
-        .name = "virtio-modern-tests",
-        .root_module = virtio_modern_test_module,
+    const vvdi_tests = b.addTest(.{
+        .name = "vvdi-tests",
+        .root_module = vvdi_test_module,
     });
-    unit_test_step.dependOn(&b.addRunArtifact(virtio_modern_tests).step);
+    unit_test_step.dependOn(&b.addRunArtifact(vvdi_tests).step);
 
     // The IPC modules of the kernel are free of architecture specific code
     // and are tested on the host as well. The root lives at the top of the

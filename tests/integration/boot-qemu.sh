@@ -12,23 +12,199 @@
 #
 # The test is part of the automated pipeline: `zig build qemu-test`.
 #
-# Usage: qemu-boot-test.sh --image=<path> [--timeout=<seconds>]
+# Usage:
+#   boot-qemu.sh --image=<path> [--timeout=<seconds>]
+#   boot-qemu.sh --verify-vvdi-log=<path>
 
 set -euo pipefail
 
 IMAGE=""
 TIMEOUT=60
+VERIFY_VVDI_LOG=""
 
 for argument in "$@"; do
     case "$argument" in
         --image=*) IMAGE="${argument#--image=}" ;;
         --timeout=*) TIMEOUT="${argument#--timeout=}" ;;
+        --verify-vvdi-log=*) VERIFY_VVDI_LOG="${argument#--verify-vvdi-log=}" ;;
         *)
             echo "qemu-boot-test: unknown argument: $argument" >&2
             exit 2
             ;;
     esac
 done
+
+FAILURES=0
+
+# Nomes dos checks que falharam, na ordem em que falharam.
+#
+# A anotacao que a CI publica a partir de um passo com falha contem apenas o
+# fim do log. Repetir a lista no fim faz o nome de cada check que falhou
+# chegar ao relatorio da execucao, em vez de ficar enterrado no log inteiro.
+FAILED_CHECKS=()
+
+record_failure() {
+    local description="$1"
+    echo "FAIL: $description" >&2
+    FAILED_CHECKS+=("$description")
+    FAILURES=$((FAILURES + 1))
+}
+
+require_marker() {
+    local marker="$1"
+    if grep -qF -- "$marker" "$SERIAL_LOG"; then
+        echo "ok: found '$marker'"
+    else
+        record_failure "missing '$marker'"
+    fi
+}
+
+# Checks a line that has a number that varies from one run to the other, and
+# whose format is part of the contract of the report.
+require_pattern() {
+    local pattern="$1"
+    local description="$2"
+    if grep -qE -- "$pattern" "$SERIAL_LOG"; then
+        echo "ok: found '$description'"
+    else
+        record_failure "missing '$description'"
+    fi
+}
+
+# Verifica o contrato de inicializacao VVDI sobre o log serial capturado.
+#
+# Impede comportamento fail-open exigindo simultaneamente:
+#   1. arquivo de log existente e nao vazio;
+#   2. ausencia do prefixo antigo `[VNK] virtio-pci:` e de prefixo incorreto;
+#   3. presenca dos 9 padroes VVDI obrigatorios;
+#   4. sequencia completa de inicializacao;
+#   5. ordem estritamente crescente dos 9 eventos;
+#   6. exatamente uma ocorrencia valida de `DRIVER_OK`;
+#   7. ausencia de `status=0xf` (ou `0x0f`) fora da linha valida de `DRIVER_OK`.
+verify_vvdi_log() {
+    local log_file="$1"
+
+    if [[ ! -f "$log_file" || ! -s "$log_file" ]]; then
+        record_failure "serial log is empty"
+        return
+    fi
+
+    local normalized
+    normalized="$(tr -d '\r' < "$log_file")"
+    if [[ -z "${normalized//[[:space:]]/}" ]]; then
+        record_failure "serial log is empty"
+        return
+    fi
+
+    if grep -qE '\[VNK\] virtio-pci:' <<< "$normalized"; then
+        record_failure "obsolete '[VNK] virtio-pci:' prefix in serial log"
+    fi
+
+    local wrong_prefix_lines
+    wrong_prefix_lines="$(grep -E '(modern device detected|capabilities validated|MMIO mapped|VERSION_1 negotiated|FEATURES_OK accepted|awaiting virtqueue setup|virtqueue 0 (dma|enabled)|DRIVER_OK status=)' <<< "$normalized" \
+        | grep -vE '^\[VNK\] vvdi: ' || true)"
+    if [[ -n "$wrong_prefix_lines" ]]; then
+        record_failure "VVDI boot log line emitted with incorrect prefix"
+    fi
+
+    local -a vvdi_patterns=(
+        '^\[VNK\] vvdi: modern device detected 00:[0-9]+\.0 id=0x1042 type=block$'
+        '^\[VNK\] vvdi: 00:[0-9]+\.0 capabilities validated bar=[0-9]+ common=\+0x[0-9a-f]+/[0-9]+ notify=\+0x[0-9a-f]+/[0-9]+ multiplier=[0-9]+$'
+        '^\[VNK\] vvdi: MMIO mapped 00:[0-9]+\.0 bar[0-9]+ phys=0x[0-9a-f]+ size=0x[0-9a-f]+ virt=0x[0-9a-f]+ common=0x[0-9a-f]+ notify=0x[0-9a-f]+$'
+        '^\[VNK\] vvdi: 00:[0-9]+\.0 VERSION_1 negotiated features=0x[0-9a-f]+ offered=0x[0-9a-f]+$'
+        '^\[VNK\] vvdi: 00:[0-9]+\.0 FEATURES_OK accepted status=0x[0-9a-f]+$'
+        '^\[VNK\] vvdi: 00:[0-9]+\.0 awaiting virtqueue setup queues=[1-9][0-9]* status=0xb$'
+        '^\[VNK\] vvdi: 00:[0-9]+\.0 virtqueue 0 dma phys=0x[0-9a-f]+ virt=0x[0-9a-f]+ size=[1-9][0-9]* bytes=[1-9][0-9]* desc=0x[0-9a-f]+ avail=0x[0-9a-f]+ used=0x[0-9a-f]+$'
+        '^\[VNK\] vvdi: 00:[0-9]+\.0 virtqueue 0 enabled size=[1-9][0-9]* queues=[1-9][0-9]* free=[1-9][0-9]* avail=0 used=0$'
+        '^\[VNK\] vvdi: 00:[0-9]+\.0 DRIVER_OK status=0xf queues_ready=1 virtqueue=0$'
+    )
+
+    local -a vvdi_descriptions=(
+        'the modern virtio-blk detection via VVDI'
+        'the validated VVDI transport capabilities'
+        'the mapped device BAR via VVDI'
+        'VIRTIO_F_VERSION_1 negotiation over the features read from the device'
+        'the FEATURES_OK confirmation'
+        'FEATURES_OK confirmed before the virtqueue'
+        'the DMA memory of the virtqueue'
+        'the enabled and empty virtqueue'
+        'DRIVER_OK after the virtqueue'
+    )
+
+    local -a step_lines=()
+    local missing_steps=0
+    local idx line_match line_no
+
+    for idx in "${!vvdi_patterns[@]}"; do
+        line_match="$(grep -nE -- "${vvdi_patterns[$idx]}" <<< "$normalized" | head -n 1 || true)"
+        if [[ -z "$line_match" ]]; then
+            record_failure "missing '${vvdi_descriptions[$idx]}'"
+            missing_steps=$((missing_steps + 1))
+            step_lines+=("0")
+        else
+            line_no="${line_match%%:*}"
+            step_lines+=("$line_no")
+            echo "ok: found '${vvdi_descriptions[$idx]}'"
+        fi
+    done
+
+    if (( missing_steps > 0 )); then
+        record_failure "incomplete VVDI initialization sequence ($missing_steps of ${#vvdi_patterns[@]} required step(s) missing)"
+    else
+        local prev_line=0
+        local prev_desc=""
+        for idx in "${!vvdi_patterns[@]}"; do
+            local curr_line="${step_lines[$idx]}"
+            local curr_desc="${vvdi_descriptions[$idx]}"
+            if (( curr_line <= prev_line )); then
+                record_failure "VVDI initialization order violated: '$curr_desc' (line $curr_line) did not follow '$prev_desc' (line $prev_line)"
+            fi
+            prev_line="$curr_line"
+            prev_desc="$curr_desc"
+        done
+    fi
+
+    local valid_driver_ok_pattern='^\[VNK\] vvdi: 00:[0-9]+\.0 DRIVER_OK status=0xf queues_ready=1 virtqueue=0$'
+    local valid_driver_ok_count
+    valid_driver_ok_count="$(grep -cE -- "$valid_driver_ok_pattern" <<< "$normalized" || true)"
+    if (( valid_driver_ok_count != 1 )); then
+        record_failure "expected exactly 1 valid VVDI DRIVER_OK line, found $valid_driver_ok_count"
+    fi
+
+    local total_driver_ok_count
+    total_driver_ok_count="$(grep -cF -- 'DRIVER_OK' <<< "$normalized" || true)"
+    if (( total_driver_ok_count != 1 )); then
+        record_failure "expected exactly 1 DRIVER_OK occurrence in serial log, found $total_driver_ok_count"
+    fi
+
+    local stray_driver_ok
+    stray_driver_ok="$(grep -E 'status=0x0*[fF]([^0-9a-fA-F]|$)' <<< "$normalized" \
+        | grep -vE -- "$valid_driver_ok_pattern" || true)"
+    if [[ -n "$stray_driver_ok" ]]; then
+        record_failure "status=0xf outside the DRIVER_OK line"
+    fi
+}
+
+if [[ -n "$VERIFY_VVDI_LOG" ]]; then
+    if [[ -n "$IMAGE" ]]; then
+        echo "qemu-boot-test: --verify-vvdi-log cannot be combined with --image" >&2
+        exit 2
+    fi
+    if [[ ! -e "$VERIFY_VVDI_LOG" ]]; then
+        echo "qemu-boot-test: log file not found: $VERIFY_VVDI_LOG" >&2
+        exit 2
+    fi
+    verify_vvdi_log "$VERIFY_VVDI_LOG"
+    if [[ $FAILURES -ne 0 ]]; then
+        echo "qemu-boot-test: $FAILURES check(s) failed" >&2
+        for check in "${FAILED_CHECKS[@]}"; do
+            echo "qemu-boot-test: failed check: $check" >&2
+        done
+        exit 1
+    fi
+    echo "qemu-boot-test: VVDI log assertions passed"
+    exit 0
+fi
 
 if [[ -z "$IMAGE" ]]; then
     echo "qemu-boot-test: --image is required" >&2
@@ -334,8 +510,9 @@ if [[ ! -s "$SERIAL_LOG" && -s "$QEMU_ERROR_LOG" ]]; then
     echo "------------------------------" >&2
 fi
 
-if [[ $QEMU_STATUS -ne 0 && $QEMU_STATUS -ne 124 && $QEMU_STATUS -ne 143 && ! -s "$SERIAL_LOG" ]]; then
-    echo "qemu-boot-test: QEMU failed before producing serial output" >&2
+if [[ ! -s "$SERIAL_LOG" ]]; then
+    echo "FAIL: serial log is empty (qemu exit status $QEMU_STATUS)" >&2
+    echo "qemu-boot-test: serial console produced no output" >&2
     exit 1
 fi
 
@@ -344,43 +521,6 @@ cat "$SERIAL_LOG"
 echo "-------------------------"
 
 # --- verify -----------------------------------------------------------------
-
-FAILURES=0
-
-# Nomes dos checks que falharam, na ordem em que falharam.
-#
-# A anotacao que a CI publica a partir de um passo com falha contem apenas o
-# fim do log. Repetir a lista no fim faz o nome de cada check que falhou
-# chegar ao relatorio da execucao, em vez de ficar enterrado no log inteiro.
-FAILED_CHECKS=()
-
-record_failure() {
-    local description="$1"
-    echo "FAIL: $description" >&2
-    FAILED_CHECKS+=("$description")
-    FAILURES=$((FAILURES + 1))
-}
-
-require_marker() {
-    local marker="$1"
-    if grep -qF -- "$marker" "$SERIAL_LOG"; then
-        echo "ok: found '$marker'"
-    else
-        record_failure "missing '$marker'"
-    fi
-}
-
-# Checks a line that has a number that varies from one run to the other, and
-# whose format is part of the contract of the report.
-require_pattern() {
-    local pattern="$1"
-    local description="$2"
-    if grep -qE -- "$pattern" "$SERIAL_LOG"; then
-        echo "ok: found '$description'"
-    else
-        record_failure "missing '$description'"
-    fi
-}
 
 require_marker "[VNB] VorynOS"
 require_marker "[VNB] kernel placed"
@@ -394,44 +534,11 @@ require_marker "[VNK] paging: no-execute enabled"
 require_pattern '\[VNK\] pci: bus 0 scan complete, virtio=[1-9][0-9]*' 'the PCI config scan on bus 0'
 require_marker "[VNK] dma: window map probe ok"
 require_marker "[VNK] virtio: split queue layout ok"
-# PR B do VirtIO moderno: o disco e um virtio-blk-pci explicito com o
-# transporte legado desabilitado, e as linhas abaixo so podem aparecer depois
-# de operacoes concluidas — identificacao, validacao das capabilities,
-# mapeamento do BAR com cache desabilitado, leitura real dos registradores,
-# negociacao de VERSION_1 e aceite de FEATURES_OK.
-require_pattern '\[VNK\] virtio-pci: modern device detected 00:[0-9]+\.0 id=0x1042 type=block' 'the modern virtio-blk detection'
-require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 capabilities validated bar=[0-9]+ common=\+0x[0-9a-f]+/[0-9]+ notify=\+0x[0-9a-f]+/[0-9]+ multiplier=[0-9]+' 'the validated transport capabilities'
-require_pattern '\[VNK\] virtio-pci: MMIO mapped 00:[0-9]+\.0 bar[0-9]+ phys=0x[0-9a-f]+ size=0x[0-9a-f]+ virt=0x[0-9a-f]+' 'the mapped device BAR'
-require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 VERSION_1 negotiated features=0x[0-9a-f]+ offered=0x[0-9a-f]+' 'VIRTIO_F_VERSION_1 negotiation over the features read from the device'
-require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 FEATURES_OK accepted status=0x[0-9a-f]+' 'the FEATURES_OK confirmation'
-require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 awaiting virtqueue setup queues=[1-9][0-9]* status=0xb' 'FEATURES_OK confirmed before the virtqueue'
 
-# PR C do VirtIO moderno: a fila 0 tem de existir em memoria DMA, ser
-# programada com tamanho e tres enderecos, ficar habilitada e so entao
-# receber DRIVER_OK. As linhas vem na ordem da especificacao 4.1.4.3.2, e o
-# teste exige as quatro.
-require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 virtqueue 0 dma phys=0x[0-9a-f]+ virt=0x[0-9a-f]+ size=[1-9][0-9]* bytes=[1-9][0-9]* desc=0x[0-9a-f]+ avail=0x[0-9a-f]+ used=0x[0-9a-f]+' 'the DMA memory of the virtqueue'
-require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 virtqueue 0 enabled size=[1-9][0-9]* queues=[1-9][0-9]* free=[1-9][0-9]* avail=0 used=0' 'the enabled and empty virtqueue'
-require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 DRIVER_OK status=0xf queues_ready=1 virtqueue=0' 'DRIVER_OK after the virtqueue'
-
-# A ordem e parte do contrato: DRIVER_OK (status 0x0f) anunciado antes de a
-# fila estar habilitada seria o falso sucesso que o incremento impede.
-VIRTQUEUE_LINE="$(grep -nE '\[VNK\] virtio-pci: 00:[0-9]+\.0 virtqueue 0 enabled size=' "$SERIAL_LOG" | head -n 1 | cut -d: -f1 || true)"
-DRIVER_OK_LINE="$(grep -nE '\[VNK\] virtio-pci: 00:[0-9]+\.0 DRIVER_OK status=0xf queues_ready=1 virtqueue=0' "$SERIAL_LOG" | head -n 1 | cut -d: -f1 || true)"
-if [[ -z "$VIRTQUEUE_LINE" || -z "$DRIVER_OK_LINE" ]]; then
-    record_failure 'the virtqueue and DRIVER_OK lines are not in the log'
-elif (( DRIVER_OK_LINE < VIRTQUEUE_LINE )); then
-    record_failure 'DRIVER_OK was written before the virtqueue was enabled'
-fi
-
-# Nenhuma outra linha de virtio-pci pode trazer status=0xf: o unico lugar em
-# que DRIVER_OK aparece e a linha da ativacao.
-STRAY_DRIVER_OK="$(grep -E '\[VNK\] virtio-pci:' "$SERIAL_LOG" \
-    | grep -E 'status=0x[fF]' \
-    | grep -vE 'DRIVER_OK status=0xf' || true)"
-if [[ -n "$STRAY_DRIVER_OK" ]]; then
-    record_failure 'status=0xf outside the DRIVER_OK line'
-fi
+# VVDI (Voryn Virtual Device Interface): valida os 9 padroes obrigatorios, a
+# sequencia completa, a ordem estrita dos eventos, a unicidade de DRIVER_OK, a
+# ausencia de status=0xf indevido e a rejeicao do prefixo antigo.
+verify_vvdi_log "$SERIAL_LOG"
 require_marker "[VNK] timer:"
 require_marker "[VNK] keyboard: ready for PS/2 input"
 require_pattern '\[VNK\] keyboard: key scancode=0x1e extended=0 pressed=1' 'PS/2 A key press'
@@ -716,14 +823,14 @@ if [[ $FAILURES -ne 0 ]]; then
     # falha costuma ser a ausencia de uma dessas linhas, e por isso elas sao
     # repetidas aqui, no fim: quem le o relatorio ve o diagnostico do kernel
     # sem precisar do log completo.
-    DIAGNOSTIC="$(grep -E '\[VNK\] (pci|virtio)' "$SERIAL_LOG" | tail -n 12 || true)"
+    DIAGNOSTIC="$(grep -E '\[VNK\] (pci|virtio|vvdi)' "$SERIAL_LOG" | tail -n 12 || true)"
     if [[ -n "$DIAGNOSTIC" ]]; then
-        echo "qemu-boot-test: last console lines of the PCI and VirtIO probes:" >&2
+        echo "qemu-boot-test: last console lines of the PCI, VirtIO and VVDI probes:" >&2
         while IFS= read -r line; do
             echo "qemu-boot-test:   $line" >&2
         done <<< "$DIAGNOSTIC"
     else
-        echo "qemu-boot-test: the console has no PCI or VirtIO probe lines" >&2
+        echo "qemu-boot-test: the console has no PCI, VirtIO or VVDI probe lines" >&2
     fi
     exit 1
 fi
