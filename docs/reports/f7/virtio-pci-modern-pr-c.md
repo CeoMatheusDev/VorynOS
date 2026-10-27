@@ -153,6 +153,14 @@ onze passos verdes, inclusive:
 
 Ou seja: o requisito 9 (boot no QEMU até `0x0f`) foi verificado na CI, não apenas no host.
 
+**Depois das correções da auditoria**, commit `59e467d`, run
+[`40519144210`](https://github.com/CeoMatheusDev/VorynOS/actions/runs/40519144210),
+tentativa 1: **conclusão `success`** em 2min54s, com os onze passos
+verdes — *Testes de unidade* (539 testes), *Construir*, **Teste de boot no QEMU**,
+*Verificação agregada* e *Verificar os artefatos*. O boot completo passa com as correções,
+o que inclui as asserções de ordem do `DRIVER_OK` e a checagem negativa de `status=0xf`
+depois da mudança de `ready_queues` para conjunto de índices.
+
 O ambiente da sessão não traz Zig nem QEMU instalados. O toolchain 0.17.0 foi obtido do
 pacote `ziglang` do PyPI (`zig version` → `0.17.0`); o QEMU e o OVMF não estão disponíveis
 e não há rede para instalá-los (o `apt` não responde e o acesso é limitado a GitHub,
