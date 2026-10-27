@@ -41,6 +41,9 @@ pub const types = @import("types.zig");
 pub const status = @import("status.zig");
 pub const features = @import("features.zig");
 pub const caps = @import("caps.zig");
+pub const mmio = @import("mmio.zig");
+pub const transport = @import("transport.zig");
+pub const pci_transport = @import("pci_transport.zig");
 
 // Os testes dos modulos vivem neles mesmos; este bloco e o que os traz para
 // o binario de teste. Sem ele o binario e construido com zero testes e passa
@@ -50,6 +53,9 @@ test {
     _ = status;
     _ = features;
     _ = caps;
+    _ = mmio;
+    _ = transport;
+    _ = pci_transport;
 }
 
 const std = @import("std");
