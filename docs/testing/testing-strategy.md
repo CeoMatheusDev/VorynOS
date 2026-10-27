@@ -46,7 +46,7 @@ layer that the kernel will depend on to not repeat a firmware mistake.
 
 The kernel modules that do not depend on hardware are tested the same way
 and in the same `zig build test` run, through the binaries `kernel-tests`,
-`security-tests`, `arch-tests`, `ipc-tests` and `fs-loader-tests`:
+`security-tests`, `arch-tests`, `vvdi-tests`, `ipc-tests` and `fs-loader-tests`:
 
 - `kernel/arch/x86_64/virtio_blk.zig`: the provisional block entry points
   must return `error.NotImplemented`, and the declared error set must stay
@@ -77,6 +77,10 @@ qemu-boot-test: all checks passed
 
 The test also fails if the console holds the `FATAL` marker, which detects
 failures that do not stop the boot but that indicate an incorrect state.
+The VVDI initialization sequence (`[VNK] vvdi:`) is verified against all
+nine mandatory steps in strict chronological order, rejecting empty logs,
+obsolete prefixes and stray `status=0xf` occurrences; those assertions are
+self-tested on the host and in CI by `tests/integration/log-assertions-test.sh`.
 
 Since F6.28 the boot test also captures a P6 screenshot through the QEMU
 monitor while the native application holds a 32x24 composed frame. The

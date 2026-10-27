@@ -13,7 +13,12 @@
 //  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
 //************************************************************************//
 
-//! Raiz do subsistema VirtIO do VorynOS.
+//! Raiz do subsistema VVDI (Voryn Virtual Device Interface) do VorynOS.
+//!
+//! A VVDI e a identidade nativa da infraestrutura de dispositivos virtuais do
+//! VorynOS; neste incremento ela implementa o protocolo moderno da
+//! especificacao VirtIO 1.2 sobre PCI, preservando os identificadores e as
+//! estruturas padronizadas.
 //!
 //! O subsistema esta dividido por responsabilidade, e a dependencia aponta
 //! para dentro:
@@ -41,7 +46,7 @@
 //!
 //! O modulo nao importa `pci.zig`: a raiz de um modulo Zig precisa estar
 //! acima de todos os arquivos que ele importa, e o subsistema e testado e
-//! compilado a partir de `kernel/drivers/virtio/`. A ligacao com o PCI
+//! compilado a partir de `kernel/drivers/vvdi/`. A ligacao com o PCI
 //! acontece pelo chamador, que passa os bytes e o validador de BAR (veja
 //! `caps.build`), e nao por uma copia daquele modulo.
 

@@ -50,7 +50,7 @@ const smp = @import("arch/x86_64/smp.zig");
 const apic = @import("arch/x86_64/apic.zig");
 const pci = @import("arch/x86_64/pci.zig");
 const virtio = @import("arch/x86_64/virtio.zig");
-const virtio_modern = @import("drivers/virtio/root.zig");
+const vvdi = @import("drivers/vvdi/root.zig");
 
 const heap = @import("memory/heap.zig");
 const dma = @import("memory/dma.zig");
@@ -727,10 +727,11 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     probeDmaWindow();
     probeVirtqueueLayout();
 
-    // F7/PR B: mapeia o BAR do virtio-blk moderno e negocia as features ate
-    // FEATURES_OK. A janela de MMIO ja foi reservada em `buildPageTables`;
-    // aqui as paginas do dispositivo sao mapeadas com cache desabilitado.
-    // Nenhuma virtqueue e programada e DRIVER_OK nao e escrito.
+    // VVDI (F7/PR B e PR C): mapeia o BAR do virtio-blk moderno, negocia as
+    // features ate FEATURES_OK, programa e habilita a virtqueue 0 em memoria
+    // DMA e ativa o dispositivo com DRIVER_OK. A janela de MMIO ja foi
+    // reservada em `buildPageTables`; as paginas do dispositivo sao mapeadas
+    // com cache desabilitado.
     bringUpVirtioDevices();
 
     // F7 base: leitura real do espaco de configuracao PCI no bus 0. A sonda
@@ -1109,7 +1110,8 @@ fn probeVirtqueueLayout() void {
 }
 
 // ----------------------------------------------------------------------
-// F7/PR B e PR C: transporte VirtIO PCI moderno e virtqueue dividida.
+// VVDI (Voryn Virtual Device Interface): transporte moderno e virtqueue
+// dividida (VirtIO 1.2).
 //
 // A ordem da sequencia e a da especificacao e a do boot:
 //
@@ -1140,7 +1142,7 @@ const mmio_window_base: u64 = 0x6000_0000;
 const mmio_window_size: u64 = 16 * 1024 * 1024;
 
 /// Janela de mapeamento, preparada em `buildPageTables`.
-var mmio_window: ?virtio_modern.mmio.Window = null;
+var mmio_window: ?vvdi.mmio.Window = null;
 
 /// Tabela de BARs e tamanho medido de cada BAR da funcao em inicializacao.
 ///
@@ -1167,7 +1169,7 @@ fn unmapMmioPage(virtual: u64) void {
     paging.unmapKernelPage(virtual) catch {};
 }
 
-const mmio_mapper: virtio_modern.mmio.Mapper = .{
+const mmio_mapper: vvdi.mmio.Mapper = .{
     .map = mapMmioPage,
     .unmap = unmapMmioPage,
 };
@@ -1181,7 +1183,7 @@ fn installMmioWindow() void {
         port.haltForever();
     };
 
-    mmio_window = virtio_modern.mmio.Window.init(
+    mmio_window = vvdi.mmio.Window.init(
         mmio_window_base,
         mmio_window_size,
         mmio_mapper,
@@ -1229,11 +1231,11 @@ fn bringUpVirtioDevices() void {
 
     while (device < 32) : (device += 1) {
         const vendor = pci.readConfigWord(0, device, 0, 0x00);
-        if (vendor != virtio_modern.types.vendor_id) continue;
+        if (vendor != vvdi.types.vendor_id) continue;
 
         found += 1;
         const device_id = pci.readConfigWord(0, device, 0, 0x02);
-        const identification = virtio_modern.types.identify(vendor, device_id) catch |err| {
+        const identification = vvdi.types.identify(vendor, device_id) catch |err| {
             serial.printLine("[VNK] virtio: 00:{d}.0 device=0x{x} is not identified: {s}", .{
                 device,
                 device_id,
@@ -1271,7 +1273,7 @@ fn bringUpVirtioDevices() void {
     if (found == 0) {
         serial.printLine("[VNK] virtio: no function of vendor 0x1af4 on bus 0", .{});
     } else if (!ready) {
-        serial.printLine("[VNK] virtio-pci: no modern virtio-blk was brought up", .{});
+        serial.printLine("[VNK] vvdi: no modern virtio-blk was brought up", .{});
     }
 }
 
@@ -1291,12 +1293,12 @@ const probed_capability_limit: usize = 16;
 /// memoria que ele nao sabe mais se pertence ao dispositivo.
 fn bringUpVirtioFunction(
     device: u8,
-    identification: virtio_modern.types.Identification,
+    identification: vvdi.types.Identification,
 ) bool {
     const location: pci.Function = .{ .bus = 0, .device = device, .function = 0 };
     const reader = pci.functionReader(&location);
 
-    serial.printLine("[VNK] virtio-pci: modern device detected 00:{d}.0 id=0x{x} type={s}", .{
+    serial.printLine("[VNK] vvdi: modern device detected 00:{d}.0 id=0x{x} type={s}", .{
         device,
         identification.device_id,
         identification.device_type.label(),
@@ -1306,27 +1308,27 @@ fn bringUpVirtioFunction(
     // lendo o resultado. As escritas sao restauradas dentro de
     // `probeBarSizes`, e nenhum outro registrador da funcao e tocado.
     probed_bars = pci.readBarTable(reader) orelse {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 BAR table is invalid", .{device});
+        serial.printLine("[VNK] vvdi: 00:{d}.0 BAR table is invalid", .{device});
         return false;
     };
     probed_bar_sizes = pci.probeBarSizes(location.bus, location.device, location.function);
 
-    var capabilities: [probed_capability_limit]virtio_modern.caps.Capability = undefined;
+    var capabilities: [probed_capability_limit]vvdi.caps.Capability = undefined;
     const count = collectVirtioCapabilities(device, &capabilities) orelse return false;
 
-    const collection = virtio_modern.caps.build(
+    const collection = vvdi.caps.build(
         capabilities[0..count],
         supportedProbedBar,
     ) catch |err| {
         serial.printLine(
-            "[VNK] virtio-pci: 00:{d}.0 type={s} capabilities rejected: {s}",
+            "[VNK] vvdi: 00:{d}.0 type={s} capabilities rejected: {s}",
             .{ device, identification.device_type.label(), @errorName(err) },
         );
         return false;
     };
 
     serial.printLine(
-        "[VNK] virtio-pci: 00:{d}.0 capabilities validated bar={d} common=+0x{x}/{d} notify=+0x{x}/{d} multiplier={d}",
+        "[VNK] vvdi: 00:{d}.0 capabilities validated bar={d} common=+0x{x}/{d} notify=+0x{x}/{d} multiplier={d}",
         .{
             device,
             collection.common.bar,
@@ -1339,13 +1341,13 @@ fn bringUpVirtioFunction(
     );
 
     const window = if (mmio_window) |*value| value else {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 the MMIO window was not installed", .{device});
+        serial.printLine("[VNK] vvdi: 00:{d}.0 the MMIO window was not installed", .{device});
         return false;
     };
 
     const bar_index: usize = collection.common.bar;
     const bar = (probed_bars orelse return false).bars[bar_index] orelse {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 bar{d} is not implemented", .{
+        serial.printLine("[VNK] vvdi: 00:{d}.0 bar{d} is not implemented", .{
             device,
             bar_index,
         });
@@ -1353,20 +1355,20 @@ fn bringUpVirtioFunction(
     };
     if (bar.is_io) {
         serial.printLine(
-            "[VNK] virtio-pci: 00:{d}.0 bar{d} is an I/O port BAR; the modern transport needs MMIO",
+            "[VNK] vvdi: 00:{d}.0 bar{d} is an I/O port BAR; the modern transport needs MMIO",
             .{ device, bar_index },
         );
         return false;
     }
     const bar_size = probed_bar_sizes[bar_index] orelse {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 bar{d} size could not be measured", .{
+        serial.printLine("[VNK] vvdi: 00:{d}.0 bar{d} size could not be measured", .{
             device,
             bar_index,
         });
         return false;
     };
     if (bar.address == 0) {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 bar{d} is not assigned an address", .{
+        serial.printLine("[VNK] vvdi: 00:{d}.0 bar{d} is not assigned an address", .{
             device,
             bar_index,
         });
@@ -1376,30 +1378,30 @@ fn bringUpVirtioFunction(
     var region = window.mapRange(
         bar.address,
         bar_size,
-        virtio_modern.mmio.Permissions.read_write,
+        vvdi.mmio.Permissions.read_write,
     ) catch |err| {
         serial.printLine(
-            "[VNK] virtio-pci: 00:{d}.0 bar{d} size=0x{x} could not be mapped: {s}",
+            "[VNK] vvdi: 00:{d}.0 bar{d} size=0x{x} could not be mapped: {s}",
             .{ device, bar_index, bar_size, @errorName(err) },
         );
         return false;
     };
 
-    var transport = virtio_modern.pci_transport.Transport.attach(
+    var transport = vvdi.pci_transport.Transport.attach(
         identification,
         collection,
         region,
     ) catch |err| {
         window.unmap(&region);
         serial.printLine(
-            "[VNK] virtio-pci: 00:{d}.0 capabilities do not fit bar{d} size=0x{x}: {s}",
+            "[VNK] vvdi: 00:{d}.0 capabilities do not fit bar{d} size=0x{x}: {s}",
             .{ device, bar_index, bar_size, @errorName(err) },
         );
         return false;
     };
 
     serial.printLine(
-        "[VNK] virtio-pci: MMIO mapped 00:{d}.0 bar{d} phys=0x{x} size=0x{x} virt=0x{x} common=0x{x} notify=0x{x}",
+        "[VNK] vvdi: MMIO mapped 00:{d}.0 bar{d} phys=0x{x} size=0x{x} virt=0x{x} common=0x{x} notify=0x{x}",
         .{
             device,
             bar_index,
@@ -1411,13 +1413,13 @@ fn bringUpVirtioFunction(
         },
     );
 
-    var target: virtio_modern.transport.Device = .{ .registers = transport.registers() };
+    var target: vvdi.transport.Device = .{ .registers = transport.registers() };
 
-    switch (target.initialize(virtio_modern.features.supported)) {
+    switch (target.initialize(vvdi.features.supported)) {
         .failed => |failure| {
             window.unmap(&region);
             serial.printLine(
-                "[VNK] virtio-pci: 00:{d}.0 initialization failed at {s}: {s} (bar{d} size=0x{x})",
+                "[VNK] vvdi: 00:{d}.0 initialization failed at {s}: {s} (bar{d} size=0x{x})",
                 .{
                     device,
                     failure.stage.label(),
@@ -1434,31 +1436,31 @@ fn bringUpVirtioFunction(
     // O estado que vale e o que o dispositivo informa. `initialize` ja
     // confirmou a leitura de volta depois de cada escrita, e estas
     // verificacoes impedem que uma mudanca de contrato passe em silencio.
-    if (target.accepted & virtio_modern.features.version_1 == 0) {
+    if (target.accepted & vvdi.features.version_1 == 0) {
         window.unmap(&region);
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 returned without VERSION_1", .{device});
+        serial.printLine("[VNK] vvdi: 00:{d}.0 returned without VERSION_1", .{device});
         return false;
     }
     serial.printLine(
-        "[VNK] virtio-pci: 00:{d}.0 VERSION_1 negotiated features=0x{x} offered=0x{x}",
+        "[VNK] vvdi: 00:{d}.0 VERSION_1 negotiated features=0x{x} offered=0x{x}",
         .{ device, target.accepted, target.offered },
     );
 
-    const confirmed: ?virtio_modern.status.Phase = target.phase() catch null;
+    const confirmed: ?vvdi.status.Phase = target.phase() catch null;
     if (confirmed != .features_ok or !target.isAwaitingQueues()) {
         window.unmap(&region);
         serial.printLine(
-            "[VNK] virtio-pci: 00:{d}.0 FEATURES_OK was not confirmed (status=0x{x})",
+            "[VNK] vvdi: 00:{d}.0 FEATURES_OK was not confirmed (status=0x{x})",
             .{ device, target.status },
         );
         return false;
     }
-    serial.printLine("[VNK] virtio-pci: 00:{d}.0 FEATURES_OK accepted status=0x{x}", .{
+    serial.printLine("[VNK] vvdi: 00:{d}.0 FEATURES_OK accepted status=0x{x}", .{
         device,
         target.status,
     });
     serial.printLine(
-        "[VNK] virtio-pci: 00:{d}.0 awaiting virtqueue setup queues={d} status=0x{x}",
+        "[VNK] vvdi: 00:{d}.0 awaiting virtqueue setup queues={d} status=0x{x}",
         .{ device, target.queues, target.status },
     );
 
@@ -1493,7 +1495,7 @@ fn bringUpVirtioFunction(
 /// que a especificacao permite.
 const virtqueue_capacity: u16 = 256;
 
-const Virtqueue = virtio_modern.virtqueue.Queue(virtqueue_capacity);
+const Virtqueue = vvdi.virtqueue.Queue(virtqueue_capacity);
 
 /// Memoria e estado da fila 0 do dispositivo alvo.
 ///
@@ -1512,7 +1514,7 @@ const VirtqueueState = struct {
     /// A marca e do transporte porque e ele que conhece a sequencia: a
     /// memoria sai das maos do driver no `queue_enable` e so volta quando o
     /// dispositivo confirma o reset.
-    ownership: virtio_modern.transport.QueueMemory = .{},
+    ownership: vvdi.transport.QueueMemory = .{},
 };
 
 var virtqueue_state: VirtqueueState = .{};
@@ -1542,11 +1544,11 @@ fn releaseVirtqueueMemory() void {
 /// estar lendo a memoria da fila. Antes de devolver as paginas ao alocador a
 /// funcao reseta o dispositivo e exige a leitura de volta em zero; sem essa
 /// confirmacao a memoria continua reservada.
-fn abandonVirtqueue(target: *virtio_modern.transport.Device, device: u8) void {
+fn abandonVirtqueue(target: *vvdi.transport.Device, device: u8) void {
     if (target.resetDevice()) |_| {
         virtqueue_state.ownership.deviceReleased();
         serial.printLine(
-            "[VNK] virtio-pci: 00:{d}.0 device reset after the virtqueue failure, status={d}",
+            "[VNK] vvdi: 00:{d}.0 device reset after the virtqueue failure, status={d}",
             .{ device, target.status },
         );
     } else |err| {
@@ -1582,8 +1584,8 @@ fn allocateVirtqueueMemory(byte_length: u64) ?dma.MappedBuffer {
 /// volta. So depois de tudo isso o protocolo aceita DRIVER_OK — sem fila
 /// pronta, `transport.Device.activate` recusa a escrita.
 fn programVirtqueue(
-    target: *virtio_modern.transport.Device,
-    device_transport: *virtio_modern.pci_transport.Transport,
+    target: *vvdi.transport.Device,
+    device_transport: *vvdi.pci_transport.Transport,
     device: u8,
 ) bool {
     if (virtqueue_state.queue != null or virtqueue_state.buffer != null) {
@@ -1593,21 +1595,21 @@ fn programVirtqueue(
 
     // 1. Tamanho: o maior valor da especificacao que o dispositivo aceita.
     const device_max = target.queueMaxSize(0) catch |err| {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 max size failed: {s}", .{
+        serial.printLine("[VNK] vvdi: 00:{d}.0 virtqueue 0 max size failed: {s}", .{
             device,
             @errorName(err),
         });
         return false;
     };
-    const size = virtio_modern.virtqueue.Layout.negotiateSize(device_max) catch |err| {
+    const size = vvdi.virtqueue.Layout.negotiateSize(device_max) catch |err| {
         serial.printLine(
-            "[VNK] virtio-pci: 00:{d}.0 virtqueue 0 rejected max={d}: {s}",
+            "[VNK] vvdi: 00:{d}.0 virtqueue 0 rejected max={d}: {s}",
             .{ device, device_max, @errorName(err) },
         );
         return false;
     };
-    const layout = virtio_modern.virtqueue.Layout.compute(size) catch |err| {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 layout failed: {s}", .{
+    const layout = vvdi.virtqueue.Layout.compute(size) catch |err| {
+        serial.printLine("[VNK] vvdi: 00:{d}.0 virtqueue 0 layout failed: {s}", .{
             device,
             @errorName(err),
         });
@@ -1616,7 +1618,7 @@ fn programVirtqueue(
 
     // 2. Memoria: paginas fisicas contiguas, mapeadas na janela de DMA.
     const mapped = allocateVirtqueueMemory(layout.total_size) orelse {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 has no DMA memory for {d} bytes", .{
+        serial.printLine("[VNK] vvdi: 00:{d}.0 virtqueue 0 has no DMA memory for {d} bytes", .{
             device,
             layout.total_size,
         });
@@ -1630,7 +1632,7 @@ fn programVirtqueue(
         .bytes = mapped.virtual[0..layout.total_size],
     }, size) catch |err| {
         releaseVirtqueueMemory();
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 init failed: {s}", .{
+        serial.printLine("[VNK] vvdi: 00:{d}.0 virtqueue 0 init failed: {s}", .{
             device,
             @errorName(err),
         });
@@ -1644,7 +1646,7 @@ fn programVirtqueue(
 
     const addresses = queue.addresses() catch |err| {
         releaseVirtqueueMemory();
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 addresses failed: {s}", .{
+        serial.printLine("[VNK] vvdi: 00:{d}.0 virtqueue 0 addresses failed: {s}", .{
             device,
             @errorName(err),
         });
@@ -1652,7 +1654,7 @@ fn programVirtqueue(
     };
 
     serial.printLine(
-        "[VNK] virtio-pci: 00:{d}.0 virtqueue 0 dma phys=0x{x} virt=0x{x} size={d} bytes={d} desc=0x{x} avail=0x{x} used=0x{x}",
+        "[VNK] vvdi: 00:{d}.0 virtqueue 0 dma phys=0x{x} virt=0x{x} size={d} bytes={d} desc=0x{x} avail=0x{x} used=0x{x}",
         .{
             device,
             buffer.physical_address,
@@ -1682,7 +1684,7 @@ fn programVirtqueue(
         .driver = addresses.driver,
         .device = addresses.device,
     }) catch |err| {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 programming failed: {s}", .{
+        serial.printLine("[VNK] vvdi: 00:{d}.0 virtqueue 0 programming failed: {s}", .{
             device,
             @errorName(err),
         });
@@ -1694,7 +1696,7 @@ fn programVirtqueue(
 
     // 5. Habilitacao, com o estado lido de volta.
     device_transport.enableQueue(0) catch |err| {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 enable failed: {s}", .{
+        serial.printLine("[VNK] vvdi: 00:{d}.0 virtqueue 0 enable failed: {s}", .{
             device,
             @errorName(err),
         });
@@ -1708,7 +1710,7 @@ fn programVirtqueue(
     };
 
     const enabled = device_transport.queueEnabled(0) catch |err| {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 enable check failed: {s}", .{
+        serial.printLine("[VNK] vvdi: 00:{d}.0 virtqueue 0 enable check failed: {s}", .{
             device,
             @errorName(err),
         });
@@ -1716,7 +1718,7 @@ fn programVirtqueue(
         return false;
     };
     if (!enabled) {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 did not stay enabled", .{device});
+        serial.printLine("[VNK] vvdi: 00:{d}.0 virtqueue 0 did not stay enabled", .{device});
         abandonVirtqueue(target, device);
         return false;
     }
@@ -1727,7 +1729,7 @@ fn programVirtqueue(
     virtqueue_state.size = size;
 
     target.markQueueReady(0) catch |err| {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 virtqueue 0 ready failed: {s}", .{
+        serial.printLine("[VNK] vvdi: 00:{d}.0 virtqueue 0 ready failed: {s}", .{
             device,
             @errorName(err),
         });
@@ -1736,7 +1738,7 @@ fn programVirtqueue(
     };
 
     serial.printLine(
-        "[VNK] virtio-pci: 00:{d}.0 virtqueue 0 enabled size={d} queues={d} free={d} avail={d} used={d}",
+        "[VNK] vvdi: 00:{d}.0 virtqueue 0 enabled size={d} queues={d} free={d} avail={d} used={d}",
         .{
             device,
             size,
@@ -1750,7 +1752,7 @@ fn programVirtqueue(
     // 6. DRIVER_OK, e so agora: a fila existe, tem enderecos e esta habilitada.
     switch (target.finish()) {
         .failed => |failure| {
-            serial.printLine("[VNK] virtio-pci: 00:{d}.0 activation failed at {s}: {s}", .{
+            serial.printLine("[VNK] vvdi: 00:{d}.0 activation failed at {s}: {s}", .{
                 device,
                 failure.stage.label(),
                 @errorName(failure.reason),
@@ -1764,9 +1766,9 @@ fn programVirtqueue(
         .initialized => {},
     }
 
-    const phase: ?virtio_modern.status.Phase = target.phase() catch null;
-    if (target.status != 0x0F or phase != .driver_ok or !virtio_modern.status.isReady(target.status)) {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 DRIVER_OK was not confirmed status=0x{x}", .{
+    const phase: ?vvdi.status.Phase = target.phase() catch null;
+    if (target.status != 0x0F or phase != .driver_ok or !vvdi.status.isReady(target.status)) {
+        serial.printLine("[VNK] vvdi: 00:{d}.0 DRIVER_OK was not confirmed status=0x{x}", .{
             device,
             target.status,
         });
@@ -1775,7 +1777,7 @@ fn programVirtqueue(
     }
 
     serial.printLine(
-        "[VNK] virtio-pci: 00:{d}.0 DRIVER_OK status=0x{x} queues_ready={d} virtqueue=0",
+        "[VNK] vvdi: 00:{d}.0 DRIVER_OK status=0x{x} queues_ready={d} virtqueue=0",
         .{ device, target.status, target.readyQueues() },
     );
 
@@ -1790,13 +1792,13 @@ fn programVirtqueue(
 /// as outras.
 fn collectVirtioCapabilities(
     device: u8,
-    storage: *[probed_capability_limit]virtio_modern.caps.Capability,
+    storage: *[probed_capability_limit]vvdi.caps.Capability,
 ) ?usize {
     const location: pci.Function = .{ .bus = 0, .device = device, .function = 0 };
     const reader = pci.functionReader(&location);
 
     var iterator = pci.CapabilityIterator.init(reader) catch |err| {
-        serial.printLine("[VNK] virtio-pci: 00:{d}.0 has no capability list: {s}", .{
+        serial.printLine("[VNK] vvdi: 00:{d}.0 has no capability list: {s}", .{
             device,
             @errorName(err),
         });
@@ -1806,7 +1808,7 @@ fn collectVirtioCapabilities(
     var count: usize = 0;
     while (true) {
         const next = iterator.next() catch |err| {
-            serial.printLine("[VNK] virtio-pci: 00:{d}.0 capability list is invalid: {s}", .{
+            serial.printLine("[VNK] vvdi: 00:{d}.0 capability list is invalid: {s}", .{
                 device,
                 @errorName(err),
             });
@@ -1817,14 +1819,14 @@ fn collectVirtioCapabilities(
 
         if (count == storage.len) {
             serial.printLine(
-                "[VNK] virtio-pci: 00:{d}.0 capability list truncated at {d} entries",
+                "[VNK] vvdi: 00:{d}.0 capability list truncated at {d} entries",
                 .{ device, probed_capability_limit },
             );
             break;
         }
 
         storage[count] = readVirtioCapability(device, pci_capability) catch |err| {
-            serial.printLine("[VNK] virtio-pci: 00:{d}.0 capability at 0x{x} is invalid: {s}", .{
+            serial.printLine("[VNK] vvdi: 00:{d}.0 capability at 0x{x} is invalid: {s}", .{
                 device,
                 pci_capability.offset,
                 @errorName(err),
@@ -1847,8 +1849,8 @@ fn collectVirtioCapabilities(
 fn readVirtioCapability(
     device: u8,
     pci_capability: pci.Capability,
-) virtio_modern.caps.Error!virtio_modern.caps.Capability {
-    var body: [virtio_modern.caps.max_structure_size]u8 = @splat(0);
+) vvdi.caps.Error!vvdi.caps.Capability {
+    var body: [vvdi.caps.max_structure_size]u8 = @splat(0);
     // O percurso recusou uma capability vendor-specific sem `cap_len`, e por
     // isso a ausencia do campo aqui e uma violacao da mesma regra.
     const declared = pci_capability.length orelse return error.TruncatedCapability;
@@ -1861,7 +1863,7 @@ fn readVirtioCapability(
         slot.* = pci.readConfigByte(0, device, 0, offset);
     }
 
-    return virtio_modern.caps.parse(body[0..length]);
+    return vvdi.caps.parse(body[0..length]);
 }
 
 /// Builds the page tables of the kernel.
