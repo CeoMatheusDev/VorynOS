@@ -51,7 +51,15 @@ const root_entries = 512;
 /// Number of sectors occupied by the root directory.
 const root_dir_sectors = (root_entries * 32 + bytes_per_sector - 1) / bytes_per_sector;
 /// Total size of the generated image.
-const image_size = 64 * 1024 * 1024;
+///
+/// The kernel is a Debug ELF: he has about 20 MiB of static data, the debug
+/// sections of the build and the holes that the linker leaves between the
+/// loadable segments. With 64 MiB of image the kernel of this increment was
+/// already at the limit, and a new module tipped it over. 128 MiB is still a
+/// FAT16 volume of 32768 clusters, which every firmware reads, and leaves
+/// room for the kernel to grow without turning every increment into a fight
+/// with the image size.
+const image_size = 128 * 1024 * 1024;
 /// Total number of sectors of the generated image.
 const image_sectors = image_size / bytes_per_sector;
 /// OEM name written into the BIOS parameter block.
@@ -313,9 +321,13 @@ pub fn main(init: std.process.Init) !void {
 
     const directory = std.Io.Dir.cwd();
 
-    const efi_data = try directory.readFileAlloc(init.io, options.efi, allocator, .limited(64 * 1024 * 1024));
+    // O limite de leitura acompanha a imagem: o kernel tem de caber nela, e
+    // um limite menor do que o volume recusaria um arquivo que o sistema de
+    // arquivos aceitaria.
+    const file_limit = image_size;
+    const efi_data = try directory.readFileAlloc(init.io, options.efi, allocator, .limited(file_limit));
     defer allocator.free(efi_data);
-    const kernel_data = try directory.readFileAlloc(init.io, options.kernel, allocator, .limited(64 * 1024 * 1024));
+    const kernel_data = try directory.readFileAlloc(init.io, options.kernel, allocator, .limited(file_limit));
     defer allocator.free(kernel_data);
 
     const image = try allocator.alloc(u8, image_size);
