@@ -29,7 +29,7 @@ pub const fs = @import("fs/fs.zig");
 pub const vfsx = @import("fs/vfsx.zig");
 pub const vnv = @import("fs/vnv.zig");
 pub const vnv_volume = @import("fs/vnv_volume.zig");
-pub const block = @import("storage/block.zig");
+pub const block = @import("voryn_block");
 pub const ramdisk = @import("storage/ramdisk.zig");
 pub const elf_loader = @import("elf_loader.zig");
 pub const native_image = @import("native_image.zig");
@@ -44,7 +44,7 @@ test {
     _ = @import("fs/vfsx.zig");
     _ = @import("fs/vnv.zig");
     _ = @import("fs/vnv_volume.zig");
-    _ = @import("storage/block.zig");
+    _ = @import("voryn_block");
     _ = @import("storage/ramdisk.zig");
     _ = @import("elf_loader.zig");
     _ = @import("native_image.zig");

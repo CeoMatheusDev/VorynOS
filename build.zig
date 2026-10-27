@@ -27,7 +27,8 @@
 //!   * `zig build test`         - run the host unit tests;
 //!   * `zig build qemu`         - boot the image in QEMU, interactively;
 //!   * `zig build qemu-test`    - run the automated boot test in QEMU;
-//!   * `zig build check`        - unit tests and automated boot test.
+//!   * `zig build qemu-storage-test` - verify VirtIO Block I/O across two boots;
+//!   * `zig build check`        - unit, boot, and two-boot storage tests.
 
 const std = @import("std");
 
@@ -181,6 +182,13 @@ pub fn build(b: *std.Build) void {
         // raise a fault in the middle of a message of the console.
         .error_tracing = false,
     });
+    const block_kernel_module = b.createModule(.{
+        .root_source_file = b.path("kernel/storage/block.zig"),
+        .target = kernel_target,
+        .optimize = optimize,
+    });
+    kernel_module.addImport("voryn_block", block_kernel_module);
+
     const kernel_keyboard_module = b.createModule(.{
         .root_source_file = b.path("kernel/input/keyboard.zig"),
         .target = kernel_target,
@@ -486,6 +494,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const block_vvdi_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/storage/block.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    vvdi_test_module.addImport("voryn_block", block_vvdi_test_module);
     const vvdi_tests = b.addTest(.{
         .name = "vvdi-tests",
         .root_module = vvdi_test_module,
@@ -516,6 +530,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     host_test_module.addImport("voryn_shared", shared);
+    const block_host_module = b.createModule(.{
+        .root_source_file = b.path("kernel/storage/block.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    host_test_module.addImport("voryn_block", block_host_module);
     const vex_host_module = b.createModule(.{
         .root_source_file = b.path("formats/vex.zig"),
         .target = target,
@@ -543,6 +563,14 @@ pub fn build(b: *std.Build) void {
     qemu_test_step.dependOn(&image_step.step);
     qemu_test_step.dependOn(&qemu_test.step);
 
+    const storage_test_step = b.step("qemu-storage-test", "Verify VirtIO Block I/O and persistence across two QEMU boots");
+    const storage_test = b.addSystemCommand(&.{ "bash", "tests/integration/virtio-block-persistence.sh" });
+    storage_test.addPrefixedFileArg("--image=", image_path);
+    storage_test.has_side_effects = true;
+    storage_test.step.dependOn(&image_step.step);
+    storage_test_step.dependOn(&image_step.step);
+    storage_test_step.dependOn(&storage_test.step);
+
     const interactive_test_step = b.step("qemu-interactive-test", "Verify persistent PS/2 graphics input in QEMU");
     const interactive_test = b.addSystemCommand(&.{ "bash", "tests/integration/interactive-qemu.sh" });
     interactive_test.addPrefixedFileArg("--image=", image_path);
@@ -561,6 +589,7 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Run the unit tests and the automated boot test");
     check_step.dependOn(unit_test_step);
     check_step.dependOn(qemu_test_step);
+    check_step.dependOn(storage_test_step);
 
     // ------------------------------------------------------------------
     // Default step.

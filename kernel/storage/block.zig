@@ -29,13 +29,20 @@
 //! o volume nem o sistema de arquivos.
 
 const std = @import("std");
-const ramdisk = @import("ramdisk.zig");
 
 pub const Error = error{
     /// O dispositivo ou o pedido é inválido (setor zero, contagem zero).
     InvalidRequest,
     /// O intervalo de bytes pedido não cabe no dispositivo.
     OutOfRange,
+    /// O controlador concluiu com erro de dispositivo.
+    IoFailure,
+    /// A espera limitada por uma conclusao expirou.
+    IoTimeout,
+    /// O controlador ou o formato de pedido ainda nao e suportado.
+    NotImplemented,
+    /// O dispositivo entrou em estado inseguro e foi colocado em quarentena.
+    DeviceFailure,
 };
 
 /// Um dispositivo de blocos.
@@ -47,10 +54,41 @@ pub const Error = error{
 /// número de bytes. O ramdisk copia direto; um driver de disco real faz
 /// read-modify-write quando o pedido não cobre o setor inteiro, e reporta
 /// erro em vez de uma escrita parcial silenciosa.
+/// Default physical backend, installed once by the kernel's device discovery.
+/// Existing callers that carry an explicit `Device` are unaffected.
+var default_device: ?Device = null;
+
+pub fn installDefault(device: Device) void {
+    default_device = device;
+}
+
+pub fn defaultDevice() ?Device {
+    return default_device;
+}
+
+/// Uses the discovered physical device when present; never reports success
+/// for the uninitialized path.
+pub fn readDefaultBytes(byte_offset: u64, out: []u8) Error!void {
+    const device = default_device orelse return error.NotImplemented;
+    try device.readBytes(byte_offset, out);
+}
+
+pub fn writeDefaultBytes(byte_offset: u64, in: []const u8) Error!void {
+    const device = default_device orelse return error.NotImplemented;
+    try device.writeBytes(byte_offset, in);
+}
+
+pub fn flushDefault() Error!void {
+    const device = default_device orelse return error.NotImplemented;
+    try device.flushWrites();
+}
+
 pub const Device = struct {
     ctx: *anyopaque,
     read: *const fn (ctx: *anyopaque, lba: u64, count: usize, inside: usize, out: []u8) Error!void,
     write: *const fn (ctx: *anyopaque, lba: u64, count: usize, inside: usize, in: []const u8) Error!void,
+    /// Opcional: sincroniza os dados volateis do controlador com o meio.
+    flush: ?*const fn (ctx: *anyopaque) Error!void = null,
     sector_size: u32,
     sector_count: u64,
 
@@ -83,6 +121,13 @@ pub const Device = struct {
         }
     }
 
+    /// Solicita que o backend persista todas as escritas confirmadas.
+    /// Backends volateis sem operacao de sincronizacao retornam NotImplemented.
+    pub fn flushWrites(self: *const Device) Error!void {
+        const flush = self.flush orelse return error.NotImplemented;
+        try flush(self.ctx);
+    }
+
     /// Escreve um intervalo contíguo de bytes a partir de `byte_offset`.
     pub fn writeBytes(self: *const Device, byte_offset: u64, in: []const u8) Error!void {
         try checkRange(self, byte_offset, in.len);
@@ -112,9 +157,50 @@ fn checkRange(self: *const Device, byte_offset: u64, length: usize) Error!void {
 
 const testing = std.testing;
 
+const TestDisk = struct {
+    backing: []u8,
+    sector_size: u32,
+
+    fn init(backing: []u8, size: u32) TestDisk {
+        return .{ .backing = backing, .sector_size = size };
+    }
+
+    fn device(self: *TestDisk) Device {
+        return .{
+            .ctx = self,
+            .read = testRead,
+            .write = testWrite,
+            .sector_size = self.sector_size,
+            .sector_count = if (self.sector_size == 0) 0 else @intCast(self.backing.len / @as(usize, self.sector_size)),
+        };
+    }
+};
+
+fn testRead(ctx: *anyopaque, lba: u64, count: usize, inside: usize, out: []u8) Error!void {
+    const self: *TestDisk = @ptrCast(@alignCast(ctx));
+    try testRange(self, lba, count, inside, out.len);
+    const start = @as(usize, @intCast(lba * @as(u64, self.sector_size))) + inside;
+    @memcpy(out, self.backing[start .. start + out.len]);
+}
+
+fn testWrite(ctx: *anyopaque, lba: u64, count: usize, inside: usize, input: []const u8) Error!void {
+    const self: *TestDisk = @ptrCast(@alignCast(ctx));
+    try testRange(self, lba, count, inside, input.len);
+    const start = @as(usize, @intCast(lba * @as(u64, self.sector_size))) + inside;
+    @memcpy(self.backing[start .. start + input.len], input);
+}
+
+fn testRange(self: *const TestDisk, lba: u64, count: usize, inside: usize, length: usize) Error!void {
+    if (self.sector_size == 0 or count == 0) return error.InvalidRequest;
+    const sectors: u64 = @intCast(self.backing.len / @as(usize, self.sector_size));
+    if (lba >= sectors or @as(u64, @intCast(count)) > sectors - lba) return error.OutOfRange;
+    const bytes = std.math.mul(usize, count, @as(usize, self.sector_size)) catch return error.OutOfRange;
+    if (inside > bytes or length > bytes - inside) return error.OutOfRange;
+}
+
 test "readBytes and writeBytes round trip across sector boundaries" {
     var backing: [512 * 3]u8 = @splat(0);
-    var disk = ramdisk.RamDisk.init(&backing, 512);
+    var disk = TestDisk.init(&backing, 512);
     const device = disk.device();
 
     const payload = "the quick brown fox jumps over the lazy dog";
@@ -129,7 +215,7 @@ test "readBytes and writeBytes round trip across sector boundaries" {
 
 test "byte I/O rejects ranges outside the device" {
     var backing: [512 * 2]u8 = @splat(0);
-    var disk = ramdisk.RamDisk.init(&backing, 512);
+    var disk = TestDisk.init(&backing, 512);
     const device = disk.device();
 
     var buffer: [8]u8 = undefined;
@@ -141,7 +227,7 @@ test "byte I/O rejects ranges outside the device" {
 
 test "byte I/O works on unaligned offsets inside one sector" {
     var backing: [512]u8 = @splat(0);
-    var disk = ramdisk.RamDisk.init(&backing, 512);
+    var disk = TestDisk.init(&backing, 512);
     const device = disk.device();
 
     const value = "mid-sector";
@@ -153,7 +239,7 @@ test "byte I/O works on unaligned offsets inside one sector" {
 
 test "a device with a zero sector size is rejected" {
     var backing: [512]u8 = @splat(0);
-    var disk = ramdisk.RamDisk.init(&backing, 0);
+    var disk = TestDisk.init(&backing, 0);
     const device = disk.device();
     var buffer: [8]u8 = undefined;
     try testing.expectError(error.InvalidRequest, device.readBytes(0, &buffer));

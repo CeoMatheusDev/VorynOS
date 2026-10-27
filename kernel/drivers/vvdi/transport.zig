@@ -221,6 +221,13 @@ pub const Device = struct {
     /// O passo 6 e o ultimo. DRIVER_OK nao e escrito aqui em nenhuma
     /// condicao.
     pub fn initialize(self: *Device, supported: u64) Outcome {
+        return self.initializeOptional(supported, 0);
+    }
+
+    /// Initializes the transport while accepting optional device features only
+    /// when the device advertises them. Required features remain mandatory.
+    /// The caller must pass only optional bits whose semantics it implements.
+    pub fn initializeOptional(self: *Device, supported: u64, optional: u64) Outcome {
         self.resetDevice() catch |err| return failure(.reset, err);
 
         self.setStatusSync(status.bitsOf(.acknowledge), .acknowledge) catch |err|
@@ -232,7 +239,12 @@ pub const Device = struct {
             return failure(.read_features, err);
         self.offered = offered;
 
-        const negotiated = features.negotiate(offered, supported) catch |err|
+        const optional_offered = optional & offered;
+        const negotiated = features.negotiateWithDevice(
+            offered,
+            supported | optional_offered,
+            optional_offered,
+        ) catch |err|
             return failure(.read_features, mapFeatureError(err));
 
         self.writeAcceptedFeatures(negotiated) catch |err|
