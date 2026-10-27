@@ -339,7 +339,27 @@ git diff --check   -> sem espaço em branco pendente
 ```
 
 QEMU e OVMF não existem no ambiente da sessão. `zig build qemu-test` e `zig build check`
-rodam na CI, e os resultados são registrados na revisão do PR #12.
+rodam na CI.
+
+### Evidência da CI
+
+Run [`40424390683`](https://github.com/CeoMatheusDev/VorynOS/actions/runs/40424390683)
+do PR #12, commit `1156ff6`: **11/11 passos verdes** em 22m37s, incluindo
+`Testes de unidade`, `Construir`, `Teste de boot no QEMU` e `Verificação agregada`.
+
+O passo `Teste de boot no QEMU` só passa se **todos** os `require_pattern` do
+`boot-qemu.sh` forem encontrados no log serial, e falha se aparecer `status=0xf`. A
+execução verde prova, portanto, no hardware emulado:
+
+- o `virtio-blk-pci` explícito com o transporte legado desabilitado foi detectado
+  como dispositivo moderno (`id=0x1042 type=block`);
+- as capabilities foram validadas contra o BAR (BAR, offsets, comprimentos e
+  multiplicador);
+- o BAR foi mapeado e os registradores da configuração comum foram lidos de verdade
+  (`features`, `num_queues`, `queue_size`, `queue_notify_off`);
+- `VIRTIO_F_VERSION_1` foi negociado e `FEATURES_OK` foi confirmado pelo dispositivo;
+- o estado final foi `status=0xb` com `awaiting virtqueue setup`, e `DRIVER_OK`
+  (`0x0f`) nunca apareceu.
 
 ## Limitações conhecidas
 
