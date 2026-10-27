@@ -472,12 +472,13 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(arch_tests).step);
 
-    // PR A do VirtIO PCI moderno: tipos, identificadores, estados, features e
-    // capabilities. Os modulos sao puros (recebem bytes e valores ja lidos do
-    // espaco de configuracao), nao abrem portas de I/O e nao mapeiam BARs, e
-    // por isso os testes rodam no host. A raiz fica em
-    // `kernel/drivers/virtio/root.zig` porque a raiz de um modulo Zig precisa
-    // estar acima de todos os arquivos que ele importa.
+    // PR A e PR B do VirtIO PCI moderno: tipos, identificadores, estados,
+    // features, capabilities, MMIO e transporte. Os modulos sao puros: o
+    // acesso a memoria de dispositivo e injetado, o mapeamento e injetado e a
+    // configuracao comum e lida por um `Registers` que os testes implementam
+    // sobre memoria. Por isso os testes rodam no host, sem port I/O e sem
+    // hardware. A raiz fica em `kernel/drivers/virtio/root.zig` porque a raiz
+    // de um modulo Zig precisa estar acima de todos os arquivos importados.
     const virtio_modern_test_module = b.createModule(.{
         .root_source_file = b.path("kernel/drivers/virtio/root.zig"),
         .target = target,

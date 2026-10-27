@@ -727,11 +727,11 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     probeDmaWindow();
     probeVirtqueueLayout();
 
-    // F7/PR A: identifica as funcoes VirtIO do bus 0 e valida as
-    // capabilities do transporte PCI moderno. A sonda e apenas de leitura:
-    // nao mapeia BAR, nao escreve o registro de status, nao negocia features
-    // e nao programa virtqueue. O dispositivo NAO e inicializado aqui.
-    identifyVirtioDevices();
+    // F7/PR B: mapeia o BAR do virtio-blk moderno e negocia as features ate
+    // FEATURES_OK. A janela de MMIO ja foi reservada em `buildPageTables`;
+    // aqui as paginas do dispositivo sao mapeadas com cache desabilitado.
+    // Nenhuma virtqueue e programada e DRIVER_OK nao e escrito.
+    bringUpVirtioDevices();
 
     // F7 base: leitura real do espaco de configuracao PCI no bus 0. A sonda
     // nao habilita o dispositivo nem assume um driver; ela existe para
@@ -1108,25 +1108,122 @@ fn probeVirtqueueLayout() void {
     });
 }
 
-/// Identifica as funcoes VirtIO do barramento 0, funcao 0, e valida as
-/// capabilities modernas.
+// ----------------------------------------------------------------------
+// F7/PR B: transporte VirtIO PCI moderno.
+//
+// A ordem da sequencia e a da especificacao e a do boot:
+//
+//   memoria -> paginacao (janela de MMIO reservada em `buildPageTables`)
+//   -> PCI (configuracao e lista de capabilities)
+//   -> descoberta do dispositivo
+//   -> mapeamento do BAR com cache desabilitado
+//   -> negocacao de features ate FEATURES_OK
+//
+// A janela virtual e reservada junto com as tabelas de pagina, antes de
+// qualquer espaco de processo, pelo mesmo motivo da janela de DMA: os
+// espacos copiam a tabela de nivel 2, e uma tabela de nivel 1 criada depois
+// nao apareceria nos espacos que ja existem.
+//
+// O que este incremento NAO faz: nao programa virtqueue, nao escreve
+// DRIVER_OK e nao le nem escreve setor. O dispositivo para em FEATURES_OK,
+// que e o estado correto antes das filas, e a mensagem final diz isso com
+// todas as letras.
+// ----------------------------------------------------------------------
+
+/// Janela virtual onde os BARs dos dispositivos sao mapeados.
+///
+/// Fica acima da janela de DMA (0x4000_0000 + 64 MiB) e abaixo da memoria
+/// do framebuffer, e nao colide com nenhuma faixa que o kernel ja mapeia.
+const mmio_window_base: u64 = 0x6000_0000;
+const mmio_window_size: u64 = 16 * 1024 * 1024;
+
+/// Janela de mapeamento, preparada em `buildPageTables`.
+var mmio_window: ?virtio_modern.mmio.Window = null;
+
+/// Tabela de BARs e tamanho medido de cada BAR da funcao em inicializacao.
+///
+/// `caps.BarValidator` e um ponteiro de funcao sem contexto, e por isso o que
+/// ele precisa fica aqui. Os dois valores sao sobrescritos antes de cada uso
+/// e descrevem uma unica funcao: uma capability de outra funcao nao os le.
+var probed_bars: ?pci.BarTable = null;
+var probed_bar_sizes: pci.BarSizes = @splat(null);
+
+/// Liga a janela de MMIO ao mapeador de paginas do kernel.
+///
+/// As paginas sao mapeadas por `paging.mapDevicePage`, que ja aplica
+/// `cache_disabled` e `no_execute`. Nao existe uma segunda tabela de paginas
+/// aqui: o modulo `mmio.zig` so reserva a faixa virtual e valida os acessos.
+///
+/// O parametro se chama `target` porque `physical` e o nome do modulo de
+/// alocacao de paginas fisicas importado neste arquivo.
+fn mapMmioPage(virtual: u64, target: u64) bool {
+    paging.mapDevicePage(virtual, target) catch return false;
+    return true;
+}
+
+fn unmapMmioPage(virtual: u64) void {
+    paging.unmapKernelPage(virtual) catch {};
+}
+
+const mmio_mapper: virtio_modern.mmio.Mapper = .{
+    .map = mapMmioPage,
+    .unmap = unmapMmioPage,
+};
+
+/// Reserva a faixa virtual da janela e cria o mapeador de BARs.
+fn installMmioWindow() void {
+    paging.reserveKernelRange(mmio_window_base, mmio_window_size) catch |err| {
+        serial.printLine("[VNK] FATAL: the MMIO window could not be reserved: {s}", .{
+            @errorName(err),
+        });
+        port.haltForever();
+    };
+
+    mmio_window = virtio_modern.mmio.Window.init(
+        mmio_window_base,
+        mmio_window_size,
+        mmio_mapper,
+    ) catch |err| {
+        serial.printLine("[VNK] FATAL: the MMIO window is not page aligned: {s}", .{
+            @errorName(err),
+        });
+        port.haltForever();
+    };
+}
+
+/// True quando a capability cabe no BAR `bar`, com o tamanho medido.
+///
+/// O tamanho vem de `pci.probeBarSizes`, que mascara o registrador do BAR e
+/// restaura o valor original. Um BAR que a funcao nao implementa, um BAR de
+/// portas de I/O e um BAR cujo tamanho nao pode ser medido sao recusados: o
+/// transporte moderno exige memoria mapeavel.
+fn supportedProbedBar(bar: u8, offset: u32, length: u32) bool {
+    const table = probed_bars orelse return false;
+    const index: usize = bar;
+    if (index >= table.bars.len) return false;
+
+    const decoded = table.bars[index] orelse return false;
+    if (decoded.is_io) return false;
+
+    const size = probed_bar_sizes[index] orelse return false;
+    return pci.barSupportsRegion(decoded, index, size, offset, length);
+}
+
+/// Identifica as funcoes VirtIO do barramento 0 e inicializa o virtio-blk
+/// moderno ate FEATURES_OK.
 ///
 /// O escopo de barramento e funcao e o mesmo da sonda `probePciBus` que ja
 /// existia: funcoes adicionais de um dispositivo multifuncao nao sao
 /// visitadas por este incremento.
 ///
-/// A sonda e somente de leitura. Ela percorre a lista de capabilities do
-/// espaco de configuracao PCI e interpreta as capabilities vendor-specific do
-/// VirtIO moderno (configuracao comum, notificacao, ISR e configuracao do
-/// dispositivo) pelos modulos `drivers/virtio/`.
-///
-/// O que esta funcao NAO faz, e nao pode ser anunciado como feito: nao mapeia
-/// BAR, nao escreve o registro de status do dispositivo, nao negocia features
-/// e nao programa virtqueue. Sem essas etapas o dispositivo nao esta pronto
-/// para uso, e a mensagem final diz exatamente isso.
-fn identifyVirtioDevices() void {
+/// O alvo e explicito: o primeiro virtio-blk com identificador moderno
+/// (0x1042). Um dispositivo transicional nao e conduzido pelo caminho
+/// moderno, e os outros tipos sao registrados e ignorados — o driver deles e
+/// outro incremento.
+fn bringUpVirtioDevices() void {
     var device: u8 = 0;
     var found: u32 = 0;
+    var ready: bool = false;
 
     while (device < 32) : (device += 1) {
         const vendor = pci.readConfigWord(0, device, 0, 0x00);
@@ -1142,11 +1239,37 @@ fn identifyVirtioDevices() void {
             });
             continue;
         };
-        reportVirtioCapabilities(device, identification);
+
+        if (!identification.modern_id) {
+            serial.printLine(
+                "[VNK] virtio: 00:{d}.0 device=0x{x} is transitional; the modern transport is not used",
+                .{ device, device_id },
+            );
+            continue;
+        }
+
+        if (identification.device_type != .block) {
+            serial.printLine("[VNK] virtio: 00:{d}.0 type={s} is not the target of this increment", .{
+                device,
+                identification.device_type.label(),
+            });
+            continue;
+        }
+
+        if (ready) {
+            serial.printLine("[VNK] virtio: 00:{d}.0 skipped, the target device is already up", .{
+                device,
+            });
+            continue;
+        }
+
+        ready = bringUpVirtioFunction(device, identification);
     }
 
     if (found == 0) {
         serial.printLine("[VNK] virtio: no function of vendor 0x1af4 on bus 0", .{});
+    } else if (!ready) {
+        serial.printLine("[VNK] virtio-pci: no modern virtio-blk reached FEATURES_OK", .{});
     }
 }
 
@@ -1158,42 +1281,231 @@ fn identifyVirtioDevices() void {
 /// nao pode apresentar como completa uma leitura que parou no meio.
 const probed_capability_limit: usize = 16;
 
-/// Le e valida as capabilities modernas de uma funcao VirtIO ja identificada.
-fn reportVirtioCapabilities(device: u8, identification: virtio_modern.types.Identification) void {
+/// Coleta, valida, mapeia e negocia uma funcao VirtIO ja identificada.
+///
+/// Devolve true apenas quando o dispositivo confirmou FEATURES_OK. Cada
+/// caminho de falha desfaz o mapeamento do BAR antes de retornar: um erro no
+/// meio da inicializacao nao pode deixar o driver com um ponteiro para
+/// memoria que ele nao sabe mais se pertence ao dispositivo.
+fn bringUpVirtioFunction(
+    device: u8,
+    identification: virtio_modern.types.Identification,
+) bool {
     const location: pci.Function = .{ .bus = 0, .device = device, .function = 0 };
     const reader = pci.functionReader(&location);
 
-    var capabilities: [probed_capability_limit]virtio_modern.caps.Capability = undefined;
-    var count: usize = 0;
+    serial.printLine("[VNK] virtio-pci: modern device detected 00:{d}.0 id=0x{x} type={s}", .{
+        device,
+        identification.device_id,
+        identification.device_type.label(),
+    });
 
-    var iterator = pci.CapabilityIterator.init(reader) catch |err| {
-        serial.printLine("[VNK] virtio: 00:{d}.0 type={s} has no capability list: {s}", .{
-            device,
-            identification.device_type.label(),
-            @errorName(err),
-        });
-        return;
+    // O tamanho de um BAR so pode ser descoberto escrevendo a mascara e
+    // lendo o resultado. As escritas sao restauradas dentro de
+    // `probeBarSizes`, e nenhum outro registrador da funcao e tocado.
+    probed_bars = pci.readBarTable(reader) orelse {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 BAR table is invalid", .{device});
+        return false;
+    };
+    probed_bar_sizes = pci.probeBarSizes(location.bus, location.device, location.function);
+
+    var capabilities: [probed_capability_limit]virtio_modern.caps.Capability = undefined;
+    const count = collectVirtioCapabilities(device, &capabilities) orelse return false;
+
+    const collection = virtio_modern.caps.build(
+        capabilities[0..count],
+        supportedProbedBar,
+    ) catch |err| {
+        serial.printLine(
+            "[VNK] virtio-pci: 00:{d}.0 type={s} capabilities rejected: {s}",
+            .{ device, identification.device_type.label(), @errorName(err) },
+        );
+        return false;
     };
 
+    serial.printLine(
+        "[VNK] virtio-pci: 00:{d}.0 capabilities validated bar={d} common=+0x{x}/{d} notify=+0x{x}/{d} multiplier={d}",
+        .{
+            device,
+            collection.common.bar,
+            collection.common.offset,
+            collection.common.length,
+            collection.notify.offset,
+            collection.notify.length,
+            collection.notify.notify_off_multiplier,
+        },
+    );
+
+    const window = if (mmio_window) |*value| value else {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 the MMIO window was not installed", .{device});
+        return false;
+    };
+
+    const bar_index: usize = collection.common.bar;
+    const bar = (probed_bars orelse return false).bars[bar_index] orelse {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 bar{d} is not implemented", .{
+            device,
+            bar_index,
+        });
+        return false;
+    };
+    if (bar.is_io) {
+        serial.printLine(
+            "[VNK] virtio-pci: 00:{d}.0 bar{d} is an I/O port BAR; the modern transport needs MMIO",
+            .{ device, bar_index },
+        );
+        return false;
+    }
+    const bar_size = probed_bar_sizes[bar_index] orelse {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 bar{d} size could not be measured", .{
+            device,
+            bar_index,
+        });
+        return false;
+    };
+    if (bar.address == 0) {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 bar{d} is not assigned an address", .{
+            device,
+            bar_index,
+        });
+        return false;
+    }
+
+    var region = window.mapRange(
+        bar.address,
+        bar_size,
+        virtio_modern.mmio.Permissions.read_write,
+    ) catch |err| {
+        serial.printLine(
+            "[VNK] virtio-pci: 00:{d}.0 bar{d} size=0x{x} could not be mapped: {s}",
+            .{ device, bar_index, bar_size, @errorName(err) },
+        );
+        return false;
+    };
+
+    var transport = virtio_modern.pci_transport.Transport.attach(
+        identification,
+        collection,
+        region,
+    ) catch |err| {
+        window.unmap(&region);
+        serial.printLine(
+            "[VNK] virtio-pci: 00:{d}.0 capabilities do not fit bar{d} size=0x{x}: {s}",
+            .{ device, bar_index, bar_size, @errorName(err) },
+        );
+        return false;
+    };
+
+    serial.printLine(
+        "[VNK] virtio-pci: MMIO mapped 00:{d}.0 bar{d} phys=0x{x} size=0x{x} virt=0x{x} common=0x{x} notify=0x{x}",
+        .{
+            device,
+            bar_index,
+            bar.address,
+            bar_size,
+            region.virtual,
+            transport.regions.common.virtual,
+            transport.regions.notify.virtual,
+        },
+    );
+
+    var target: virtio_modern.transport.Device = .{ .registers = transport.registers() };
+
+    switch (target.initialize(virtio_modern.features.supported)) {
+        .failed => |failure| {
+            window.unmap(&region);
+            serial.printLine(
+                "[VNK] virtio-pci: 00:{d}.0 initialization failed at {s}: {s} (bar{d} size=0x{x})",
+                .{
+                    device,
+                    failure.stage.label(),
+                    @errorName(failure.reason),
+                    bar_index,
+                    bar_size,
+                },
+            );
+            return false;
+        },
+        .initialized => {},
+    }
+
+    // O estado que vale e o que o dispositivo informa. `initialize` ja
+    // confirmou a leitura de volta depois de cada escrita, e estas
+    // verificacoes impedem que uma mudanca de contrato passe em silencio.
+    if (target.accepted & virtio_modern.features.version_1 == 0) {
+        window.unmap(&region);
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 returned without VERSION_1", .{device});
+        return false;
+    }
+    serial.printLine(
+        "[VNK] virtio-pci: 00:{d}.0 VERSION_1 negotiated features=0x{x} offered=0x{x}",
+        .{ device, target.accepted, target.offered },
+    );
+
+    const confirmed: ?virtio_modern.status.Phase = target.phase() catch null;
+    if (confirmed != .features_ok or !target.isAwaitingQueues()) {
+        window.unmap(&region);
+        serial.printLine(
+            "[VNK] virtio-pci: 00:{d}.0 FEATURES_OK was not confirmed (status=0x{x})",
+            .{ device, target.status },
+        );
+        return false;
+    }
+    serial.printLine("[VNK] virtio-pci: 00:{d}.0 FEATURES_OK accepted status=0x{x}", .{
+        device,
+        target.status,
+    });
+    serial.printLine(
+        "[VNK] virtio-pci: 00:{d}.0 awaiting virtqueue setup queues={d} status=0x{x}; DRIVER_OK not written",
+        .{ device, target.queues, target.status },
+    );
+
+    return true;
+}
+
+/// Percorre a lista de capabilities e devolve quantas vendor-specific foram
+/// lidas, ou null quando a lista nao pode ser percorrida.
+///
+/// Uma capability malformada e registrada e descartada: a especificacao
+/// permite mais de uma instancia do mesmo tipo, e uma invalida nao invalida
+/// as outras.
+fn collectVirtioCapabilities(
+    device: u8,
+    storage: *[probed_capability_limit]virtio_modern.caps.Capability,
+) ?usize {
+    const location: pci.Function = .{ .bus = 0, .device = device, .function = 0 };
+    const reader = pci.functionReader(&location);
+
+    var iterator = pci.CapabilityIterator.init(reader) catch |err| {
+        serial.printLine("[VNK] virtio-pci: 00:{d}.0 has no capability list: {s}", .{
+            device,
+            @errorName(err),
+        });
+        return null;
+    };
+
+    var count: usize = 0;
     while (true) {
         const next = iterator.next() catch |err| {
-            serial.printLine("[VNK] virtio: 00:{d}.0 capability list is invalid: {s}", .{
+            serial.printLine("[VNK] virtio-pci: 00:{d}.0 capability list is invalid: {s}", .{
                 device,
                 @errorName(err),
             });
-            return;
+            return null;
         };
         const pci_capability = next orelse break;
         if (pci_capability.id != pci.capability_vendor_specific) continue;
-        if (count == capabilities.len) {
+
+        if (count == storage.len) {
             serial.printLine(
-                "[VNK] virtio: 00:{d}.0 capability list truncated at {d} entries",
+                "[VNK] virtio-pci: 00:{d}.0 capability list truncated at {d} entries",
                 .{ device, probed_capability_limit },
             );
             break;
         }
-        capabilities[count] = readVirtioCapability(device, pci_capability) catch |err| {
-            serial.printLine("[VNK] virtio: 00:{d}.0 capability at 0x{x} is invalid: {s}", .{
+
+        storage[count] = readVirtioCapability(device, pci_capability) catch |err| {
+            serial.printLine("[VNK] virtio-pci: 00:{d}.0 capability at 0x{x} is invalid: {s}", .{
                 device,
                 pci_capability.offset,
                 @errorName(err),
@@ -1203,37 +1515,7 @@ fn reportVirtioCapabilities(device: u8, identification: virtio_modern.types.Iden
         count += 1;
     }
 
-    // O validador de BAR e nulo porque descobrir o tamanho de um BAR exige
-    // escrever nele e ler a mascara de volta. O dispositivo ainda nao e
-    // tocado por este incremento; a verificacao de tamanho entra com o
-    // mapeamento do BAR, antes de qualquer acesso a memoria do dispositivo.
-    const collection = virtio_modern.caps.build(capabilities[0..count], null) catch |err| {
-        serial.printLine("[VNK] virtio: 00:{d}.0 type={s} modern capabilities are incomplete: {s}", .{
-            device,
-            identification.device_type.label(),
-            @errorName(err),
-        });
-        return;
-    };
-
-    serial.printLine(
-        "[VNK] virtio: 00:{d}.0 device=0x{x} type={s} regions={d} common=bar{d}+0x{x} notify=bar{d}+0x{x} multiplier={d}",
-        .{
-            device,
-            identification.device_id,
-            identification.device_type.label(),
-            collection.regionCount(),
-            collection.common.bar,
-            collection.common.offset,
-            collection.notify.bar,
-            collection.notify.offset,
-            collection.notify.notify_off_multiplier,
-        },
-    );
-    serial.printLine(
-        "[VNK] virtio: 00:{d}.0 identified only: no BAR mapped, no feature negotiated, no virtqueue programmed",
-        .{device},
-    );
+    return count;
 }
 
 /// Le o corpo de uma capability VirtIO a partir do espaco de configuracao.
@@ -1289,6 +1571,12 @@ fn buildPageTables(boot: *const handoff.BootHandoff) void {
         serial.printLine("[VNK] FATAL: the DMA window could not be reserved: {s}", .{@errorName(err)});
         port.haltForever();
     };
+
+    // The MMIO window follows the same rule: it is reserved with the page
+    // tables, before the address spaces of the processes exist. No page is
+    // mapped here; the BAR of the device is mapped when it is discovered,
+    // after the tables are active.
+    installMmioWindow();
 }
 
 /// Makes the page tables of the kernel the active ones.

@@ -151,7 +151,8 @@ qemu-system-x86_64 \
     -machine q35 \
     -m 256 \
     -smp 1 \
-    -drive "file=$WORK_DIRECTORY/disk.img,format=raw,if=virtio" \
+    -drive "file=$WORK_DIRECTORY/disk.img,format=raw,if=none,id=virtio-disk0" \
+    -device "virtio-blk-pci,drive=virtio-disk0,disable-legacy=on" \
     -drive "if=pflash,format=$OVMF_CODE_FORMAT,readonly=on,file=$OVMF_CODE_PATH" \
     -drive "if=pflash,format=$OVMF_VARS_FORMAT,file=$WORK_DIRECTORY/vars.fd" \
     -serial "file:$SERIAL_LOG" \
@@ -393,11 +394,24 @@ require_marker "[VNK] paging: no-execute enabled"
 require_pattern '\[VNK\] pci: bus 0 scan complete, virtio=[1-9][0-9]*' 'the PCI config scan on bus 0'
 require_marker "[VNK] dma: window map probe ok"
 require_marker "[VNK] virtio: split queue layout ok"
-# PR A do VirtIO moderno: a sonda de leitura percorre a lista de capabilities
-# do disco e valida as regioes do transporte. As duas linhas juntas provam que
-# o dispositivo foi identificado e que o kernel NAO afirma tê-lo inicializado.
-require_pattern '\[VNK\] virtio: 00:[0-9]+\.0 device=0x[0-9a-f]+ type=block regions=[0-9]+ common=bar[0-9]+\+0x[0-9a-f]+' 'the modern VirtIO PCI capability walk on the disk'
-require_pattern '\[VNK\] virtio: 00:[0-9]+\.0 identified only: no BAR mapped' 'the absence of device initialisation'
+# PR B do VirtIO moderno: o disco e um virtio-blk-pci explicito com o
+# transporte legado desabilitado, e as linhas abaixo so podem aparecer depois
+# de operacoes concluidas — identificacao, validacao das capabilities,
+# mapeamento do BAR com cache desabilitado, leitura real dos registradores,
+# negociacao de VERSION_1 e aceite de FEATURES_OK.
+require_pattern '\[VNK\] virtio-pci: modern device detected 00:[0-9]+\.0 id=0x1042 type=block' 'the modern virtio-blk detection'
+require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 capabilities validated bar=[0-9]+ common=\+0x[0-9a-f]+/[0-9]+ notify=\+0x[0-9a-f]+/[0-9]+ multiplier=[0-9]+' 'the validated transport capabilities'
+require_pattern '\[VNK\] virtio-pci: MMIO mapped 00:[0-9]+\.0 bar[0-9]+ phys=0x[0-9a-f]+ size=0x[0-9a-f]+ virt=0x[0-9a-f]+' 'the mapped device BAR'
+require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 VERSION_1 negotiated features=0x[0-9a-f]+ offered=0x[0-9a-f]+' 'VIRTIO_F_VERSION_1 negotiation over the features read from the device'
+require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 FEATURES_OK accepted status=0x[0-9a-f]+' 'the FEATURES_OK confirmation'
+require_pattern '\[VNK\] virtio-pci: 00:[0-9]+\.0 awaiting virtqueue setup queues=[1-9][0-9]* status=0xb; DRIVER_OK not written' 'the final state before the virtqueues'
+
+# O estado do dispositivo tem que ser 0x0b (ACKNOWLEDGE|DRIVER|FEATURES_OK).
+# Qualquer linha com DRIVER_OK (0x0f) provaria uma ativacao antes das
+# virtqueues, e o teste tem que falhar.
+if grep -qE '\[VNK\] virtio-pci: .*status=0x[fF]' "$SERIAL_LOG"; then
+    record_failure 'DRIVER_OK was written before the virtqueues (status=0x0f)'
+fi
 require_marker "[VNK] timer:"
 require_marker "[VNK] keyboard: ready for PS/2 input"
 require_pattern '\[VNK\] keyboard: key scancode=0x1e extended=0 pressed=1' 'PS/2 A key press'
