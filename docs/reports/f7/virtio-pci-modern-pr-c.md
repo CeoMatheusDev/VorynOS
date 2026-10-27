@@ -114,6 +114,23 @@ As dependências continuam apontando para dentro: `virtqueue.zig` recebe memóri
 | `zig build qemu-test` | **bloqueado pelo ambiente** — `qemu-boot-test: no OVMF firmware found`, saída 2; não há `qemu-system-x86_64` nem OVMF na sessão |
 | `zig build check` | **bloqueado pelo ambiente** — depende do `qemu-test` |
 
+### Evidência da CI (após a abertura do PR)
+
+Run [`40478940990`](https://github.com/CeoMatheusDev/VorynOS/actions/runs/40478940990), job
+`122104063600`, commit `f550190`, tentativa 1: **conclusão `success`** em 1min11s, com os
+onze passos verdes, inclusive:
+
+- *Testes de unidade* — `zig build test` (525 testes);
+- *Construir* — `zig build` (imagem de 128 MiB);
+- *Teste de boot no QEMU* — `zig build qemu-test` com OVMF. O passo só passa porque os
+  três `require_pattern` da fila e do `DRIVER_OK` casaram, porque o `DRIVER_OK` está
+  depois da linha `virtqueue 0 enabled` e porque nenhuma outra linha de `virtio-pci`
+  trouxe `status=0xf`;
+- *Verificação agregada* — `zig build check`;
+- *Verificar os artefatos* — `file`/`readelf` do bootloader e do kernel.
+
+Ou seja: o requisito 9 (boot no QEMU até `0x0f`) foi verificado na CI, não apenas no host.
+
 O ambiente da sessão não traz Zig nem QEMU instalados. O toolchain 0.17.0 foi obtido do
 pacote `ziglang` do PyPI (`zig version` → `0.17.0`); o QEMU e o OVMF não estão disponíveis
 e não há rede para instalá-los (o `apt` não responde e o acesso é limitado a GitHub,

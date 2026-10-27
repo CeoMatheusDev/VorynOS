@@ -1,6 +1,6 @@
 # ADR-0020 — Virtqueue dividida nativa: descritores, anéis e ativação do dispositivo
 
-- **Estado:** IMPLEMENTADO — TESTADO LOCALMENTE (host); validação de QEMU na CI do PR #13
+- **Estado:** IMPLEMENTADO — TESTADO LOCALMENTE (host) e TESTADO NO CI (QEMU/OVMF, run `40478940990`)
 - **Data:** 2026-10-27
 - **Escopo:** `kernel/drivers/virtio/virtqueue.zig`,
   `kernel/drivers/virtio/pci_transport.zig`, `kernel/drivers/virtio/transport.zig`,
@@ -203,8 +203,9 @@ O volume continua FAT16 (32731 clusters de 4 KiB), legível pelo firmware.
 - `VIRTIO_F_INDIRECT_DESC`, `VIRTIO_F_EVENT_IDX` e `VIRTIO_F_RING_PACKED` continuam fora
   da negociação; `setIndirect` recusa por construção.
 - A capacidade da fila no kernel é fixa em 256 (`Queue(256)`), e não em 32768.
-- O teste de boot não pode ser executado nesta sessão: o ambiente não tem
-  `qemu-system-x86_64` nem OVMF. A validação de QEMU fica para a CI do PR.
+- O teste de boot não pode ser executado na sessão de desenvolvimento (sem
+  `qemu-system-x86_64` nem OVMF); ele passou na CI do PR (run `40478940990`), com os
+  padrões novos da fila e do `DRIVER_OK` exigidos pelo `boot-qemu.sh`.
 
 ## Alternativas descartadas
 
