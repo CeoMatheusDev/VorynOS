@@ -4,7 +4,7 @@
 
 ### Freedom • Performance • Control
 
-**An independent operating system built from scratch for x86_64 and UEFI.**
+**An independent x86_64 operating system, built from the bootloader up.**
 
 [![Zig](https://img.shields.io/badge/Zig-0.17.0-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
 [![Architecture](https://img.shields.io/badge/architecture-x86__64-64748B)](#architecture)
@@ -12,10 +12,11 @@
 [![License](https://img.shields.io/badge/license-GPL--3.0--only-22C55E)](LICENSE)
 
 [Overview](#overview) ·
-[Project Status](#project-status) ·
-[Build and Test](#build-and-test) ·
+[Progress](#project-status) ·
+[Quick Start](#build-and-test) ·
 [Architecture](#architecture) ·
-[Documentation](#documentation)
+[Repository](#repository-layout) ·
+[Docs](#documentation)
 
 ![VorynOS Logo](assets/branding/logos/Logos_VorynOS.png)
 
@@ -25,97 +26,92 @@
 
 ## Overview
 
-**VorynOS** is an independent operating system project that includes its own
-UEFI bootloader, kernel, component contracts, and development tools. The
-bootloader and kernel are written primarily in Zig, with x86_64 Assembly where
-direct access to the processor architecture is required.
+**VorynOS** is an independent operating system for **x86_64 / UEFI**, built
+primarily in **Zig 0.17.0** with x86_64 Assembly where needed. It has its own
+bootloader, kernel, memory and process management, system calls, storage
+interfaces, and native application path.
 
-VorynOS is **not** a Linux distribution, a Windows or BSD fork, or an interface
-running on top of another kernel. The project uses external development tools
-and established standards such as UEFI and ELF without incorporating them as a
-hidden system foundation.
+It is **not** a Linux distribution or a fork of Windows or BSD. VorynOS
+implements its own system components while using public specifications such
+as UEFI, ELF and VirtIO.
 
-The project is under active development and is **not suitable for everyday
-use**. Local QEMU results do not constitute validation on physical hardware.
+> **Development preview:** VorynOS boots and runs automated tests in QEMU/OVMF,
+> but is not ready for everyday use or validated on physical hardware.
 
 ## Project Status
 
-The `main` branch contains the current development line. Milestone status and
-evidence are maintained in the [technical roadmap](docs/roadmap/phase-status.md);
-implementation alone does not mean a feature has been validated.
+From the first UEFI boot to persistent virtual-disk I/O, the project has
+progressed through a series of tested milestones. The table is a quick
+snapshot; the [technical roadmap](docs/roadmap/phase-status.md) tracks
+implementation details and remaining work.
 
 ### Milestone Progress
 
-| Milestone | Description | Current status |
-|---|---|---|
-| F0 | Foundation, toolchain, build system, and documentation | ✅ Completed |
-| F1 | UEFI bootloader and kernel initialization | ✅ Completed |
-| F2 | Processor structures, interrupts, and memory | 🟢 Locally tested |
-| F3 | Threads, scheduler, processes, syscalls, and IPC | 🟡 In development — generic device capabilities, a dynamic heap, and expanded process support remain pending |
-| F4 | Storage and file systems | 🟡 In development — RamFS/VFSX and VNV persistence on an in-memory device; physical driver and automatic boot mounting remain pending |
-| F5 | Runtime, SDK, and native applications | 🟡 In development — native ELF loading and the SDK are present; VLIB remains pending |
-| F6 | Graphics subsystem and desktop environment | 🟡 In development — an experimental path is validated in QEMU; a graphics service and complete desktop are not implemented |
-| F7 | Drivers, networking, audio, and physical hardware | 🟡 In development — partial PCI/Virtio foundations; functional drivers and hardware validation remain pending |
-| F8 | Compatibility with external formats and APIs | 🟡 In development — ELF/VEX foundations and an independent ABI are implemented; broad compatibility remains incomplete |
-| F9 | Artificial intelligence infrastructure | ✅ Completed within the current scope — native CPU inference and local tests; no GPU acceleration |
-| F10 | Installation, security, recovery, and production readiness | 🟡 Partial — hardening fixes and an audit have been performed; production installation, updates, and recovery remain pending |
+| Phase | Area | Status | Snapshot |
+|:---:|---|---|---|
+| **F0** | Foundation | ✅ Complete | Toolchain, build, tests and project conventions |
+| **F1** | Boot | ✅ Complete | Native UEFI loader and kernel handoff |
+| **F2** | Kernel core | 🟢 Tested | Interrupts, paging and memory management |
+| **F3** | Execution | 🟡 Active | Scheduler, user processes, syscalls and IPC; expansion pending |
+| **F4** | Storage | 🟡 Active | RamFS, VFSX/VNV and **VirtIO Block persistence in QEMU** |
+| **F5** | Applications | 🟡 Active | Native ELF loading, SDK and applications; VLIB pending |
+| **F6** | Graphics | 🟡 Active | Rasterizer, compositor and input demo; desktop pending |
+| **F7** | Drivers | 🟡 Active | **VVDI + modern VirtIO PCI + block I/O**; wider hardware support pending |
+| **F8** | Compatibility | 🟡 Active | ELF/VEX and native ABI; broader support pending |
+| **F9** | AI | ✅ Scoped complete | Native CPU inference; no GPU acceleration |
+| **F10** | Readiness | 🟡 Partial | Initial hardening; installer, updates and recovery pending |
 
-“Completed” refers to the documented scope of a milestone; it does not mean
-VorynOS as a whole is ready for everyday use. QEMU validation is not equivalent
-to physical hardware testing. See the [roadmap](docs/roadmap/phase-status.md)
-and reports for each increment's criteria, evidence, and limitations.
+**Status key:** Complete = milestone scope met · Tested = validated in the
+documented environment · Active/Partial = work remains. These labels do not
+mean the OS is production-ready.
+
+### Latest milestone · Persistent block I/O
+
+**PR #15** brought a native VirtIO Block driver to **VVDI (Voryn Virtual
+Device Interface)**. It supports DMA-backed reads and writes, optional FLUSH,
+bounded waits and completion/error handling.
+
+**Verified in CI:** 554 Zig tests and a QEMU/OVMF two-boot test. Boot 1 writes,
+reads and compares data on a disposable disk separate from the EFI image;
+Boot 2 reuses that disk and verifies the data **without rewriting it**.
+
+**Still ahead:** connecting the filesystem to durable block storage, automatic
+mounting, broader device support, and physical-hardware validation. Some
+PCI/DMA reset and recovery work also remains.
+
+[Milestone details](docs/roadmap/phase-status.md) ·
+[VirtIO Block test report](docs/reports/f7/virtio-blk-pr-d.md) ·
+[VVDI known limitations](docs/reports/f7/vvdi-debt.md)
 
 ## Build and Test
 
 ### Requirements
 
-- Linux x86_64 as the reference development environment.
-- Zig **0.17.0**.
-- Bash and standard system utilities.
-- For boot tests: `qemu-system-x86_64` and UEFI OVMF/edk2 firmware.
+Linux x86_64, **Zig 0.17.0**, Bash and standard build utilities.
+Boot/integration tests additionally require **QEMU** and **OVMF/edk2**.
 
-Clone the repository and verify the compiler version:
+### Quick Start
 
 ```bash
 git clone https://github.com/CeoMatheusDev/VorynOS.git
 cd VorynOS
-zig version
+zig version          # Must report 0.17.0
+zig build            # Build the bootable image
+zig build test       # Run host unit tests
+zig build check      # Unit + automated QEMU/OVMF checks
 ```
 
-The `zig version` command must report `0.17.0`.
+The generated boot image is `zig-out/bin/vorynos.img`.
+To boot it manually, use `zig build qemu` (exit the serial console with
+`Ctrl+A`, then `X`).
 
-### Build and Validate
+Other useful commands: `zig build qemu-test` for boot checks,
+`zig build qemu-interactive-test` for the experimental graphics/input path,
+and `zig build --help` for the full list.
 
-```bash
-# Run host unit tests
-zig build test
-
-# Compile the components and generate the bootable image
-zig build
-
-# Boot the image in QEMU and run automated checks
-zig build qemu-test
-
-# Run unit tests and the automated boot test
-zig build check
-```
-
-The boot test uses QEMU and OVMF to verify the boot chain and behavioral
-markers emitted by the kernel. It does not replace physical hardware testing.
-
-To start the system manually in QEMU:
-
-```bash
-zig build qemu
-```
-
-In serial console mode, exit QEMU by pressing `Ctrl+A`, then `X`.
-`zig build qemu-interactive-test` is a separate test for the experimental
-graphics and input path; see the [roadmap](docs/roadmap/phase-status.md) for
-its scope and validation status.
-
-The generated image is located at `zig-out/bin/vorynos.img`. Run
-`zig build --help` to see all available build steps.
+`zig build check` includes the **two-boot VirtIO Block persistence test**
+using a separate disposable data disk. QEMU results do not establish
+physical-hardware compatibility.
 
 ## Architecture
 
@@ -135,15 +131,15 @@ ExitBootServices
 VNK — independent kernel
 ```
 
-The project organizes system mechanisms under the Voryn Fabric architecture.
-The names below describe architectural components and goals; not all of them
-have functional implementations:
+The **Voryn Fabric** groups the system into native components. Some entries
+are architectural contracts or works in progress, not complete subsystems:
 
 | Acronym | Component | Responsibility |
 |---|---|---|
 | VNB | Voryn Native Boot | UEFI initialization and kernel loading |
 | VNK | Voryn Nucleus Kernel | Privileged kernel mechanisms |
 | VNH / VND | Hardware Nexus / Device Fabric | Hardware discovery and device infrastructure |
+| VVDI | Voryn Virtual Device Interface | Native VirtIO device transport, queues and drivers |
 | VNM | Voryn Nexus Memory | Memory management |
 | VNT | Voryn Task Fabric | Tasks and scheduling |
 | VNX / VNC | Voryn Exchange / Capability Fabric | Inter-process communication and capability-based access control |
@@ -154,14 +150,15 @@ For more details, see [ADR-0001 — Voryn Fabric](docs/adr/ADR-0001-voryn-fabric
 ## Repository Layout
 
 ```text
-boot/       UEFI bootloader
-kernel/     Kernel, memory, execution, filesystem, graphics, and drivers
-shared/     Shared contracts and data structures
-sdk/        Interfaces for native applications
-user/       Native applications and entry code
-tools/      Build and image tools
-tests/      Unit and integration tests
-docs/       Specifications, decisions, roadmap, and reports
+boot/                Native UEFI bootloader
+kernel/              Kernel, memory, processes, filesystems and graphics
+  drivers/vvdi/      Native VirtIO transport and block driver
+shared/              Shared interfaces and contracts
+sdk/                 Native application SDK
+user/                User-space applications
+tools/               Build and image utilities
+tests/               Unit and QEMU integration tests
+docs/                Roadmap, architecture decisions and test reports
 ```
 
 ## Documentation
@@ -189,4 +186,4 @@ preserved.
 
 ---
 
-*README last reviewed on October 26, 2026.*
+*README last reviewed on October 28, 2026.*
