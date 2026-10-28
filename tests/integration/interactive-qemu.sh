@@ -281,7 +281,9 @@ def initial_position(path):
                 sys.exit("FAIL: truncated initial PPM header")
             dimensions.extend(line.split(b"#", 1)[0].split())
         width, height = map(int, dimensions[:2])
-        return (width // 4 + max(1, width // 16), height // 4), width, height
+        # Desktop.initInPlace creates the front window at (width / 4, height / 4).
+        # The ACK and framebuffer comparator both use that top-left position.
+        return (width // 4, height // 4), width, height
 
 def expected_move(position, key, width, height):
     x, y = position
