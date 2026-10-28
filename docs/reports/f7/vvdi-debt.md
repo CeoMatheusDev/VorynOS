@@ -3,9 +3,7 @@
 - **Data:** 2026-10-27
 - **Subsistema:** `kernel/drivers/vvdi/` e orquestração de boot em `kernel/main.zig`
 - **ADR relacionado:** [`ADR-0021 — Identidade nativa VVDI`](../../adr/ADR-0021-vvdi-virtual-device-interface.md)
-- **Escopo deste documento:** catalogar com precisão técnica os riscos e dívidas arquiteturais
-  remanescentes após a integração dos incrementos PR A, PR B, PR C e PR VVDI, **sem
-  implementar suas correções no PR VVDI**.
+- **Escopo deste documento:** catalogar com precisão técnica os riscos e dívidas arquiteturais remanescentes após PR A, PR B, PR C, PR VVDI e a auditoria do PR D. A-3 foi mitigada no código do PR D; D-6 e D-7 permanecem abertas.
 
 ---
 
@@ -13,7 +11,7 @@
 
 | ID | Título | Localização principal | Severidade / Natureza | Estado |
 | --- | --- | --- | --- | --- |
-| **A-3** | BAR MMIO desmapeado após falha de reset com dispositivo potencialmente ativo | `kernel/main.zig` (`bringUpVirtioFunction`, `programVirtqueue`, `abandonVirtqueue`) | Risco operacional e de contenção de hardware | Aberto (registrado, não corrigido neste PR) |
+| **A-3** | Contenção após falha de reset durante configuração da virtqueue | `kernel/main.zig` (`bringUpVirtioFunction`, `programVirtqueue`, `abandonVirtqueue`) | Risco operacional; memória e BAR retidos sem recuperação online | Mitigada no código do PR D; sem recuperação online ou validação em hardware físico |
 | **D-6** | Tamanho excessivo do ELF `Debug` do kernel por preenchimento/alinhamento de segmentos | `voryn-kernel` (ligador / layout ELF), contorno em `tools/fatimg.zig` | Dívida de build, imagem e pegada de artefato | Aberto (registrado, não corrigido neste PR) |
 | **D-7** | Coexistência das implementações moderna e legada de *split virtqueue* | `kernel/drivers/vvdi/virtqueue.zig` vs. `kernel/arch/x86_64/virtio.zig` | Duplicação estrutural transitória | Aberto (registrado, não corrigido neste PR) |
 
@@ -21,49 +19,37 @@
 
 ## Detalhamento técnico
 
-### A-3 — Quando o reset falha, a memória DMA permanece reservada, mas o BAR é desmapeado enquanto o dispositivo pode permanecer habilitado
+### A-3 — Contenção após falha de reset durante configuração da virtqueue
 
 #### Mecanismo atual no código
 
 Em `kernel/main.zig`, a posse da memória DMA da fila 0 é transferida antes da primeira escrita
-de configuração no dispositivo (`virtqueue_state.ownership.handOver()`, antes de
-`configureQueue`). Caso ocorra falha em `configureQueue`, `enableQueue`, `queueEnabled`,
-`markQueueReady`, `target.finish()` ou na confirmação pós-`DRIVER_OK`, `programVirtqueue`
-invoca `abandonVirtqueue(target, device)`:
+de configuração (`virtqueue_state.ownership.handOver()`). Se `configureQueue`, `enableQueue`,
+`queueEnabled`, `markQueueReady`, `target.finish()` ou a confirmação pós-`DRIVER_OK` falhar,
+`programVirtqueue` invoca `abandonVirtqueue(target, device)`. Essa rotina tenta resetar o
+dispositivo e libera DMA somente após confirmação de `device_status == 0`.
 
-1. `abandonVirtqueue` executa `target.resetDevice()` (escrita `0` em `device_status` seguida
-   de leitura de confirmação em `0`).
-2. Se `resetDevice()` **falhar** (por exemplo, `StatusNotConfirmed` ou falha de acesso),
-   `deviceReleased()` **não** é chamado, `canReturnToAllocator()` permanece `false`, o kernel
-   registra `FATAL` no log serial e `releaseVirtqueueMemory()` mantém as páginas físicas e o
-   mapeamento virtual da fila **reservados**.
-3. Em seguida, `programVirtqueue` retorna `false` para `bringUpVirtioFunction`.
-4. Ao receber `false`, `bringUpVirtioFunction` executa imediatamente `window.unmap(&region)`,
-   desfazendo o mapeamento virtual do BAR MMIO do dispositivo.
+Na falha de `programVirtqueue`, `bringUpVirtioFunction` agora consulta
+`virtqueue_state.ownership.canReturnToAllocator()`: com reset confirmado (ou sem entrega da
+fila), desmapeia o BAR; sem confirmação, mantém o BAR e a memória DMA reservados, retém os
+metadados do transporte e registra a contenção como `FATAL`. Isso impede perder o caminho
+MMIO enquanto o dispositivo ainda pode possuir endereços da fila.
 
-#### Avaliação de risco (não classificar como ausência de risco)
+#### Avaliação e limitação residual
 
-A-3 **não deve ser classificado como ausência de risco**:
-
-- **O que está protegido:** a memória física de DMA da virtqueue **não** retorna ao alocador
-  físico (`physical.manager`), evitando corrupção silenciosa de memória (*DMA use-after-free*)
-  sobre páginas reatribuídas a outros subsistemas ou processos.
-- **O risco real que permanece:** como `window.unmap(&region)` desmapeia o BAR enquanto o
-  reset não foi confirmado, o dispositivo PCI pode continuar **habilitado e operacional** no
-  barramento (com `queue_enable = 1`, endereços de anéis configurados ou mesmo `DRIVER_OK`
-  parcialmente aceito), ao mesmo tempo em que o kernel **perde o acesso MMIO de controle**
-  aos registradores do dispositivo. Nessa condição, o kernel fica sem caminho acessível para
-  inspecionar `device_status`/`isr`, repetir o reset ou conter o dispositivo de forma
-  controlada, além de não desabilitar *Bus Master* no registrador `Command` do espaço de
-  configuração PCI.
+A correção mitiga o risco de um dispositivo potencialmente ativo ficar sem acesso MMIO e
+impede que DMA em uso retorne ao alocador. Ela **não** implementa recuperação: se o reset não
+for confirmado, o dispositivo permanece em quarentena, sem novas operações, e a janela MMIO
+mais as páginas DMA ficam retidas até reinicialização. O kernel ainda não revoga explicitamente
+o bit *Bus Master* do registrador `Command` PCI. Para merge, a CI deve passar no SHA exato que
+contém a correção; CI de SHA anterior não é evidência desse estado. Nenhuma alegação de
+recuperação online ou de contenção em hardware físico é feita.
 
 #### Diretriz para resolução futura
 
-Em incremento próprio (fora deste PR), acoplar o ciclo de vida do mapeamento MMIO (`region`)
-ao estado de contenção do dispositivo — mantendo o BAR acessível quando o reset falhar e/ou
-revogando explicitamente o bit *Bus Master* no espaço de configuração PCI antes de encerrar a
-recuperação de erro.
-
+Um incremento futuro pode implementar recuperação controlada (por exemplo, repetir reset e/ou
+revogar explicitamente *Bus Master*), preservando o estado de contenção até que o dispositivo
+confirme que não acessa mais a memória.
 ---
 
 ### D-6 — Tamanho excessivo do ELF `Debug` devido a preenchimento e alinhamento

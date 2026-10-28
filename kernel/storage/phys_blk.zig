@@ -18,7 +18,7 @@
 //! all requests with 64-bit arithmetic. Zero dynamic allocation.
 
 const std = @import("std");
-const block = @import("block.zig");
+const block = @import("voryn_block");
 
 pub const PhysBlock = struct {
     backing: []u8,

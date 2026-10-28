@@ -20,7 +20,7 @@ between **implemented** and **validated** visible in
 |--------|------|-------------|---------|
 | L1 — Unit | Host | Pure logic: ELF64, memory map, handoff contract, formats | `zig build test` |
 | L2 — Boot integration | QEMU + OVMF | Complete chain firmware → loader → kernel | `zig build qemu-test` |
-| L3 — Behavior in QEMU | QEMU + OVMF | Observable behavior (exceptions, timer, allocators) | dedicated script, to be created per milestone |
+| L3 — Behavior in QEMU | QEMU + OVMF | Observable behavior and real VirtIO Block I/O/persistence across two boots | `zig build qemu-storage-test` |
 | L4 — Hardware | Real PC | Boot on hardware, physical drivers, performance | to be created when the target hardware exists |
 | L5 — Performance | Host and QEMU | Boot metrics, latency, memory | to be created with F10 |
 
@@ -114,6 +114,21 @@ Characteristics:
   wrote.
 
 ## 5. L3 — Behavior in QEMU
+
+`tests/integration/virtio-block-persistence.sh` attaches the boot image and a
+separate raw data disk as distinct VirtIO PCI functions. The data disk is
+created once, tagged by a sector-zero opt-in signature, and passed unchanged
+through Boot 1 and Boot 2. The guest writes a deterministic 512-byte payload
+at LBA 64, requires a completed VirtIO FLUSH, reads it back and compares all
+bytes; the second boot performs a read-only comparison and emits the persistence
+marker only for the matching data. Each QEMU process has an external timeout
+and is terminated through the monitor after the guest emits a stage-specific
+storage-test completion marker (after all Boot 1 or Boot 2 assertions).
+`zig build check` includes this test. CI run `40580172526` passed the QEMU/OVMF
+Boot 1/Boot 2 assertions at SHA `186e14c1f02ca455d784aea6908e401edb51c5e1`;
+this is evidence for that exact SHA only. Every later change must be validated
+by a CI run on its own HEAD, and QEMU results do not substitute for physical
+hardware testing.
 
 The kernel provokes a `#DE` at the end of the boot and prints the vector,
 the error code, the address that caused the fault and the processor frame.

@@ -28,7 +28,7 @@
 
 const std = @import("std");
 const testing = std.testing;
-const block = @import("block.zig");
+const block = @import("voryn_block");
 
 /// Dispositivo de blocos apoiado em um buffer contíguo.
 pub const RamDisk = struct {

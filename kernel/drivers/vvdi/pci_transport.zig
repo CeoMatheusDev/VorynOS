@@ -220,13 +220,24 @@ pub const Transport = struct {
         };
     }
 
-    /// Endereco virtual de notificacao da fila.
-    ///
-    /// A especificacao 4.1.4.4 define
-    /// `cap.offset + queue_notify_off * notify_off_multiplier`, medido a
-    /// partir do inicio da regiao de notificacao. A multiplicacao e checada
-    /// contra o comprimento da regiao: um deslocamento que passe do que foi
-    /// mapeado seria um acesso a memoria de outro dono.
+    /// Notifies an already configured queue through its validated MMIO window.
+    /// The queue publication barrier is performed by `virtqueue.Queue.publish`.
+    pub fn notifyQueue(self: *Transport, index: u16) Error!void {
+        const common = self.regions.common;
+        const queue_count = common.read16(offset.num_queues) catch |err| return mapRegionError(err);
+        if (index >= queue_count) return error.InvalidQueue;
+        common.write16(offset.queue_select, index) catch |err| return mapRegionError(err);
+        const notify_off = common.read16(offset.queue_notify_off) catch |err| return mapRegionError(err);
+        const scaled = std.math.mul(u64, notify_off, self.regions.notify_off_multiplier) catch
+            return error.InvalidQueue;
+        const end = std.math.add(u64, scaled, 2) catch return error.InvalidQueue;
+        if (end > self.regions.notify.length) return error.InvalidQueue;
+        self.regions.notify.write16(scaled, index) catch |err| return mapRegionError(err);
+    }
+
+    /// Calculates the virtual address for a notification offset using
+    /// `notify_off * notify_off_multiplier`, with bounds checked against the
+    /// mapped notification region.
     pub fn notifyAddress(self: *Transport, notify_off: u16) Error!u64 {
         const region = self.regions.notify;
         if (!region.mapped) return error.MissingNotifyRegion;

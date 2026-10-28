@@ -31,7 +31,7 @@
 const std = @import("std");
 const ramfs = @import("ramfs.zig");
 const vnv = @import("vnv.zig");
-const block = @import("../storage/block.zig");
+const block = @import("voryn_block");
 
 pub const Error = error{
     /// O buffer de staging é menor que a imagem VNV.

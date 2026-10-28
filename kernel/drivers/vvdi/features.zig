@@ -68,6 +68,11 @@ pub const ring_reset: u64 = 1 << 40;
 ///     protocolo da fila, que pertence ao incremento das virtqueues.
 pub const supported: u64 = version_1;
 
+/// Device-specific feature positions reserved by VirtIO 1.2 (bits 0..23).
+/// Their semantics are opted into explicitly by the device driver, rather
+/// than by this transport-only module.
+pub const device_feature_mask: u64 = 0x00FF_FFFF;
+
 pub const Error = error{
     /// O dispositivo nao oferece VIRTIO_F_VERSION_1; ele e legado.
     Version1NotOffered,
@@ -92,12 +97,20 @@ pub const Error = error{
 /// reconhece como nao suportados, e por fim a comparacao com o que o
 /// dispositivo ofereceu.
 pub fn negotiate(offered: u64, requested: u64) Error!u64 {
+    return negotiateWithDevice(offered, requested, 0);
+}
+
+/// Negotiates a transport feature set plus an explicit device-driver feature
+/// allowlist. Device-specific semantics are never enabled implicitly by the
+/// transport layer.
+pub fn negotiateWithDevice(offered: u64, requested: u64, device_supported: u64) Error!u64 {
     if (offered & version_1 == 0) return error.Version1NotOffered;
     if (requested & version_1 == 0) return error.Version1NotNegotiated;
     if (requested & access_platform != 0) return error.AccessPlatformUnsupported;
     if (requested & ring_packed != 0) return error.PackedRingUnsupported;
     if (requested & ~offered != 0) return error.FeatureNotOffered;
-    if (requested & ~supported != 0) return error.FeatureNotImplemented;
+    if (device_supported & ~device_feature_mask != 0) return error.FeatureNotImplemented;
+    if (requested & ~(supported | device_supported) != 0) return error.FeatureNotImplemented;
     return requested | version_1;
 }
 
@@ -185,6 +198,22 @@ test "virtio feature negotiation rejects legacy devices and unknown bits" {
     try testing.expectError(
         error.FeatureNotImplemented,
         negotiate(version_1 | in_order, version_1 | in_order),
+    );
+}
+
+test "device drivers may explicitly negotiate defined device-specific feature bits" {
+    const block_flush: u64 = 1 << 9;
+    try testing.expectEqual(
+        version_1 | block_flush,
+        try negotiateWithDevice(version_1 | block_flush, version_1 | block_flush, block_flush),
+    );
+    try testing.expectError(
+        error.FeatureNotImplemented,
+        negotiate(version_1 | block_flush, version_1 | block_flush),
+    );
+    try testing.expectError(
+        error.FeatureNotOffered,
+        negotiateWithDevice(version_1, version_1 | block_flush, block_flush),
     );
 }
 

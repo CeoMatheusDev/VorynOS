@@ -61,7 +61,7 @@ const fs = @import("fs/fs.zig");
 const ramfs = @import("fs/ramfs.zig");
 const vnv = @import("fs/vnv.zig");
 const vnv_volume = @import("fs/vnv_volume.zig");
-const block_dev = @import("storage/block.zig");
+const block_dev = @import("voryn_block");
 const ramdisk = @import("storage/ramdisk.zig");
 const vpk = @import("voryn_vpk");
 const vex = @import("voryn_vex");
@@ -733,6 +733,7 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // reservada em `buildPageTables`; as paginas do dispositivo sao mapeadas
     // com cache desabilitado.
     bringUpVirtioDevices();
+    verifyVirtioBlockPersistenceProbe();
 
     // F7 base: leitura real do espaco de configuracao PCI no bus 0. A sonda
     // nao habilita o dispositivo nem assume um driver; ela existe para
@@ -1128,10 +1129,10 @@ fn probeVirtqueueLayout() void {
 // espacos copiam a tabela de nivel 2, e uma tabela de nivel 1 criada depois
 // nao apareceria nos espacos que ja existem.
 //
-// O que este incremento NAO faz: nao publica pedido, nao consome conclusao e
-// nao le nem escreve setor. Ele entrega o dispositivo pronto — fila 0 com as
-// tres areas em memoria DMA, `queue_size` programado, `queue_enable`
-// confirmado e DRIVER_OK escrito por ultimo — e para ali.
+// O driver publica e consome pedidos de bloco com polling limitado após
+// DRIVER_OK. O autoteste de persistência é deliberadamente opt-in: só grava
+// no disco cuja LBA 0 contém a assinatura exclusiva preparada pelo script,
+// nunca na imagem EFI sem essa assinatura.
 // ----------------------------------------------------------------------
 
 /// Janela virtual onde os BARs dos dispositivos sao mapeados.
@@ -1213,22 +1214,22 @@ fn supportedProbedBar(bar: u8, offset: u32, length: u32) bool {
     return pci.barSupportsRegion(decoded, index, size, offset, length);
 }
 
-/// Identifica as funcoes VirtIO do barramento 0 e inicializa o virtio-blk
-/// moderno ate FEATURES_OK.
-///
-/// O escopo de barramento e funcao e o mesmo da sonda `probePciBus` que ja
-/// existia: funcoes adicionais de um dispositivo multifuncao nao sao
-/// visitadas por este incremento.
-///
-/// O alvo e explicito: o primeiro virtio-blk com identificador moderno
-/// (0x1042). Um dispositivo transicional nao e conduzido pelo caminho
-/// moderno, e os outros tipos sao registrados e ignorados — o driver deles e
-/// outro incremento.
+/// Identifies modern VirtIO Block functions on PCI bus 0 and activates one.
+/// The selected target is the last modern block function in BDF order, which
+/// lets the QEMU integration attach a dedicated writable data disk after the
+/// boot disk. With one device, the existing single-device path is unchanged.
+/// Transitional devices and non-block types are not driven by this path.
 fn bringUpVirtioDevices() void {
     var device: u8 = 0;
     var found: u32 = 0;
-    var ready: bool = false;
+    var selected_device: ?u8 = null;
+    var selected_identification: ?vvdi.types.Identification = null;
 
+    // O subsistema ainda mantém um backend físico ativo. Se há mais de um
+    // virtio-blk moderno, escolhe o último BDF: nos testes QEMU o disco de
+    // boot aparece primeiro e o disco de dados exclusivo é anexado depois.
+    // Com um único disco, o comportamento existente (usar esse dispositivo)
+    // permanece inalterado.
     while (device < 32) : (device += 1) {
         const vendor = pci.readConfigWord(0, device, 0, 0x00);
         if (vendor != vvdi.types.vendor_id) continue;
@@ -1251,7 +1252,6 @@ fn bringUpVirtioDevices() void {
             );
             continue;
         }
-
         if (identification.device_type != .block) {
             serial.printLine("[VNK] virtio: 00:{d}.0 type={s} is not the target of this increment", .{
                 device,
@@ -1260,20 +1260,108 @@ fn bringUpVirtioDevices() void {
             continue;
         }
 
-        if (ready) {
-            serial.printLine("[VNK] virtio: 00:{d}.0 skipped, the target device is already up", .{
-                device,
-            });
-            continue;
-        }
-
-        ready = bringUpVirtioFunction(device, identification);
+        selected_device = device;
+        selected_identification = identification;
     }
 
     if (found == 0) {
         serial.printLine("[VNK] virtio: no function of vendor 0x1af4 on bus 0", .{});
-    } else if (!ready) {
-        serial.printLine("[VNK] vvdi: no modern virtio-blk was brought up", .{});
+        return;
+    }
+    const target_device = selected_device orelse {
+        serial.printLine("[VNK] vvdi: no modern virtio-blk was found", .{});
+        return;
+    };
+    const identification = selected_identification.?;
+    serial.printLine("[VNK] vvdi: selected modern virtio-blk 00:{d}.0", .{target_device});
+    if (!bringUpVirtioFunction(target_device, identification)) {
+        serial.printLine("[VNK] vvdi: selected device 00:{d}.0 was not brought up", .{target_device});
+    }
+}
+
+/// Real read/write probe for a dedicated QEMU data disk.
+///
+/// LBA 0 is a host-written opt-in signature, never a write target. The
+/// deterministic payload lives at LBA 64. An all-zero payload denotes Boot 1;
+/// an exact payload denotes Boot 2. Any other contents fail closed rather
+/// than being overwritten, so stale/corrupt state cannot produce a false pass.
+fn verifyVirtioBlockPersistenceProbe() void {
+    const device = block_dev.defaultDevice() orelse return;
+    if (device.sector_size != storage_test_control.len or device.sector_count <= storage_test_lba)
+        return;
+
+    device.readBytes(0, &storage_test_control) catch |err| {
+        // The probe is opt-in: if LBA 0 cannot be read, there is no evidence
+        // that this device requested the self-test. Skip it without turning
+        // an optional probe failure into a boot failure.
+        serial.printLine("[VNK] vvdi: storage-test control-sector read failed; optional probe skipped: {s}", .{@errorName(err)});
+        return;
+    };
+    if (!std.mem.eql(u8, storage_test_control[0..storage_test_magic.len], storage_test_magic) or
+        !std.mem.allEqual(u8, storage_test_control[storage_test_magic.len..], 0)) return;
+    serial.printLine("[VNK] vvdi: storage-test signature recognized on dedicated data disk", .{});
+
+    for (&storage_test_expected, 0..) |*byte, index| {
+        const position: u64 = @intCast(index);
+        byte.* = @truncate(position *% 73 +% (position >> 1) +% 0x5A);
+    }
+
+    const data_offset = storage_test_lba * device.sector_size;
+    device.readBytes(data_offset, &storage_test_actual) catch |err| {
+        serial.printLine("[VNK] FATAL: storage-test initial read failed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    if (std.mem.allEqual(u8, &storage_test_actual, 0)) {
+        serial.printLine("[VNK] vvdi: storage-test phase=boot1", .{});
+        device.writeBytes(data_offset, &storage_test_expected) catch |err| {
+            serial.printLine("[VNK] FATAL: storage-test write failed: {s}", .{@errorName(err)});
+            port.haltForever();
+        };
+        serial.printLine("[VNK] vvdi: storage write completed lba={d} bytes={d}", .{
+            storage_test_lba,
+            storage_test_expected.len,
+        });
+
+        if (device.flush == null) {
+            serial.printLine("[VNK] FATAL: storage-test requires negotiated VirtIO FLUSH", .{});
+            port.haltForever();
+        }
+        device.flushWrites() catch |err| {
+            serial.printLine("[VNK] FATAL: storage-test FLUSH failed: {s}", .{@errorName(err)});
+            port.haltForever();
+        };
+        serial.printLine("[VNK] vvdi: storage FLUSH completed lba={d}", .{storage_test_lba});
+
+        device.readBytes(data_offset, &storage_test_actual) catch |err| {
+            serial.printLine("[VNK] FATAL: storage-test readback failed: {s}", .{@errorName(err)});
+            port.haltForever();
+        };
+        serial.printLine("[VNK] vvdi: storage read completed lba={d} bytes={d}", .{
+            storage_test_lba,
+            storage_test_actual.len,
+        });
+        if (!std.mem.eql(u8, &storage_test_expected, &storage_test_actual)) {
+            serial.printLine("[VNK] FATAL: storage-test readback differs from written bytes", .{});
+            port.haltForever();
+        }
+        serial.printLine("[VNK] vvdi: storage data compare verified bytes={d}", .{storage_test_actual.len});
+        serial.printLine("[VNK] vvdi: storage-test complete boot=1", .{});
+    } else if (std.mem.eql(u8, &storage_test_expected, &storage_test_actual)) {
+        serial.printLine("[VNK] vvdi: storage-test phase=boot2", .{});
+        serial.printLine("[VNK] vvdi: storage read completed lba={d} bytes={d}", .{
+            storage_test_lba,
+            storage_test_actual.len,
+        });
+        serial.printLine("[VNK] vvdi: storage data compare verified bytes={d}", .{storage_test_actual.len});
+        serial.printLine("[VNK] vvdi: storage persistence confirmed boot=2 lba={d} bytes={d}", .{
+            storage_test_lba,
+            storage_test_actual.len,
+        });
+        serial.printLine("[VNK] vvdi: storage-test complete boot=2", .{});
+    } else {
+        serial.printLine("[VNK] FATAL: storage-test sector has unexpected nonzero data", .{});
+        port.haltForever();
     }
 }
 
@@ -1287,10 +1375,10 @@ const probed_capability_limit: usize = 16;
 
 /// Coleta, valida, mapeia e negocia uma funcao VirtIO ja identificada.
 ///
-/// Devolve true apenas quando o dispositivo confirmou FEATURES_OK. Cada
-/// caminho de falha desfaz o mapeamento do BAR antes de retornar: um erro no
-/// meio da inicializacao nao pode deixar o driver com um ponteiro para
-/// memoria que ele nao sabe mais se pertence ao dispositivo.
+/// Returns true only after DRIVER_OK, queue setup, capacity read and block
+/// API registration. Pre-queue failures unmap the BAR; after queue memory is
+/// handed to the device, ambiguous failures retain it unless reset confirms
+/// release, following `transport.QueueMemory` ownership rules.
 fn bringUpVirtioFunction(
     device: u8,
     identification: vvdi.types.Identification,
@@ -1415,9 +1503,17 @@ fn bringUpVirtioFunction(
 
     var target: vvdi.transport.Device = .{ .registers = transport.registers() };
 
-    switch (target.initialize(vvdi.features.supported)) {
+    switch (target.initializeOptional(vvdi.features.supported, vvdi.block.flush_feature)) {
         .failed => |failure| {
-            window.unmap(&region);
+            if (failure.stage == .reset) {
+                // resetDevice failed before proving that the function is
+                // inactive. Keep the MMIO path available even though no
+                // queue from this driver has been handed over yet.
+                active_virtio_transport = transport;
+                serial.printLine("[VNK] FATAL: 00:{d}.0 reset was not confirmed; retaining the BAR MMIO mapping", .{device});
+            } else {
+                window.unmap(&region);
+            }
             serial.printLine(
                 "[VNK] vvdi: 00:{d}.0 initialization failed at {s}: {s} (bar{d} size=0x{x})",
                 .{
@@ -1467,9 +1563,55 @@ fn bringUpVirtioFunction(
     // PR C: a fila 0 recebe as tres areas em memoria DMA, e so depois dela
     // programada e habilitada DRIVER_OK e escrito.
     if (!programVirtqueue(&target, &transport, device)) {
-        window.unmap(&region);
+        if (virtqueue_state.ownership.canReturnToAllocator()) {
+            window.unmap(&region);
+        } else {
+            // A failed reset means the device may still use the programmed
+            // queue. Keep its BAR mapped as well as the DMA allocation, and
+            // retain the transport metadata for explicit quarantine state.
+            active_virtio_transport = transport;
+            serial.printLine("[VNK] FATAL: 00:{d}.0 reset was not confirmed; retaining the BAR MMIO mapping and DMA memory", .{device});
+        }
         return false;
     }
+
+    // O transporte foi inicializado sobre uma variável local. Copiamos seu
+    // estado para armazenamento permanente antes de ligar a API de bloco;
+    // a fila e sua memória DMA também permanecem globais.
+    active_virtio_transport = transport;
+    const active_queue = if (virtqueue_state.queue) |*queue| queue else {
+        serial.printLine("[VNK] FATAL: the active VirtIO queue was not retained", .{});
+        return false;
+    };
+    const active_dma = virtqueue_state.mapped orelse {
+        serial.printLine("[VNK] FATAL: the active VirtIO DMA mapping was not retained", .{});
+        return false;
+    };
+    const active_buffer = virtqueue_state.buffer orelse {
+        serial.printLine("[VNK] FATAL: the active VirtIO DMA allocation was not retained", .{});
+        return false;
+    };
+    virtio_block_driver.init(
+        &active_virtio_transport,
+        active_queue,
+        active_buffer.physical_address,
+        active_dma.virtual[0..@intCast(active_dma.length)],
+        active_queue.layout,
+        target.accepted,
+    ) catch |err| {
+        serial.printLine("[VNK] vvdi: 00:{d}.0 block device configuration failed: {s}", .{
+            device,
+            @errorName(err),
+        });
+        return false;
+    };
+    block_dev.installDefault(virtio_block_driver.device());
+    serial.printLine("[VNK] vvdi: 00:{d}.0 block I/O ready sectors={d} sector_size={d} flush={d}", .{
+        device,
+        virtio_block_driver.sectors,
+        vvdi.block.sector_size,
+        @intFromBool(virtio_block_driver.flush_supported),
+    });
 
     return true;
 }
@@ -1518,6 +1660,19 @@ const VirtqueueState = struct {
 };
 
 var virtqueue_state: VirtqueueState = .{};
+
+/// Transporte e driver de bloco ativos. Mantidos estaticamente porque o
+/// dispositivo pode reter os enderecos da fila e dos buffers DMA ate o reset.
+var active_virtio_transport: vvdi.pci_transport.Transport = undefined;
+var virtio_block_driver: vvdi.block.Driver = undefined;
+
+/// Self-test is opt-in via a sector-zero signature on a separate test disk.
+/// It deliberately never writes unless that exact signature is read back.
+const storage_test_lba: u64 = 64;
+const storage_test_magic = "VORYNBLKTEST0001";
+var storage_test_control: [512]u8 = undefined;
+var storage_test_expected: [512]u8 = undefined;
+var storage_test_actual: [512]u8 = undefined;
 
 /// Devolve a memoria da fila ao alocador, e so quando o dispositivo largou.
 ///
@@ -1616,8 +1771,13 @@ fn programVirtqueue(
         return false;
     };
 
-    // 2. Memoria: paginas fisicas contiguas, mapeadas na janela de DMA.
-    const mapped = allocateVirtqueueMemory(layout.total_size) orelse {
+    // 2. Memoria: fila e buffer de uma requisicao no mesmo bloco DMA
+    // contiguo. O espaco de trabalho persiste enquanto DRIVER_OK estiver ativo.
+    const request_buffers = vvdi.block.BufferLayout.compute(layout.total_size) orelse {
+        serial.printLine("[VNK] FATAL: the VirtIO Block DMA request layout overflows", .{});
+        return false;
+    };
+    const mapped = allocateVirtqueueMemory(request_buffers.required) orelse {
         serial.printLine("[VNK] vvdi: 00:{d}.0 virtqueue 0 has no DMA memory for {d} bytes", .{
             device,
             layout.total_size,
@@ -1638,6 +1798,8 @@ fn programVirtqueue(
         });
         return false;
     };
+    // Este driver usa polling síncrono e não registra IRQ/MSI-X da fila.
+    queue.setNoInterrupt(true);
     if (queue.freeCount() != size or queue.inFlightCount() != 0) {
         releaseVirtqueueMemory();
         serial.printLine("[VNK] FATAL: the virtqueue did not start empty", .{});
@@ -1757,9 +1919,9 @@ fn programVirtqueue(
                 failure.stage.label(),
                 @errorName(failure.reason),
             });
-            // O chamador desmapeia o BAR em seguida: um dispositivo que fique
-            // com filas habilitadas e sem BAR mapeado nao tem como ser
-            // conduzido. O reset devolve a memoria ao driver.
+            // O chamador so desmapeia o BAR se este reset for confirmado.
+            // Sem confirmacao, tanto a fila DMA quanto o controle MMIO ficam
+            // retidos para nao abandonar um dispositivo potencialmente ativo.
             abandonVirtqueue(target, device);
             return false;
         },
