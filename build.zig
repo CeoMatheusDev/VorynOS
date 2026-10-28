@@ -548,6 +548,20 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(host_tests).step);
 
+    // `voryn_block` is a named imported module now, not a source import in
+    // host_root.zig. Zig does not include tests from that imported module in
+    // the parent test artifact, so run its four API tests explicitly.
+    const block_api_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/storage/block.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const block_api_tests = b.addTest(.{
+        .name = "block-api-tests",
+        .root_module = block_api_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(block_api_tests).step);
+
     // The steps that use the image depend on the step that builds it: the
     // test has to run against the image of the tree, and not against the
     // image that a previous run left in the installation directory.
@@ -569,9 +583,10 @@ pub fn build(b: *std.Build) void {
     storage_test.has_side_effects = true;
     storage_test.step.dependOn(&image_step.step);
     storage_test_step.dependOn(&image_step.step);
-    // Both integration suites boot QEMU/TCG. Serialize them so the existing
-    // boot regression cannot starve the two-boot storage deadline.
-    storage_test_step.dependOn(qemu_test_step);
+    // Both integration suites boot QEMU/TCG. Make the storage command itself
+    // wait for the boot suite; an edge on the aggregate step alone would let
+    // the two commands run concurrently as sibling dependencies.
+    storage_test.step.dependOn(qemu_test_step);
     storage_test_step.dependOn(&storage_test.step);
 
     const interactive_test_step = b.step("qemu-interactive-test", "Verify persistent PS/2 graphics input in QEMU");

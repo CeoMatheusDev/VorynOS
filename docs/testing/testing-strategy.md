@@ -124,8 +124,11 @@ bytes; the second boot performs a read-only comparison and emits the persistence
 marker only for the matching data. Each QEMU process has an external timeout
 and is terminated through the monitor after the guest emits a stage-specific
 storage-test completion marker (after all Boot 1 or Boot 2 assertions).
-`zig build check` includes this test. The script is present; until its QEMU/OVMF
-run succeeds in CI, no real-I/O or persistence result is claimed.
+`zig build check` includes this test. CI run `40580172526` passed the QEMU/OVMF
+Boot 1/Boot 2 assertions at SHA `186e14c1f02ca455d784aea6908e401edb51c5e1`;
+this is evidence for that exact SHA only. Every later change must be validated
+by a CI run on its own HEAD, and QEMU results do not substitute for physical
+hardware testing.
 
 The kernel provokes a `#DE` at the end of the boot and prints the vector,
 the error code, the address that caused the fault and the processor frame.

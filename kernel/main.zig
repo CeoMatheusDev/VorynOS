@@ -1291,8 +1291,11 @@ fn verifyVirtioBlockPersistenceProbe() void {
         return;
 
     device.readBytes(0, &storage_test_control) catch |err| {
-        serial.printLine("[VNK] FATAL: storage-test control-sector read failed: {s}", .{@errorName(err)});
-        port.haltForever();
+        // The probe is opt-in: if LBA 0 cannot be read, there is no evidence
+        // that this device requested the self-test. Skip it without turning
+        // an optional probe failure into a boot failure.
+        serial.printLine("[VNK] vvdi: storage-test control-sector read failed; optional probe skipped: {s}", .{@errorName(err)});
+        return;
     };
     if (!std.mem.eql(u8, storage_test_control[0..storage_test_magic.len], storage_test_magic) or
         !std.mem.allEqual(u8, storage_test_control[storage_test_magic.len..], 0)) return;
@@ -1502,7 +1505,15 @@ fn bringUpVirtioFunction(
 
     switch (target.initializeOptional(vvdi.features.supported, vvdi.block.flush_feature)) {
         .failed => |failure| {
-            window.unmap(&region);
+            if (failure.stage == .reset) {
+                // resetDevice failed before proving that the function is
+                // inactive. Keep the MMIO path available even though no
+                // queue from this driver has been handed over yet.
+                active_virtio_transport = transport;
+                serial.printLine("[VNK] FATAL: 00:{d}.0 reset was not confirmed; retaining the BAR MMIO mapping", .{device});
+            } else {
+                window.unmap(&region);
+            }
             serial.printLine(
                 "[VNK] vvdi: 00:{d}.0 initialization failed at {s}: {s} (bar{d} size=0x{x})",
                 .{
@@ -1552,7 +1563,15 @@ fn bringUpVirtioFunction(
     // PR C: a fila 0 recebe as tres areas em memoria DMA, e so depois dela
     // programada e habilitada DRIVER_OK e escrito.
     if (!programVirtqueue(&target, &transport, device)) {
-        window.unmap(&region);
+        if (virtqueue_state.ownership.canReturnToAllocator()) {
+            window.unmap(&region);
+        } else {
+            // A failed reset means the device may still use the programmed
+            // queue. Keep its BAR mapped as well as the DMA allocation, and
+            // retain the transport metadata for explicit quarantine state.
+            active_virtio_transport = transport;
+            serial.printLine("[VNK] FATAL: 00:{d}.0 reset was not confirmed; retaining the BAR MMIO mapping and DMA memory", .{device});
+        }
         return false;
     }
 
@@ -1900,9 +1919,9 @@ fn programVirtqueue(
                 failure.stage.label(),
                 @errorName(failure.reason),
             });
-            // O chamador desmapeia o BAR em seguida: um dispositivo que fique
-            // com filas habilitadas e sem BAR mapeado nao tem como ser
-            // conduzido. O reset devolve a memoria ao driver.
+            // O chamador so desmapeia o BAR se este reset for confirmado.
+            // Sem confirmacao, tanto a fila DMA quanto o controle MMIO ficam
+            // retidos para nao abandonar um dispositivo potencialmente ativo.
             abandonVirtqueue(target, device);
             return false;
         },

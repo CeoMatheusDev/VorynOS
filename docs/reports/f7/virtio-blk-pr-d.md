@@ -1,6 +1,6 @@
 # PR D — VirtIO Block nativo sobre VVDI
 
-**Estado nesta revisão:** IMPLEMENTADO E VALIDADO EM QEMU/OVMF NA CI. O GitHub Actions run [40579594867](https://github.com/CeoMatheusDev/VorynOS/actions/runs/40579594867) concluiu com sucesso em 2026-10-27; `zig build check` executou o boot regressivo e o teste real de armazenamento de dois boots. O harness só retorna sucesso depois de Boot 1 (write/FLUSH/read/byte-compare) e Boot 2 (mesmo disco, read/byte-compare, sem escrita) passarem. PR #15 permanece Draft; não houve merge. QEMU/OVMF não estão instalados localmente.
+**Estado nesta revisão:** O PR #15 permanece Draft; não houve merge. O run de CI [40580172526](https://github.com/CeoMatheusDev/VorynOS/actions/runs/40580172526) passou em `186e14c1f02ca455d784aea6908e401edb51c5e1`, incluindo `zig build check`, o boot regressivo e o teste real de armazenamento em dois boots. Esse resultado comprova o HEAD anterior, não as correções desta auditoria. Esta revisão reteve o BAR quando o reset falha, tornou não fatal a falha de leitura do LBA 0 antes da assinatura opt-in, serializou os dois testes QEMU no grafo de build e restaurou a execução explícita dos quatro testes da API de bloco que deixaram de ser coletados quando ela virou um módulo nomeado; para qualquer HEAD posterior, a evidência aplicável é somente a CI associada àquele SHA. O harness só retorna sucesso depois de Boot 1 (write/FLUSH/read/byte-compare) e Boot 2 (mesmo disco, read/byte-compare, sem escrita) passarem. QEMU/OVMF não estão instalados localmente.
 
 ## Driver e integração
 
@@ -22,17 +22,19 @@ Uma operação só retorna sucesso depois que a used ring devolve o head publica
 - **Boot 2:** o script mantém o mesmo arquivo, verifica o mesmo inode e não o trunca nem recria. O kernel lê LBA 64, compara com o padrão e só então emite `storage persistence confirmed boot=2`. O script reprova se Boot 2 publicar escrita ou FLUSH, ou se qualquer marcador estiver ausente.
 - Cada execução QEMU é limitada por `timeout`; depois que o kernel emite `storage-test complete boot=1/2` (só após as asserções daquele estágio), o HMP `quit` pede encerramento controlado sem esperar a sequência de boot gráfico/scheduler não relacionada.
 
-O teste está incluído como `zig build qemu-storage-test` e como dependência de `zig build check`. Após duas correções descobertas pela CI (marcador de conclusão específico por boot e normalização CRLF na asserção de geometria), o run [40579594867](https://github.com/CeoMatheusDev/VorynOS/actions/runs/40579594867) passou integralmente: instalação de OVMF, unidade, construção, boot QEMU, verificação agregada e artefatos. A verificação agregada inclui `qemu-storage-test`; seu código de saída zero comprova que o script observou os marcadores obrigatórios de Boot 1 e Boot 2, a mesma imagem de dados e ausência de escrita em Boot 2. A integração fornece evidência de persistência entre dois boots; QEMU/OVMF não estão disponíveis localmente.
+O teste está incluído como `zig build qemu-storage-test` e como dependência de `zig build check`. Após correções descobertas pela CI, o run [40580172526](https://github.com/CeoMatheusDev/VorynOS/actions/runs/40580172526), no SHA `186e14c1f02ca455d784aea6908e401edb51c5e1`, passou integralmente: instalação de OVMF, unidade, construção, boot QEMU, verificação agregada e artefatos. A verificação agregada inclui `qemu-storage-test`; seu código de saída zero comprova que o script observou os marcadores obrigatórios de Boot 1 e Boot 2, a mesma imagem de dados e ausência de escrita em Boot 2. Isso comprova persistência para aquele SHA e em QEMU, não em hardware físico; qualquer commit posterior precisa de CI própria.
 
 ## Verificações locais atuais
 
-- `zig build test`: **554/554** (544 existentes + 10 novos no conjunto VVDI).
+- `zig build test --cache-dir /tmp/vorynos-final-cache --summary all`: **554/554**. O HEAD anterior `186e14c1f02ca455d784aea6908e401edb51c5e1` reportava 550 porque quatro testes da API `kernel/storage/block.zig` não eram coletados após a migração para módulo nomeado. Esta auditoria adicionou `block-api-tests` explícito; o total corrigido é 544 testes existentes + 10 novos de VVDI, sem perder os quatro testes da API de bloco. A validação de CI precisa corresponder ao SHA final antes de qualquer merge.
 - `zig build`: passou.
 - `zig fmt --check` nos arquivos Zig modificados: passou.
 - `git diff --check`: passou.
 - `bash tests/integration/log-assertions-test.sh`: **7/7**.
 - `bash -n tests/integration/virtio-block-persistence.sh`: passou.
-- QEMU/OVMF e o teste de persistência: **não executados localmente**; o comando da integração falha de forma explícita quando as ferramentas/firmware faltam.
+- `zig build check`: não completou localmente, pois `qemu-system-x86_64` e o par OVMF CODE/VARS não estão instalados. A CI do SHA anterior não substitui o run exigido para o novo HEAD.
+- Harness de persistência com QEMU simulado: **6/6** cenários; sucesso e rejeição de marcador de escrita ausente, comparação ausente, dados divergentes, substituição do arquivo e saída prematura no Boot 2. Isso testa as asserções/control-flow do script, não VirtIO real.
+- Grafo de build com wrappers de comandos: confirmou que `boot-qemu.sh` termina antes de `virtio-block-persistence.sh`; não é uma execução QEMU real.
 
 Os testes de host cobrem cabeçalho, layout DMA, cadeia de descritores, permissões de direção, limites, status, conclusão inválida e propriedade de descritores. Eles não substituem o teste QEMU real.
 
@@ -41,6 +43,6 @@ Os testes de host cobrem cabeçalho, layout DMA, cadeia de descritores, permiss�
 - Somente um dispositivo é registrado no backend padrão; se vários dispositivos modernos forem encontrados, seleciona-se o último por BDF. É uma política de integração inicial, não enumeração completa de armazenamento.
 - I/O síncrono por polling e uma requisição em voo por fila; sem MSI-X/interrupt-driven I/O.
 - Setor de 512 bytes; sem `VIRTIO_BLK_F_BLK_SIZE`, múltiplas filas, DISCARD/WRITE_ZEROES, sistema de arquivos sobre o disco ou montagem automática.
-- Timeout coloca a instância em contenção e mantém a memória DMA; não há reset/recovery da fila.
-- Persistência continua **não comprovada** até o job CI executar Boot 1 e Boot 2 com sucesso.
+- Timeout coloca a instância em contenção e mantém a memória DMA; não há reset/recovery da fila. Se o reset durante a falha de configuração não for confirmado, a correção desta auditoria também mantém mapeado o BAR MMIO; a memória e a janela ficam retidas até reinicialização, sem recuperação online.
+- O run CI `40580172526` comprovou Boot 1/Boot 2 no SHA `186e14c1f02ca455d784aea6908e401edb51c5e1`; ele não valida commits posteriores nem hardware físico.
 - Os arquivos legados `kernel/arch/x86_64/virtio*.zig` permanecem sem alterações.
