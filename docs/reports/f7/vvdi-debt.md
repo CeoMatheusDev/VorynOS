@@ -3,7 +3,7 @@
 - **Data:** 2026-10-27 (atualizado em 2026-10-28)
 - **Subsistema:** `kernel/drivers/vvdi/` e orquestração de boot em `kernel/main.zig`
 - **ADRs relacionados:** [`ADR-0021 — Identidade nativa VVDI`](../../adr/ADR-0021-vvdi-virtual-device-interface.md) e [`ADR-0022 — Contenção PCI/DMA`](../../adr/ADR-0022-pci-dma-containment.md)
-- **Escopo deste documento:** catalogar com precisão técnica os riscos e dívidas arquiteturais remanescentes após PR A, PR B, PR C, PR VVDI, a auditoria do PR D e a contenção PCI/DMA. A-3 foi **parcialmente resolvida** em 2026-10-28 (ver ADR-0022 e [vvdi-containment.md](vvdi-containment.md)); a recuperação online e a prova de quiescência continuam fora de escopo. D-6 e D-7 permanecem abertas.
+- **Escopo deste documento:** catalogar com precisão técnica os riscos e dívidas arquiteturais remanescentes após PR A, PR B, PR C, PR VVDI, a auditoria do PR D e a contenção PCI/DMA. A-3 foi **parcialmente resolvida** em 2026-10-28 (ver ADR-0022 e [vvdi-containment.md](vvdi-containment.md)); a recuperação online e a prova de quiescência continuam fora de escopo. Em 2026-10-28 os caminhos de falha de A-3 passaram a ser exercitados no host por injeção de falhas ([vvdi-fault-injection.md](vvdi-fault-injection.md)); QEMU e hardware físico continuam sem cobertura. D-6 e D-7 permanecem abertas.
 
 ---
 
@@ -59,6 +59,28 @@ implementada, junto com um estado de contenção por dispositivo
   `contained_unrevoked` existe justamente porque a revogação pode falhar;
 - não resolvido: continua não havendo recuperação online, repetição de reset ou restauração
   do *bus master*. Um dispositivo contido permanece contido até a reinicialização.
+
+**Atualização de 2026-10-28 (PR #19, injeção de falhas).** Os caminhos de falha
+descritos acima passaram a ser **executados** no host, e não apenas revisados:
+`kernel/drivers/vvdi/fault_injection.zig` coloca um dispositivo VirtIO Block
+simulado atrás do transporte PCI de produção e injeta timeout com conclusão
+tardia, notificação recusada, conclusões inválidas, erro de dispositivo, fila
+esgotada, reset não confirmado e falhas de configuração depois de `DRIVER_OK`.
+O que isso muda neste registro:
+
+- **verificado**: nenhuma falha devolve descritor à free list; a cadeia
+  publicada permanece alocada; `QueueMemory.canReturnToAllocator()` e
+  `Containment.permitsMemoryRelease()` nunca ficam verdadeiros juntos sem reset
+  confirmado; os 4 KiB de DMA ficam byte a byte idênticos depois de novas
+  tentativas com o driver em quarentena; uma revogação não confirmada continua
+  produzindo `contained_unrevoked` sem retry;
+- **não verificado**: nada disso em QEMU/OVMF nem em hardware físico, e a função
+  `virtqueueMemoryMayBeReturned()` de `main.zig` continua sem teste host-side —
+  o que se verifica são os dois fatos que ela combina com `and`;
+- **inalterado**: não há recuperação online, repetição de reset nem restauração
+  do *bus master*; a revogação continua não sendo prova de quiescência.
+
+Ver [vvdi-fault-injection.md](vvdi-fault-injection.md).
 
 #### Diretriz para resolução futura
 
