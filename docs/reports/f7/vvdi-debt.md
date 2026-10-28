@@ -1,9 +1,9 @@
 # Registro de Dívida Técnica — Subsistema VVDI
 
-- **Data:** 2026-10-27
+- **Data:** 2026-10-27 (atualizado em 2026-10-28)
 - **Subsistema:** `kernel/drivers/vvdi/` e orquestração de boot em `kernel/main.zig`
-- **ADR relacionado:** [`ADR-0021 — Identidade nativa VVDI`](../../adr/ADR-0021-vvdi-virtual-device-interface.md)
-- **Escopo deste documento:** catalogar com precisão técnica os riscos e dívidas arquiteturais remanescentes após PR A, PR B, PR C, PR VVDI e a auditoria do PR D. A-3 foi mitigada no código do PR D; D-6 e D-7 permanecem abertas.
+- **ADRs relacionados:** [`ADR-0021 — Identidade nativa VVDI`](../../adr/ADR-0021-vvdi-virtual-device-interface.md) e [`ADR-0022 — Contenção PCI/DMA`](../../adr/ADR-0022-pci-dma-containment.md)
+- **Escopo deste documento:** catalogar com precisão técnica os riscos e dívidas arquiteturais remanescentes após PR A, PR B, PR C, PR VVDI, a auditoria do PR D e a contenção PCI/DMA. A-3 foi **parcialmente resolvida** em 2026-10-28 (ver ADR-0022 e [vvdi-containment.md](vvdi-containment.md)); a recuperação online e a prova de quiescência continuam fora de escopo. D-6 e D-7 permanecem abertas.
 
 ---
 
@@ -11,7 +11,7 @@
 
 | ID | Título | Localização principal | Severidade / Natureza | Estado |
 | --- | --- | --- | --- | --- |
-| **A-3** | Contenção após falha de reset durante configuração da virtqueue | `kernel/main.zig` (`bringUpVirtioFunction`, `programVirtqueue`, `abandonVirtqueue`) | Risco operacional; memória e BAR retidos sem recuperação online | Mitigada no código do PR D; sem recuperação online ou validação em hardware físico |
+| **A-3** | Contenção após falha de reset durante configuração da virtqueue | `kernel/main.zig` (`bringUpVirtioFunction`, `programVirtqueue`, `abandonVirtqueue`), `kernel/drivers/vvdi/containment.zig`, `kernel/arch/x86_64/pci.zig` | Risco operacional; memória e BAR retidos sem recuperação online | **Parcialmente resolvida (2026-10-28):** revogação de *bus master* com leitura de volta, estado de contenção consultável e diagnóstico no caminho pós-`DRIVER_OK`. Recuperação online e prova de quiescência continuam ausentes; sem validação em hardware físico |
 | **D-6** | Tamanho excessivo do ELF `Debug` do kernel por preenchimento/alinhamento de segmentos | `voryn-kernel` (ligador / layout ELF), contorno em `tools/fatimg.zig` | Dívida de build, imagem e pegada de artefato | Aberto (registrado, não corrigido neste PR) |
 | **D-7** | Coexistência das implementações moderna e legada de *split virtqueue* | `kernel/drivers/vvdi/virtqueue.zig` vs. `kernel/arch/x86_64/virtio.zig` | Duplicação estrutural transitória | Aberto (registrado, não corrigido neste PR) |
 
@@ -40,16 +40,34 @@ MMIO enquanto o dispositivo ainda pode possuir endereços da fila.
 A correção mitiga o risco de um dispositivo potencialmente ativo ficar sem acesso MMIO e
 impede que DMA em uso retorne ao alocador. Ela **não** implementa recuperação: se o reset não
 for confirmado, o dispositivo permanece em quarentena, sem novas operações, e a janela MMIO
-mais as páginas DMA ficam retidas até reinicialização. O kernel ainda não revoga explicitamente
-o bit *Bus Master* do registrador `Command` PCI. Para merge, a CI deve passar no SHA exato que
-contém a correção; CI de SHA anterior não é evidência desse estado. Nenhuma alegação de
+mais as páginas DMA ficam retidas até reinicialização. Para merge, a CI deve passar no SHA exato
+que contém a correção; CI de SHA anterior não é evidência desse estado. Nenhuma alegação de
 recuperação online ou de contenção em hardware físico é feita.
+
+**Atualização de 2026-10-28 (ADR-0022).** A revogação explícita do bit *Bus Master* foi
+implementada, junto com um estado de contenção por dispositivo
+(`kernel/drivers/vvdi/containment.zig`). O que isso resolve e o que **não** resolve:
+
+- resolvido: o kernel passa a desligar o bit 2 do `Command` (preservando `Memory Space` e
+  os demais bits) quando um dispositivo entra em quarentena, e registra em log o motivo, o
+  estado e o resultado da revogação; a falha de configuração **depois** de `DRIVER_OK`, que
+  antes retornava sem diagnóstico nem estado, agora contém o dispositivo e mantém a
+  propriedade dos recursos retidos explícita;
+- não resolvido: revogar *Bus Master* não prova que transações DMA já emitidas terminaram.
+  Não existe operação PCI/PCIe de drenagem, e o reset confirmado do VirtIO é a condição
+  *disponível* para devolver memória, não uma garantia portável de quiescência. O estado
+  `contained_unrevoked` existe justamente porque a revogação pode falhar;
+- não resolvido: continua não havendo recuperação online, repetição de reset ou restauração
+  do *bus master*. Um dispositivo contido permanece contido até a reinicialização.
 
 #### Diretriz para resolução futura
 
-Um incremento futuro pode implementar recuperação controlada (por exemplo, repetir reset e/ou
-revogar explicitamente *Bus Master*), preservando o estado de contenção até que o dispositivo
-confirme que não acessa mais a memória.
+Um incremento futuro pode implementar recuperação controlada (por exemplo, repetir reset),
+preservando o estado de contenção até que o dispositivo confirme que não acessa mais a
+memória. A revogação de *Bus Master* já foi feita; o que falta é o caminho de volta:
+reconstruir a fila, restaurar o *bus master* e só então rearmar o dispositivo. Qualquer
+incremento desse tipo precisa lidar com a fila que ficou com descritores em voo — hoje o
+`Queue` de uma instância contida não é reconstruído nem reutilizado.
 ---
 
 ### D-6 — Tamanho excessivo do ELF `Debug` devido a preenchimento e alinhamento

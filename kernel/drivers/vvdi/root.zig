@@ -58,6 +58,7 @@ pub const mmio = @import("mmio.zig");
 pub const transport = @import("transport.zig");
 pub const pci_transport = @import("pci_transport.zig");
 pub const virtqueue = @import("virtqueue.zig");
+pub const containment = @import("containment.zig");
 pub const block = @import("block.zig");
 
 // Os testes dos modulos vivem neles mesmos; este bloco e o que os traz para
@@ -72,6 +73,7 @@ test {
     _ = transport;
     _ = pci_transport;
     _ = virtqueue;
+    _ = containment;
     _ = block;
 }
 

@@ -27,9 +27,16 @@
 //! Timeouts e conclusões inválidas envenenam a instância: a fila e o buffer
 //! compartilhado não são reutilizados nem liberados, pois o dispositivo pode
 //! ainda possuir referências a eles.
+//!
+//! Envenenar a instância é uma decisão local; ela não impede o dispositivo de
+//! continuar emitindo DMA. Quando um `Containment` é fornecido em `init`, cada
+//! envenenamento escala para o dispositivo: o *bus master* PCI é revogado e o
+//! estado de contenção fica registrado com o motivo. Sem a estrutura, o driver
+//! preserva exatamente o comportamento anterior.
 
 const std = @import("std");
 const block_api = @import("voryn_block");
+const containment = @import("containment.zig");
 const pci_transport = @import("pci_transport.zig");
 const virtqueue = @import("virtqueue.zig");
 
@@ -98,6 +105,11 @@ pub const Driver = struct {
     buffers: BufferLayout,
     sectors: u64,
     flush_supported: bool,
+    /// Estado do dispositivo, quando o chamador fornece um. O ponteiro é
+    /// emprestado e precisa sobreviver a esta instância, porque a contenção é
+    /// consultada depois que o pedido que falhou já retornou. `null` mantém o
+    /// comportamento anterior: a falha envenena só o driver.
+    containment: ?*containment.Containment = null,
     poisoned: bool = false,
     lock: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
 
@@ -111,6 +123,7 @@ pub const Driver = struct {
         dma_virtual: []u8,
         queue_layout: virtqueue.Layout,
         negotiated_features: u64,
+        device_containment: ?*containment.Containment,
     ) Error!void {
         const buffers = BufferLayout.compute(queue_layout.total_size) orelse return error.InvalidMemory;
         if (dma_physical == 0 or dma_physical % virtqueue.descriptor_alignment != 0) return error.InvalidMemory;
@@ -157,6 +170,7 @@ pub const Driver = struct {
             .buffers = buffers,
             .sectors = capacity,
             .flush_supported = negotiated_features & flush_feature != 0,
+            .containment = device_containment,
         };
     }
 
@@ -299,7 +313,7 @@ pub const Driver = struct {
         // notifyQueue validates the selected queue and MMIO range.
         if (!self.queue.notificationsSuppressed()) {
             self.transport.notifyQueue(0) catch {
-                self.quarantine();
+                self.quarantine(.notify_failure);
                 return error.NotifyFailure;
             };
         }
@@ -308,7 +322,7 @@ pub const Driver = struct {
         var completion: ?virtqueue.Used = null;
         while (remaining > 0) : (remaining -= 1) {
             const used = self.queue.pollUsed() catch {
-                self.quarantine();
+                self.quarantine(.invalid_completion);
                 return error.InvalidCompletion;
             };
             if (used) |entry| {
@@ -320,18 +334,18 @@ pub const Driver = struct {
         const used = completion orelse {
             // Do not release descriptors or reuse the DMA scratch area: the
             // device may still own every address in this request chain.
-            self.quarantine();
+            self.quarantine(.timeout);
             return error.Timeout;
         };
         const device_status = status_ptr.*;
         if (!validCompletion(head, used, device_status, keep_data, device_writes_data)) {
-            self.quarantine();
+            self.quarantine(.invalid_completion);
             return error.InvalidCompletion;
         }
 
         if (device_status == status_ok) {
             self.queue.release(head) catch {
-                self.quarantine();
+                self.quarantine(.invalid_completion);
                 return error.InvalidCompletion;
             };
             return;
@@ -340,21 +354,28 @@ pub const Driver = struct {
         // The used entry proves DMA has stopped for this request. Retiring the
         // descriptors is safe, but a device error still fails the operation.
         self.queue.release(head) catch {
-            self.quarantine();
+            self.quarantine(.invalid_completion);
             return error.InvalidCompletion;
         };
         return switch (device_status) {
             status_io_error => error.DeviceIo,
             status_unsupported => error.Unsupported,
             else => blk: {
-                self.quarantine();
+                self.quarantine(.invalid_completion);
                 break :blk error.InvalidCompletion;
             },
         };
     }
 
-    fn quarantine(self: *Driver) void {
+    /// Envenena a instância e escala a falha para o dispositivo.
+    ///
+    /// A ordem importa: o driver se fecha primeiro, e só depois a contenção é
+    /// aplicada. Uma falha dentro da revogação não pode deixar o driver
+    /// aceitando pedidos novos, e `contain` é idempotente e não espera, então
+    /// o caminho de erro continua limitado.
+    fn quarantine(self: *Driver, why: containment.Reason) void {
         self.poisoned = true;
+        if (self.containment) |state| _ = state.contain(why);
     }
 
     fn requireHealthy(self: *const Driver) Error!void {
@@ -530,9 +551,90 @@ test "used completions validate request identity, byte count and status" {
 test "timed out requests quarantine the real driver instance" {
     var driver: Driver = undefined;
     driver.poisoned = false;
-    driver.quarantine();
+    driver.containment = null;
+    driver.quarantine(.timeout);
     try testing.expectError(error.DevicePoisoned, driver.requireHealthy());
     // The same gate is checked by read/write and FLUSH before a later request
     // can touch the queue or DMA scratch memory.
     try testing.expectError(error.DevicePoisoned, driver.requireHealthy());
+}
+
+/// Alvo de revogação observável, sem portas de I/O.
+const FakeRevoker = struct {
+    confirm: bool = true,
+    attempts: u32 = 0,
+
+    fn revoke(ctx: *anyopaque) bool {
+        const self: *FakeRevoker = @ptrCast(@alignCast(ctx));
+        self.attempts += 1;
+        return self.confirm;
+    }
+
+    fn handle(self: *FakeRevoker) containment.BusMaster {
+        return .{ .ctx = @ptrCast(self), .revoke = revoke };
+    }
+};
+
+test "a driver failure escalates to the device containment with its reason" {
+    var revoker: FakeRevoker = .{ .confirm = true };
+    var state: containment.Containment = .{};
+    state.arm(revoker.handle());
+
+    var driver: Driver = undefined;
+    driver.poisoned = false;
+    driver.containment = &state;
+
+    driver.quarantine(.timeout);
+
+    // O driver se fecha e o dispositivo é contido: as duas coisas acontecem.
+    try testing.expectError(error.DevicePoisoned, driver.requireHealthy());
+    try testing.expect(state.isQuarantined());
+    try testing.expectEqual(containment.Reason.timeout, state.reason.?);
+    try testing.expectEqual(@as(u32, 1), revoker.attempts);
+    // Revogar não libera a memória que o dispositivo já recebeu.
+    try testing.expect(!state.permitsMemoryRelease());
+}
+
+test "a failed revocation still leaves the driver poisoned" {
+    var revoker: FakeRevoker = .{ .confirm = false };
+    var state: containment.Containment = .{};
+    state.arm(revoker.handle());
+
+    var driver: Driver = undefined;
+    driver.poisoned = false;
+    driver.containment = &state;
+
+    driver.quarantine(.invalid_completion);
+
+    // A falha de revogação não pode reabrir o caminho de pedidos.
+    try testing.expectError(error.DevicePoisoned, driver.requireHealthy());
+    try testing.expectEqual(containment.State.contained_unrevoked, state.state);
+    try testing.expect(!state.revocationConfirmed());
+    try testing.expect(!state.permitsMemoryRelease());
+}
+
+test "repeated failures keep the first containment reason" {
+    var revoker: FakeRevoker = .{ .confirm = true };
+    var state: containment.Containment = .{};
+    state.arm(revoker.handle());
+
+    var driver: Driver = undefined;
+    driver.poisoned = false;
+    driver.containment = &state;
+
+    driver.quarantine(.notify_failure);
+    driver.quarantine(.timeout);
+    driver.quarantine(.invalid_completion);
+
+    try testing.expectEqual(containment.Reason.notify_failure, state.reason.?);
+    try testing.expectEqual(@as(u32, 1), revoker.attempts);
+}
+
+test "a driver without containment keeps the previous behaviour" {
+    var driver: Driver = undefined;
+    driver.poisoned = false;
+    driver.containment = null;
+    driver.quarantine(.timeout);
+    try testing.expectError(error.DevicePoisoned, driver.requireHealthy());
+    try testing.expect(driver.poisoned);
 }
