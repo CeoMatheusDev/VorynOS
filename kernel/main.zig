@@ -1563,7 +1563,7 @@ fn bringUpVirtioFunction(
     // PR C: a fila 0 recebe as tres areas em memoria DMA, e so depois dela
     // programada e habilitada DRIVER_OK e escrito.
     if (!programVirtqueue(&target, &transport, device)) {
-        if (virtqueue_state.ownership.canReturnToAllocator()) {
+        if (virtqueueMemoryMayBeReturned()) {
             window.unmap(&region);
         } else {
             // A failed reset means the device may still use the programmed
@@ -1578,17 +1578,26 @@ fn bringUpVirtioFunction(
     // O transporte foi inicializado sobre uma variável local. Copiamos seu
     // estado para armazenamento permanente antes de ligar a API de bloco;
     // a fila e sua memória DMA também permanecem globais.
+    //
+    // A partir daqui o dispositivo esta em `DRIVER_OK` e a fila ja foi
+    // entregue: qualquer falha nesta secao e uma falha *depois* de o
+    // dispositivo passar a poder emitir DMA. Nenhum caminho abaixo devolve a
+    // memoria ao alocador nem desmapeia o BAR, e todos contem o dispositivo e
+    // registram o estado antes de retornar.
     active_virtio_transport = transport;
     const active_queue = if (virtqueue_state.queue) |*queue| queue else {
         serial.printLine("[VNK] FATAL: the active VirtIO queue was not retained", .{});
+        containActiveDevice(.configuration_failure, device);
         return false;
     };
     const active_dma = virtqueue_state.mapped orelse {
         serial.printLine("[VNK] FATAL: the active VirtIO DMA mapping was not retained", .{});
+        containActiveDevice(.configuration_failure, device);
         return false;
     };
     const active_buffer = virtqueue_state.buffer orelse {
         serial.printLine("[VNK] FATAL: the active VirtIO DMA allocation was not retained", .{});
+        containActiveDevice(.configuration_failure, device);
         return false;
     };
     virtio_block_driver.init(
@@ -1598,11 +1607,19 @@ fn bringUpVirtioFunction(
         active_dma.virtual[0..@intCast(active_dma.length)],
         active_queue.layout,
         target.accepted,
+        &virtio_containment,
     ) catch |err| {
-        serial.printLine("[VNK] vvdi: 00:{d}.0 block device configuration failed: {s}", .{
-            device,
-            @errorName(err),
-        });
+        // O dispositivo respondeu `DRIVER_OK` e continua com a fila 0
+        // habilitada. A memoria DMA, o mapeamento do BAR e o transporte
+        // permanecem retidos — nao ha caminho de liberacao aqui — e a
+        // instancia de bloco nunca e publicada, entao nenhum pedido pode ser
+        // emitido. O que faltava era o estado ficar identificavel: a
+        // contencao nomeia o motivo e revoga o *bus master*.
+        serial.printLine(
+            "[VNK] FATAL: 00:{d}.0 block device configuration failed after DRIVER_OK: {s}",
+            .{ device, @errorName(err) },
+        );
+        containActiveDevice(.configuration_failure, device);
         return false;
     };
     block_dev.installDefault(virtio_block_driver.device());
@@ -1666,6 +1683,70 @@ var virtqueue_state: VirtqueueState = .{};
 var active_virtio_transport: vvdi.pci_transport.Transport = undefined;
 var virtio_block_driver: vvdi.block.Driver = undefined;
 
+/// Alvo PCI da revogacao de *bus master*.
+///
+/// E um valor estatico, e nao uma variavel local, porque a contencao guarda um
+/// ponteiro para ele: o estado pode ser consultado depois que a funcao que
+/// armou a contencao ja retornou. Um endereco de pilha ali seria leitura de
+/// memoria que nao pertence mais ao dispositivo.
+const BusMasterTarget = struct {
+    bus: u8 = 0,
+    device: u8 = 0,
+    function: u8 = 0,
+};
+
+var virtio_bus_master_target: BusMasterTarget = .{};
+
+/// Estado de contencao do dispositivo virtual em uso.
+///
+/// Tambem estatico, e pelo mesmo motivo: o driver de bloco o consulta em cada
+/// falha, e a orquestracao de boot o consulta depois das falhas.
+var virtio_containment: vvdi.containment.Containment = .{};
+
+/// Revoga o *bus master* da funcao. True somente com leitura de volta.
+fn revokeVirtioBusMaster(ctx: *anyopaque) bool {
+    const target: *const BusMasterTarget = @ptrCast(@alignCast(ctx));
+    const change = pci.setBusMaster(target.bus, target.device, target.function, false);
+    return change.isConfirmed();
+}
+
+fn virtioBusMasterHandle() vvdi.containment.BusMaster {
+    return .{ .ctx = @ptrCast(&virtio_bus_master_target), .revoke = revokeVirtioBusMaster };
+}
+
+/// True somente quando a memoria da fila pode voltar ao alocador.
+///
+/// Duas condicoes independentes, e as duas precisam valer:
+///
+///   * o transporte diz que o dispositivo devolveu a fila (`QueueMemory`), o
+///     que antes da entrega e sempre verdadeiro para o driver;
+///   * a contencao diz que a liberacao e segura para este dispositivo, o que
+///     depois da entrega exige um reset confirmado.
+///
+/// Elas ficam separadas de proposito: uma revogacao de *bus master* confirmada
+/// nao pode, sozinha, liberar memoria.
+fn virtqueueMemoryMayBeReturned() bool {
+    return virtqueue_state.ownership.canReturnToAllocator() and
+        virtio_containment.permitsMemoryRelease();
+}
+
+/// Contem o dispositivo que ja recebeu `DRIVER_OK` e registra o estado.
+///
+/// Emitido apenas em caminho de falha: o log de boot com sucesso continua com
+/// exatamente as mesmas linhas de antes.
+fn containActiveDevice(reason: vvdi.containment.Reason, device: u8) void {
+    const outcome = virtio_containment.contain(reason);
+    serial.printLine(
+        "[VNK] FATAL: 00:{d}.0 device containment reason={s} bus_master={s}",
+        .{ device, reason.label(), outcome.label() },
+    );
+    var buffer: [160]u8 = undefined;
+    serial.printLine(
+        "[VNK] FATAL: 00:{d}.0 {s}; the BAR mapping and the DMA memory stay retained",
+        .{ device, virtio_containment.describe(&buffer) },
+    );
+}
+
 /// Self-test is opt-in via a sector-zero signature on a separate test disk.
 /// It deliberately never writes unless that exact signature is read back.
 const storage_test_lba: u64 = 64;
@@ -1682,7 +1763,7 @@ var storage_test_actual: [512]u8 = undefined;
 /// fila e melhor do que o alocador entregar ao dispositivo paginas que outro
 /// dono ja recebeu.
 fn releaseVirtqueueMemory() void {
-    if (!virtqueue_state.ownership.canReturnToAllocator()) {
+    if (!virtqueueMemoryMayBeReturned()) {
         serial.printLine("[VNK] FATAL: the virtqueue memory stays reserved, the device did not release the queue", .{});
         return;
     }
@@ -1702,15 +1783,23 @@ fn releaseVirtqueueMemory() void {
 fn abandonVirtqueue(target: *vvdi.transport.Device, device: u8) void {
     if (target.resetDevice()) |_| {
         virtqueue_state.ownership.deviceReleased();
+        virtio_containment.noteReset(true);
         serial.printLine(
             "[VNK] vvdi: 00:{d}.0 device reset after the virtqueue failure, status={d}",
             .{ device, target.status },
         );
     } else |err| {
+        virtio_containment.noteReset(false);
         serial.printLine(
             "[VNK] FATAL: 00:{d}.0 the device did not confirm the reset after the virtqueue failure: {s}",
             .{ device, @errorName(err) },
         );
+        // Um reset que nao se confirmou deixa o dispositivo em estado
+        // desconhecido. A contencao revoga o *bus master* para impedir
+        // transacoes novas; ela nao prova que as antigas terminaram, e por
+        // isso `releaseVirtqueueMemory` continua recusando devolver a
+        // memoria abaixo.
+        containActiveDevice(.reset_unconfirmed, device);
     }
 
     releaseVirtqueueMemory();
@@ -1840,6 +1929,13 @@ fn programVirtqueue(
     // inclusive quando o dispositivo se apresenta habilitado e nenhuma
     // escrita chega a acontecer.
     virtqueue_state.ownership.handOver();
+
+    // A contencao e armada no mesmo ponto e pela mesma razao: daqui em diante
+    // a memoria e do dispositivo. O alvo da revogacao e gravado antes de a
+    // contencao existir, para que `contain` nunca precise descobrir o
+    // dispositivo por conta propria.
+    virtio_bus_master_target = .{ .bus = 0, .device = device, .function = 0 };
+    virtio_containment.arm(virtioBusMasterHandle());
 
     device_transport.configureQueue(0, size, .{
         .desc = addresses.desc,

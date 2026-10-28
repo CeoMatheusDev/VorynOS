@@ -137,9 +137,11 @@ pub fn readConfigDword(bus: u8, device: u8, function: u8, offset: u8) u32 {
 
 /// Escreve um DWORD no espaco de configuracao PCI.
 ///
-/// A escrita existe para a sondagem de tamanho de BAR, que e a unica operacao
-/// do driver que altera o espaco de configuracao de um dispositivo que ele
-/// ainda nao conduz. O par de portas e serializado pelo mesmo lock da leitura.
+/// Duas operacoes escrevem neste espaco: a sondagem de tamanho de BAR, que
+/// altera o registrador de BAR de um dispositivo que o kernel ainda nao
+/// conduz, e a revogacao de *bus master* (`setBusMaster`), que altera o
+/// registrador `Command` de um dispositivo em contencao. O par de portas e
+/// serializado pelo mesmo lock da leitura.
 pub fn writeConfigDword(bus: u8, device: u8, function: u8, offset: u8, value: u32) void {
     if (!isValidDwordOffset(offset)) return;
 
@@ -257,6 +259,129 @@ pub fn probeBarSizesWith(access: ConfigAccess) BarSizes {
 pub const BarSizes = [bar_count]?u64;
 
 // ----------------------------------------------------------------------
+// Bus master (registrador `Command`, bit 2).
+//
+// O kernel nao configura o bit *bus master* em lugar algum: o estado que ele
+// encontra ao receber o controle e o que o firmware deixou. No caminho UEFI,
+// o `PciBus` do OVMF habilita `Memory Space` e `Bus Master` da funcao antes de
+// `ExitBootServices`, e o VorynOS herda esse estado — o MMIO do BAR funciona
+// sem que nenhuma escrita no `Command` tenha acontecido.
+//
+// A consequencia pratica e dupla:
+//
+//   * revogar o bit nao quebra o MMIO, porque quem autoriza a decodificacao de
+//     memoria e o bit 1, nao o bit 2; por isso a revogacao preserva todos os
+//     outros bits, inclusive `Memory Space`, e o kernel mantem o caminho para
+//     tentar um reset;
+//   * revogar o bit nao prova que o dispositivo parou de acessar a memoria.
+//     Nao existe, no PCI, operacao que confirme a drenagem de transacoes ja
+//     emitidas. A revogacao impede que *novas* transacoes sejam iniciadas; o
+//     que ja foi despachado pode continuar chegando.
+// ----------------------------------------------------------------------
+
+/// Resultado de uma escrita no bit *bus master*.
+///
+/// O tipo e explicito para que um chamador nao trate "escrevi" como "revoguei":
+/// a leitura de volta e o unico dado que existe, e ela pode divergir.
+pub const BusMasterChange = union(enum) {
+    /// O valor foi relido e o bit esta no estado pedido; os bits alheios
+    /// continuam iguais aos que a funcao apresentava.
+    confirmed: struct { before: u16, after: u16 },
+    /// A funcao respondeu, mas nao devolveu o valor escrito: o pedido nao
+    /// pode ser considerado aplicado.
+    unconfirmed: struct { before: u16, after: u16 },
+    /// O espaco de configuracao devolveu todos os bits em um: nao ha funcao
+    /// naquele endereco, e nao existe valor a interpretar.
+    absent,
+
+    /// True somente quando a leitura de volta confirmou o pedido.
+    pub fn isConfirmed(self: BusMasterChange) bool {
+        return switch (self) {
+            .confirmed => true,
+            .unconfirmed, .absent => false,
+        };
+    }
+};
+
+/// Valor do `Command` com o bit *bus master* ligado ou desligado.
+///
+/// Nenhum outro bit muda: `Memory Space`, `I/O Space`, paridade, `SERR` e
+/// `INTx Disable` sao preservados exatamente como foram lidos.
+pub fn commandWithBusMaster(current: u16, enabled: bool) u16 {
+    return if (enabled)
+        current | command_bus_master
+    else
+        current & ~command_bus_master;
+}
+
+/// Liga ou desliga o bit *bus master* e verifica o resultado pela leitura.
+///
+/// A escrita grava apenas os 16 bits baixos do DWORD de 0x04; a metade alta
+/// (`Status`) sai zerada de proposito, porque seus bits sao
+/// *read/write-1-to-clear* e um 1 acidental apagaria um erro registrado.
+///
+/// A operacao e idempotente: pedir o estado que a funcao ja apresenta nao
+/// escreve nada e devolve `confirmed` com `before == after`.
+///
+/// Uma funcao ausente (`0xFFFF_FFFF`) devolve `absent`. Nao ha tentativa de
+/// escrever nela, e o chamador obtem uma resposta que nao se confunde com
+/// "revogado".
+///
+/// Nao toma o lock: quem chama garante a exclusao, como em
+/// `probeBarSizesWith`. O par de portas `CONFIG_ADDRESS`/`CONFIG_DATA` e unico
+/// para a maquina, e duas operacoes intercaladas escreveriam o `Command` de um
+/// dispositivo e leriam o de outro. No kernel a entrada serializada e
+/// `setBusMaster`; o teste de host usa esta forma direta sobre uma imagem.
+pub fn setBusMasterWith(access: ConfigAccess, enabled: bool) BusMasterChange {
+    const before_dword = access.read(command_offset);
+    if (before_dword == 0xFFFF_FFFF) return .absent;
+
+    const before: u16 = @truncate(before_dword);
+    const desired = commandWithBusMaster(before, enabled);
+    if (desired == before) {
+        const unchanged: BusMasterChange = .{ .confirmed = .{ .before = before, .after = before } };
+        return unchanged;
+    }
+
+    access.write(command_offset, @as(u32, desired));
+
+    const after_dword = access.read(command_offset);
+    if (after_dword == 0xFFFF_FFFF) return .absent;
+
+    const after: u16 = @truncate(after_dword);
+    const bus_master_ok = (after & command_bus_master) == (desired & command_bus_master);
+    // O bit de decodificacao de memoria nao e alvo desta operacao. Se ele
+    // tivesse mudado, o MMIO do dispositivo deixaria de responder, e o kernel
+    // perderia o caminho para tentar um reset: o pedido nao pode ser dado
+    // como aplicado.
+    const memory_space_ok = (after & command_memory_space) == (before & command_memory_space);
+    if (!bus_master_ok or !memory_space_ok) {
+        const rejected: BusMasterChange = .{ .unconfirmed = .{ .before = before, .after = after } };
+        return rejected;
+    }
+
+    const applied: BusMasterChange = .{ .confirmed = .{ .before = before, .after = after } };
+    return applied;
+}
+
+/// Revoga (ou restaura) o *bus master* da funcao, sob o lock de configuracao.
+///
+/// O alvo fica em `probe_target` porque `ConfigAccess` nao carrega contexto
+/// proprio; o lock e o mesmo de `probeBarSizes`, entao as duas operacoes nunca
+/// se intercalam sobre o par `CONFIG_ADDRESS`/`CONFIG_DATA`.
+pub fn setBusMaster(bus: u8, device: u8, function: u8, enabled: bool) BusMasterChange {
+    const flags = config_lock.lockIrqSave();
+    defer config_lock.unlockIrqRestore(flags);
+
+    probe_target = .{ bus, device, function };
+    return setBusMasterWith(.{
+        .ctx = @ptrCast(&probe_target),
+        .read_fn = probeRead,
+        .write_fn = probeWrite,
+    }, enabled);
+}
+
+// ----------------------------------------------------------------------
 // Acesso generico ao espaco de configuracao.
 //
 // O percurso da lista de capabilities e as validacoes de BAR sao puros: eles
@@ -279,6 +404,30 @@ pub const bar_register_base: u8 = 0x10;
 
 /// Quantidade de BARs de uma funcao PCI type 0.
 pub const bar_count: usize = 6;
+
+/// Offset do registrador `Command` do cabecalho PCI (16 bits).
+///
+/// O DWORD em 0x04 carrega dois registradores: `Command` nos 16 bits baixos e
+/// `Status` nos altos. Eles nao podem ser escritos como se fossem um valor
+/// unico: os bits de `Status` sao *read/write-1-to-clear*, e devolver 1 a eles
+/// apagaria um erro registrado pelo dispositivo (paridade, *target abort*) que
+/// o kernel nunca chegou a ler.
+pub const command_offset: u8 = 0x04;
+
+/// Bit 2 do `Command`: a funcao pode iniciar transacoes como *bus master*.
+///
+/// E o bit que autoriza o dispositivo a emitir DMA. Apenas desliga-lo nao
+/// devolve ao driver prova alguma sobre transacoes ja emitidas: a especificacao
+/// PCI nao define drenagem, e o *bus master* habilitado durante uma falha
+/// permite que o dispositivo continue escrevendo na memoria do kernel.
+pub const command_bus_master: u16 = 0x0004;
+
+/// Bit 1 do `Command`: a funcao decodifica acessos de memoria.
+///
+/// E o que mantem o MMIO do BAR do dispositivo alcancavel. Revogar o *bus
+/// master* nao pode desligar este bit, ou o kernel perderia o unico caminho
+/// para tentar um reset.
+pub const command_memory_space: u16 = 0x0002;
 
 /// Bit 4 do status: a funcao possui uma lista de capabilities.
 pub const status_capabilities: u16 = 0x0010;
@@ -1252,6 +1401,234 @@ test "pci simulated configuration reader extracts little endian fields" {
 // instrucoes privilegiadas e exigem um kernel x86-64 em execucao.
 comptime {
     if (@sizeOf(u32) != 4) @compileError("PCI DWORD must be four bytes");
+}
+
+// ----------------------------------------------------------------------
+// Bus master: logica pura e acesso simulado.
+//
+// Estes testes rodam no host. Nenhum deles abre `0xCF8`/`0xCFC`: o espaco de
+// configuracao e uma imagem em memoria, e o que se verifica e a regra — quais
+// bits mudam, qual e o valor relido e o que acontece quando a funcao nao
+// devolve o que foi escrito.
+// ----------------------------------------------------------------------
+
+/// Espaco de configuracao em memoria com falhas injetaveis.
+///
+/// Cada modo de falha corresponde a um comportamento real: uma funcao que
+/// ignora escritas de `Command`, uma funcao que nao existe (o barramento
+/// devolve tudo em um) e uma funcao que responde mas apaga `Memory Space` ao
+/// receber a escrita.
+const SimulatedConfig = struct {
+    bytes: [config_space_size]u8 = @splat(0),
+    writes: u32 = 0,
+    mode: Mode = .normal,
+
+    const Mode = enum {
+        /// A escrita e aplicada.
+        normal,
+        /// A escrita e descartada: o dispositivo nao aceita o `Command`.
+        ignore_writes,
+        /// Todos os bits voltam em um, como numa funcao ausente.
+        absent,
+        /// A escrita e aceita, mas `Memory Space` sai desligado.
+        drops_memory_space,
+    };
+
+    fn read(ctx: *anyopaque, offset: u8) u32 {
+        const self: *SimulatedConfig = @ptrCast(@alignCast(ctx));
+        if (self.mode == .absent) return 0xFFFF_FFFF;
+        const at: usize = offset;
+        if (at + 4 > config_space_size) return 0xFFFF_FFFF;
+        return @as(u32, self.bytes[at]) |
+            (@as(u32, self.bytes[at + 1]) << 8) |
+            (@as(u32, self.bytes[at + 2]) << 16) |
+            (@as(u32, self.bytes[at + 3]) << 24);
+    }
+
+    fn write(ctx: *anyopaque, offset: u8, value: u32) void {
+        const self: *SimulatedConfig = @ptrCast(@alignCast(ctx));
+        self.writes += 1;
+        if (self.mode == .ignore_writes or self.mode == .absent) return;
+        const at: usize = offset;
+        if (at + 4 > config_space_size) return;
+
+        // O DWORD de 0x04 carrega `Command` e `Status`. Um modelo que apenas
+        // guarda os bytes mentiria sobre `Status`: os bits dele sao
+        // *read/write-1-to-clear*, entao escrever 0 preserva o que estiver
+        // ligado, e so um 1 apaga. E essa a semantica que o driver depende e
+        // que este simulador reproduz — inclusive para que o teste abaixo
+        // possa provar que a revogacao nao apaga um erro registrado.
+        if (offset == command_offset) {
+            var decoded: u16 = @truncate(value);
+            if (self.mode == .drops_memory_space) decoded &= ~command_memory_space;
+            self.setCommand(decoded);
+            const writable: u16 = @truncate(value >> 16);
+            self.setStatus(self.status() & ~writable);
+            return;
+        }
+
+        self.bytes[at] = @truncate(value);
+        self.bytes[at + 1] = @truncate(value >> 8);
+        self.bytes[at + 2] = @truncate(value >> 16);
+        self.bytes[at + 3] = @truncate(value >> 24);
+    }
+
+    fn access(self: *SimulatedConfig) ConfigAccess {
+        return .{
+            .ctx = @ptrCast(self),
+            .read_fn = read,
+            .write_fn = write,
+        };
+    }
+
+    fn command(self: *const SimulatedConfig) u16 {
+        return @as(u16, self.bytes[command_offset]) |
+            (@as(u16, self.bytes[command_offset + 1]) << 8);
+    }
+
+    fn status(self: *const SimulatedConfig) u16 {
+        return @as(u16, self.bytes[command_offset + 2]) |
+            (@as(u16, self.bytes[command_offset + 3]) << 8);
+    }
+
+    fn setCommand(self: *SimulatedConfig, value: u16) void {
+        self.bytes[command_offset] = @truncate(value);
+        self.bytes[command_offset + 1] = @truncate(value >> 8);
+    }
+
+    fn setStatus(self: *SimulatedConfig, value: u16) void {
+        self.bytes[command_offset + 2] = @truncate(value);
+        self.bytes[command_offset + 3] = @truncate(value >> 8);
+    }
+};
+
+test "bus master bit is the only command bit the helper changes" {
+    // Estado tipico herdado do firmware: I/O Space, Memory Space, Bus Master,
+    // SERR e INTx habilitados.
+    const firmware_state: u16 = 0x0007;
+    try std.testing.expectEqual(
+        @as(u16, 0x0003),
+        commandWithBusMaster(firmware_state, false),
+    );
+    try std.testing.expectEqual(
+        @as(u16, 0x0007),
+        commandWithBusMaster(firmware_state, true),
+    );
+
+    // Bit ja desligado: desligar de novo nao liga nada.
+    try std.testing.expectEqual(@as(u16, 0x0003), commandWithBusMaster(0x0003, false));
+    // Bit ja ligado: ligar de novo nao desliga nada.
+    try std.testing.expectEqual(@as(u16, 0x0007), commandWithBusMaster(0x0007, true));
+
+    // Todos os bits altos do Command sobrevivem, um por um.
+    for (0..16) |index| {
+        const mask = @as(u16, 1) << @intCast(index);
+        if (mask == command_bus_master) continue;
+        try std.testing.expectEqual(mask, commandWithBusMaster(mask, false) & mask);
+        try std.testing.expectEqual(mask, commandWithBusMaster(mask, true) & mask);
+    }
+
+    // E o bit 2 e o unico que a funcao liga ou desliga.
+    try std.testing.expectEqual(
+        @as(u16, 0xFFFF & ~command_bus_master),
+        commandWithBusMaster(0xFFFF, false),
+    );
+    // Partindo de zero, ligar o bit 2 liga *so* o bit 2.
+    try std.testing.expectEqual(command_bus_master, commandWithBusMaster(0, true));
+}
+
+test "revoking bus master preserves memory space and the status register" {
+    var device: SimulatedConfig = .{};
+    device.setCommand(0x0007); // I/O Space | Memory Space | Bus Master
+    device.setStatus(0xF900); // bits RW1C ligados: nao podem ser apagados
+
+    const change = setBusMasterWith(device.access(), false);
+    try std.testing.expect(change.isConfirmed());
+    try std.testing.expectEqual(@as(u16, 0x0007), change.confirmed.before);
+    try std.testing.expectEqual(@as(u16, 0x0003), change.confirmed.after);
+
+    // O dispositivo ficou com Memory Space ligado: o MMIO continua valido.
+    try std.testing.expectEqual(@as(u16, 0x0003), device.command());
+    try std.testing.expectEqual(command_memory_space, device.command() & command_memory_space);
+    try std.testing.expectEqual(@as(u16, 0), device.command() & command_bus_master);
+
+    // O DWORD inteiro foi escrito, e o Status nao foi zerado: o driver
+    // gravou 0 na metade alta, que e o valor que nao limpa bit nenhum.
+    try std.testing.expectEqual(@as(u16, 0xF900), device.status());
+}
+
+test "the status half of the command dword is never written as one" {
+    // Um erro registrado antes da revogacao continua registrado depois dela.
+    var device: SimulatedConfig = .{};
+    device.setCommand(0x0006);
+    device.setStatus(0x2300); // Signaled Target Abort | Master Data Parity Error
+    _ = setBusMasterWith(device.access(), false);
+    try std.testing.expectEqual(@as(u16, 0x2300), device.status());
+
+    // E restaurar o bit tambem nao mexe no Status.
+    _ = setBusMasterWith(device.access(), true);
+    try std.testing.expectEqual(@as(u16, 0x2300), device.status());
+    try std.testing.expectEqual(@as(u16, 0x0006), device.command());
+}
+
+test "revocation is idempotent and writes nothing when already revoked" {
+    var device: SimulatedConfig = .{};
+    device.setCommand(0x0007);
+
+    const first = setBusMasterWith(device.access(), false);
+    try std.testing.expect(first.isConfirmed());
+    const writes_after_first = device.writes;
+
+    const second = setBusMasterWith(device.access(), false);
+    try std.testing.expect(second.isConfirmed());
+    try std.testing.expectEqual(@as(u16, 0x0003), second.confirmed.before);
+    try std.testing.expectEqual(@as(u16, 0x0003), second.confirmed.after);
+    // O estado pedido ja estava no dispositivo: nenhuma escrita nova.
+    try std.testing.expectEqual(writes_after_first, device.writes);
+}
+
+test "a device that ignores the write is reported unconfirmed, not revoked" {
+    var device: SimulatedConfig = .{ .mode = .ignore_writes };
+    device.setCommand(0x0007);
+
+    const change = setBusMasterWith(device.access(), false);
+    try std.testing.expect(!change.isConfirmed());
+    try std.testing.expectEqual(@as(u16, 0x0007), change.unconfirmed.after);
+    // O dispositivo continua como bus master: o chamador precisa saber disso.
+    try std.testing.expectEqual(@as(u16, 0x0007), device.command());
+}
+
+test "an absent function is distinguished from an unconfirmed revocation" {
+    var device: SimulatedConfig = .{ .mode = .absent };
+    const change = setBusMasterWith(device.access(), false);
+    try std.testing.expect(!change.isConfirmed());
+    try std.testing.expectEqual(BusMasterChange.absent, change);
+    // Nao se escreve numa funcao que nao responde.
+    try std.testing.expectEqual(@as(u32, 0), device.writes);
+}
+
+test "a device that drops memory space fails the revocation instead of hiding it" {
+    var device: SimulatedConfig = .{ .mode = .drops_memory_space };
+    device.setCommand(0x0007);
+
+    const change = setBusMasterWith(device.access(), false);
+    // O bit 2 ficou como pedido, mas `Memory Space` sumiu: o MMIO do
+    // dispositivo acabou de deixar de responder e o driver nao pode
+    // apresentar a operacao como aplicada.
+    try std.testing.expect(!change.isConfirmed());
+    try std.testing.expectEqual(@as(u16, 0x0007), change.unconfirmed.before);
+    try std.testing.expectEqual(@as(u16, 0x0001), change.unconfirmed.after);
+    try std.testing.expectEqual(@as(u16, 0), device.command() & command_memory_space);
+}
+
+test "enabling bus master again is confirmed only by the read-back" {
+    var device: SimulatedConfig = .{};
+    device.setCommand(0x0003);
+    const change = setBusMasterWith(device.access(), true);
+    try std.testing.expect(change.isConfirmed());
+    try std.testing.expectEqual(@as(u16, 0x0003), change.confirmed.before);
+    try std.testing.expectEqual(@as(u16, 0x0007), change.confirmed.after);
+    try std.testing.expectEqual(command_bus_master, device.command() & command_bus_master);
 }
 
 // std e mantido importado explicitamente para os testes deste modulo.
