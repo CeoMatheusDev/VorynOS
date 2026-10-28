@@ -114,15 +114,16 @@ Sem importar `pci.zig`, sem laço, sem relógio, sem espera.
 
 | Comando | Resultado |
 | --- | --- |
-| `zig build test --summary all` | **PASS** — `39/39 steps succeeded; 581/581 tests passed` (`arch-tests` 85, `vvdi-tests` 139) |
+| `zig build test --summary all` | **PASS** — `39/39 steps succeeded; 587/587 tests passed` (`arch-tests` 91, `vvdi-tests` 139) |
 | `zig build` | **PASS** — `vorynos.img` 128 MiB gerado |
 | `zig fmt --check` (5 arquivos alterados) | **PASS** |
 | `git diff --check` | **PASS** |
 | `bash tests/integration/log-assertions-test.sh` | **PASS** — 7/7 |
 | `zig build qemu-test` / `qemu-storage-test` / `qemu-interactive-test` / `check` | **BLOCKED** — sem `qemu-system-x86_64` e sem OVMF; espelho Debian inacessível neste ambiente |
 
-Contagem anterior à mudança: 554 testes. Depois: 581 (+8 em `arch-tests` para o registrador
-`Command`; +19 em `vvdi-tests`: 15 de contenção e 4 do driver de bloco).
+Contagem anterior à mudança: 554 testes. Depois da contenção: 581 (+8 em `arch-tests` para o
+registrador `Command`; +19 em `vvdi-tests`: 15 de contenção e 4 do driver de bloco). Depois da
+correção R-3: **587** (+6 em `arch-tests`), ver seção 8.
 
 Os testes de falha simulada cobrem: escrita ignorada pelo dispositivo (revogação não
 confirmada), função ausente (`absent`, sem escrita), dispositivo que derruba `Memory Space`
@@ -130,7 +131,37 @@ confirmada), função ausente (`absent`, sem escrita), dispositivo que derruba `
 não é promovida a sucesso por uma chamada posterior, reset confirmado que não rearma, e
 reset confirmado que não é rebaixado por uma tentativa posterior.
 
-## 7. Riscos residuais
+## 7. Correção R-3 — confirmação de escrita sobre todos os bits do `Command`
+
+A primeira versão da revogação conferia, na leitura de volta, apenas o bit alvo e
+`Memory Space`. Um dispositivo que alterasse **qualquer outro** bit do `Command` ao receber a
+escrita seria aceito como revogado. A verificação passou a comparar o registrador inteiro,
+excluindo apenas o bit alvo.
+
+**Por que a comparação é relativa e não uma máscara fixa.** Cada bit do `Command`
+(PCI 3.0 §6.2.2) é RW ou RO; **nenhum é RW1C ou se limpa na leitura**. Portanto qualquer bit
+que seja RO, que seja fixo em zero (o `Wait Cycle Control` do PCI 3.0) ou que uma
+implementação deixe preso em um continua idêntico antes e depois, e passa na verificação. O
+que ela recusa é só o que não pode acontecer: o dispositivo mexer em outro bit do `Command`
+como efeito colateral de uma escrita no próprio `Command`. O teste
+*"bits that vary legitimately across implementations do not fail the check"* fixa esse
+requisito com bits reservados em um e o bit 7 em um — a verificação aceita, como deve.
+
+**`Status` não entra na comparação.** `before` e `after` são truncados para `u16` e a escrita
+grava zero na metade alta; a semântica RW1C continua fora do caminho.
+
+| Cenário | Teste |
+| --- | --- |
+| Outro bit do `Command` muda | *a change to any other command bit is reported unconfirmed* e *the preservation check rejects a single corrupted bit on its own* |
+| Revogação confirmada | *revoking bus master preserves memory space and the status register*, *enabling bus master again is confirmed only by the read-back* |
+| Escrita ignorada | *a device that ignores the write is reported unconfirmed, not revoked* |
+| Dispositivo ausente | *an absent function is distinguished from an unconfirmed revocation*, mais os dois novos: antes e **depois** da escrita |
+| `Memory Space` preservado | *revoking bus master preserves memory space…* e *a device that drops memory space fails…* |
+| `Status` RW1C preservado | *the status half of the command dword is never written as one* |
+| Nenhuma liberação indevida de DMA | *a confirmed revocation contains the device but never releases memory*, *a failed revocation is recorded distinctly and still holds the memory*, *a failed revocation still leaves the driver poisoned* |
+| Nenhum desfecho ambíguo vira sucesso | *no confirmation outcome is ever equal to a confirmed revocation* |
+
+## 8. Riscos residuais
 
 - **A revogação pode não funcionar em hardware real.** Uma função que aceita a escrita e
   não a mantém é reportada como `contained_unrevoked`, mas nenhum caminho alternativo é
@@ -143,3 +174,8 @@ reset confirmado que não é rebaixado por uma tentativa posterior.
   retidos, até a reinicialização.
 - **A primeira escrita do kernel no `Command`** pode interagir com firmware que reescreva o
   registrador; não foi observado em QEMU (o caminho só executa em falha).
+- **R-3 (fechado nesta revisão).** A confirmação passou a exigir preservação de todos os bits
+  do `Command`, com comparação relativa justificada. Risco residual remanescente: um
+  dispositivo que altere outro bit de forma *estável* (isto é, que já apareça alterado na
+  primeira leitura) não é detectado — por construção, porque essa é exatamente a variação
+  legítima que a verificação precisa aceitar.

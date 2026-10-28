@@ -1,6 +1,6 @@
 # ADR-0022 — Contenção PCI/DMA de dispositivo virtual em estado desconhecido
 
-- **Estado:** IMPLEMENTADO — TESTADO LOCALMENTE (host); boot QEMU/OVMF pendente de CI
+- **Estado:** IMPLEMENTADO — TESTADO LOCALMENTE (host: 587 testes Zig); boot QEMU/OVMF pendente de CI
 - **Data:** 2026-10-28
 - **Escopo:** `kernel/arch/x86_64/pci.zig`, `kernel/drivers/vvdi/containment.zig`,
   `kernel/drivers/vvdi/block.zig`, `kernel/drivers/vvdi/root.zig`, `kernel/main.zig`,
@@ -75,8 +75,16 @@ explicitamente que:
 O DWORD em 0x04 carrega `Command` (baixos) e `Status` (altos). Os bits de `Status` são
 *read/write-1-to-clear*. A escrita grava `Command` desejado e **zero** na metade alta:
 escrever 1 ali apagaria um erro registrado (paridade, *target abort*) que o kernel nunca
-leu. A leitura de volta exige que o bit alvo tenha mudado e que `Memory Space` não tenha
-mudado — se o MMIO deixar de responder, o driver não apresenta a operação como aplicada.
+leu. A leitura de volta exige que o bit alvo tenha atingido o estado pedido **e que todos os
+demais bits do `Command` tenham sido preservados** — `Memory Space` incluído, porque é ele
+que mantém o MMIO respondendo e o caminho de reset disponível.
+
+A verificação de preservação é **relativa** (`before` contra `after`), e não uma máscara do
+que o driver considera implementado. A justificativa é que todo bit do `Command` é RW ou RO
+(PCI 3.0 §6.2.2) e **nenhum é RW1C ou se limpa na leitura**: bits RO, fixos em zero ou presos
+em um por uma implementação qualquer continuam iguais e passam. Recusa-se apenas o que não
+pode acontecer — o dispositivo alterar outro bit do `Command` como efeito colateral da
+escrita. `Status` nunca entra na comparação: `before`/`after` são truncados para `u16`.
 
 ### 5. Idempotência e ausência de espera
 

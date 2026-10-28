@@ -349,13 +349,35 @@ pub fn setBusMasterWith(access: ConfigAccess, enabled: bool) BusMasterChange {
     if (after_dword == 0xFFFF_FFFF) return .absent;
 
     const after: u16 = @truncate(after_dword);
+
+    // O bit alvo precisa ter atingido o estado pedido.
     const bus_master_ok = (after & command_bus_master) == (desired & command_bus_master);
-    // O bit de decodificacao de memoria nao e alvo desta operacao. Se ele
-    // tivesse mudado, o MMIO do dispositivo deixaria de responder, e o kernel
-    // perderia o caminho para tentar um reset: o pedido nao pode ser dado
-    // como aplicado.
-    const memory_space_ok = (after & command_memory_space) == (before & command_memory_space);
-    if (!bus_master_ok or !memory_space_ok) {
+
+    // Todos os outros bits do `Command` precisam ter sido preservados.
+    //
+    // A comparacao e **relativa** (`before` contra `after`), e nao contra uma
+    // mascara fixa do que este driver considera implementado. Isso e o que a
+    // torna segura para dispositivos reais: cada bit do `Command` e RW ou RO
+    // (PCI 3.0 §6.2.2), **nenhum deles e RW1C ou se limpa na leitura**, entao
+    // um bit RO, um bit fixo em zero (o `Wait Cycle Control` do PCI 3.0) ou um
+    // bit reservado que alguma implementacao deixe preso em um continuam
+    // iguais antes e depois e passam na verificacao. O que ela recusa e
+    // justamente o que nao pode acontecer: o dispositivo mexer em outro bit
+    // do `Command` como efeito colateral de uma escrita no proprio `Command`.
+    //
+    // `Memory Space` (bit 1) esta incluido nessa comparacao. E o bit que
+    // mantem o MMIO do dispositivo respondendo; se ele caisse, o kernel
+    // perderia o caminho para tentar um reset.
+    const preserved = (after & ~command_bus_master) == (before & ~command_bus_master);
+
+    // O payload de `unconfirmed` carrega `before` e `after`, entao quem chama
+    // consegue distinguir "o bit alvo nao mudou" de "outro bit mudou" sem que
+    // a funcao precise classificar o motivo.
+
+    // O `Status` (metade alta do DWORD em 0x04) nunca entra nesta comparacao:
+    // `before` e `after` sao truncados para `u16`, e a escrita grava zero na
+    // metade alta. Bits RW1C nao sao lidos como estado nem apagados aqui.
+    if (!bus_master_ok or !preserved) {
         const rejected: BusMasterChange = .{ .unconfirmed = .{ .before = before, .after = after } };
         return rejected;
     }
@@ -428,6 +450,13 @@ pub const command_bus_master: u16 = 0x0004;
 /// master* nao pode desligar este bit, ou o kernel perderia o unico caminho
 /// para tentar um reset.
 pub const command_memory_space: u16 = 0x0002;
+
+/// Bit 6 do `Command`: a funcao responde a erros de paridade.
+///
+/// Nao e alvo de nenhuma operacao do kernel; existe como constante nomeada
+/// porque o teste de preservacao de bits precisa de um bit concreto e
+/// documentado para corromper, em vez de um numero magico.
+pub const command_parity_error_response: u16 = 0x0040;
 
 /// Bit 4 do status: a funcao possui uma lista de capabilities.
 pub const status_capabilities: u16 = 0x0010;
@@ -1423,6 +1452,14 @@ const SimulatedConfig = struct {
     writes: u32 = 0,
     mode: Mode = .normal,
 
+    /// Quantas leituras ainda respondem antes de o dispositivo sumir.
+    ///
+    /// Permite o cenario em que a funcao esta presente na primeira leitura e
+    /// desaparece antes da leitura de volta, que e o unico caso em que
+    /// `absent` pode aparecer *depois* de uma escrita.
+    reads_until_absent: ?u32 = null,
+    reads: u32 = 0,
+
     const Mode = enum {
         /// A escrita e aplicada.
         normal,
@@ -1432,11 +1469,17 @@ const SimulatedConfig = struct {
         absent,
         /// A escrita e aceita, mas `Memory Space` sai desligado.
         drops_memory_space,
+        /// A escrita e aceita, mas outro bit do `Command` muda sozinho.
+        corrupts_other_bit,
     };
 
     fn read(ctx: *anyopaque, offset: u8) u32 {
         const self: *SimulatedConfig = @ptrCast(@alignCast(ctx));
+        self.reads += 1;
         if (self.mode == .absent) return 0xFFFF_FFFF;
+        if (self.reads_until_absent) |limit| {
+            if (self.reads > limit) return 0xFFFF_FFFF;
+        }
         const at: usize = offset;
         if (at + 4 > config_space_size) return 0xFFFF_FFFF;
         return @as(u32, self.bytes[at]) |
@@ -1461,6 +1504,12 @@ const SimulatedConfig = struct {
         if (offset == command_offset) {
             var decoded: u16 = @truncate(value);
             if (self.mode == .drops_memory_space) decoded &= ~command_memory_space;
+            // Um dispositivo que aceita a escrita no `Command` e altera
+            // *outro* bit por conta propria. O driver nao pode apresentar
+            // isso como revogacao aplicada.
+            if (self.mode == .corrupts_other_bit) {
+                decoded &= ~command_parity_error_response;
+            }
             self.setCommand(decoded);
             const writable: u16 = @truncate(value >> 16);
             self.setStatus(self.status() & ~writable);
@@ -1619,6 +1668,123 @@ test "a device that drops memory space fails the revocation instead of hiding it
     try std.testing.expectEqual(@as(u16, 0x0007), change.unconfirmed.before);
     try std.testing.expectEqual(@as(u16, 0x0001), change.unconfirmed.after);
     try std.testing.expectEqual(@as(u16, 0), device.command() & command_memory_space);
+}
+
+// ----------------------------------------------------------------------
+// R-3: confirmacao de escrita sobre *todos* os bits do `Command`.
+//
+// Antes destes testes, a leitura de volta conferia o bit alvo e `Memory
+// Space`. Um dispositivo que alterasse qualquer outro bit do `Command` ao
+// receber a escrita seria aceito como "revogado". Os testes abaixo cobrem a
+// verificacao ampliada e — igualmente importante — provam que ela nao ficou
+// restritiva demais para bits que variam legitimamente de implementacao.
+// ----------------------------------------------------------------------
+
+test "a change to any other command bit is reported unconfirmed" {
+    var device: SimulatedConfig = .{ .mode = .corrupts_other_bit };
+    // Bus Master ligado e `Parity Error Response` ligado.
+    device.setCommand(0x0047);
+
+    const change = setBusMasterWith(device.access(), false);
+    // O bit alvo caiu como pedido, mas a funcao apagou `Parity Error
+    // Response` por conta propria: a escrita nao pode ser dada como aplicada.
+    try std.testing.expect(!change.isConfirmed());
+    try std.testing.expectEqual(@as(u16, 0x0047), change.unconfirmed.before);
+    try std.testing.expectEqual(@as(u16, 0x0003), change.unconfirmed.after);
+    try std.testing.expectEqual(@as(u16, 0), device.command() & command_bus_master);
+    try std.testing.expectEqual(@as(u16, 0), device.command() & command_parity_error_response);
+}
+
+test "the preservation check rejects a single corrupted bit on its own" {
+    // Isola a verificacao: o bit alvo esta correto e so o bit 6 mudou.
+    var device: SimulatedConfig = .{ .mode = .corrupts_other_bit };
+    // Bit 1 (`Memory Space`) e bit 6 ligados, Bus Master desligado.
+    device.setCommand(0x0042);
+
+    // Pedir o estado que a funcao ja apresenta nao escreve — logo, nao ha
+    // corrupcao a detectar e a operacao e confirmada.
+    const idle = setBusMasterWith(device.access(), false);
+    try std.testing.expect(idle.isConfirmed());
+    try std.testing.expectEqual(@as(u32, 0), device.writes);
+
+    // Com o bit alvo ligado ha escrita, e a corrupcao do bit 6 e detectada.
+    device.setCommand(0x0046);
+    const change = setBusMasterWith(device.access(), false);
+    try std.testing.expect(!change.isConfirmed());
+    try std.testing.expectEqual(
+        @as(u16, command_parity_error_response),
+        change.unconfirmed.before & command_parity_error_response,
+    );
+}
+
+test "bits that vary legitimately across implementations do not fail the check" {
+    // O `Command` deste dispositivo le bits reservados (12..15) em um e o
+    // `Wait Cycle Control` (bit 7) em um. Nenhum deles e alvo da operacao e
+    // todos continuam iguais antes e depois: a comparacao relativa precisa
+    // aceitar isso. Uma verificacao contra a mascara "bonita" do que o driver
+    // espera recusaria um dispositivo perfeitamente conforme.
+    var device: SimulatedConfig = .{};
+    const odd_state: u16 = 0xF000 | 0x0080 | 0x0046;
+    device.setCommand(odd_state);
+
+    const change = setBusMasterWith(device.access(), false);
+    try std.testing.expect(change.isConfirmed());
+    try std.testing.expectEqual(odd_state, change.confirmed.before);
+    try std.testing.expectEqual(odd_state & ~command_bus_master, change.confirmed.after);
+    // Os bits estranhos sobreviveram no dispositivo.
+    try std.testing.expectEqual(@as(u16, 0xF000), device.command() & 0xF000);
+    try std.testing.expectEqual(@as(u16, 0x0080), device.command() & 0x0080);
+}
+
+test "a device that disappears before the write is absent, never revoked" {
+    var device: SimulatedConfig = .{};
+    device.setCommand(0x0007);
+    device.setStatus(0x2300);
+    // Nenhuma leitura responde.
+    device.reads_until_absent = 0;
+
+    const change = setBusMasterWith(device.access(), false);
+    try std.testing.expect(!change.isConfirmed());
+    try std.testing.expectEqual(BusMasterChange.absent, change);
+    // Sem leitura valida, nenhuma escrita e tentada.
+    try std.testing.expectEqual(@as(u32, 0), device.writes);
+}
+
+test "a device that disappears after the write is absent, never revoked" {
+    // A primeira leitura responde; a leitura de volta encontra a funcao
+    // ausente. E o caso ambiguo: a escrita pode ter sido aceita, e o
+    // resultado nao pode ser apresentado como revogacao.
+    var device: SimulatedConfig = .{};
+    device.setCommand(0x0007);
+    device.reads_until_absent = 1;
+
+    const change = setBusMasterWith(device.access(), false);
+    try std.testing.expect(!change.isConfirmed());
+    try std.testing.expectEqual(BusMasterChange.absent, change);
+    try std.testing.expectEqual(@as(u32, 1), device.writes);
+}
+
+test "no confirmation outcome is ever equal to a confirmed revocation" {
+    // Varredura dos tres desfechos de falha e do sucesso: so `confirmed` com
+    // o bit no estado pedido autoriza tratar a revogacao como aplicada.
+    var absent_device: SimulatedConfig = .{ .mode = .absent };
+    var silent_device: SimulatedConfig = .{ .mode = .ignore_writes };
+    var corrupt_device: SimulatedConfig = .{ .mode = .corrupts_other_bit };
+    var honest_device: SimulatedConfig = .{};
+    silent_device.setCommand(0x0007);
+    corrupt_device.setCommand(0x0047);
+    honest_device.setCommand(0x0007);
+    honest_device.setStatus(0x2300);
+
+    try std.testing.expect(!setBusMasterWith(absent_device.access(), false).isConfirmed());
+    try std.testing.expect(!setBusMasterWith(silent_device.access(), false).isConfirmed());
+    try std.testing.expect(!setBusMasterWith(corrupt_device.access(), false).isConfirmed());
+
+    const good = setBusMasterWith(honest_device.access(), false);
+    try std.testing.expect(good.isConfirmed());
+    try std.testing.expectEqual(@as(u16, 0), good.confirmed.after & command_bus_master);
+    // E o payload confirma que o `Status` nao participou da comparacao.
+    try std.testing.expectEqual(@as(u16, 0x2300), honest_device.status());
 }
 
 test "enabling bus master again is confirmed only by the read-back" {
