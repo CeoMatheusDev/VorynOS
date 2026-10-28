@@ -52,13 +52,31 @@ implementation alone does not mean a feature has been validated.
 | F1 | UEFI bootloader and kernel initialization | ✅ Completed |
 | F2 | Processor structures, interrupts, and memory | 🟢 Locally tested |
 | F3 | Threads, scheduler, processes, syscalls, and IPC | 🟡 In development — generic device capabilities, a dynamic heap, and expanded process support remain pending |
-| F4 | Storage and file systems | 🟡 In development — RamFS/VFSX and VNV persistence on an in-memory device; physical driver and automatic boot mounting remain pending |
+| F4 | Storage and file systems | 🟡 In development — RamFS/VFSX and VNV recovery on a RAM-backed device; native VirtIO Block read/write and two-boot persistence verified in QEMU/OVMF; filesystem integration with durable storage and automatic boot mounting remain pending |
 | F5 | Runtime, SDK, and native applications | 🟡 In development — native ELF loading and the SDK are present; VLIB remains pending |
 | F6 | Graphics subsystem and desktop environment | 🟡 In development — an experimental path is validated in QEMU; a graphics service and complete desktop are not implemented |
-| F7 | Drivers, networking, audio, and physical hardware | 🟡 In development — partial PCI/Virtio foundations; functional drivers and hardware validation remain pending |
+| F7 | Drivers, networking, audio, and physical hardware | 🟡 In development — native VVDI modern VirtIO PCI transport, split virtqueue, DMA and functional VirtIO Block driver validated in QEMU/OVMF; networking, audio, broader hardware support and physical-device validation remain pending |
 | F8 | Compatibility with external formats and APIs | 🟡 In development — ELF/VEX foundations and an independent ABI are implemented; broad compatibility remains incomplete |
 | F9 | Artificial intelligence infrastructure | ✅ Completed within the current scope — native CPU inference and local tests; no GPU acceleration |
 | F10 | Installation, security, recovery, and production readiness | 🟡 Partial — hardening fixes and an audit have been performed; production installation, updates, and recovery remain pending |
+
+### Recent verified progress
+
+- **VVDI / VirtIO Block (PR #15):** native modern VirtIO PCI transport and
+  split virtqueue integration, DMA-backed block reads and writes, optional
+  FLUSH, bounded completion waits and error propagation.
+- **Persistence test:** automated QEMU/OVMF two-boot verification with a
+  disposable data disk; the second boot reads previously written data without
+  rewriting it. The final audited PR head passed CI with **554 Zig tests**
+  and **7/7 log-regression scenarios**.
+- **Known limits:** this is emulated-device validation, not physical-hardware
+  certification. A failed device reset can require retaining PCI BAR/DMA
+  resources until reboot; online recovery and explicit PCI Bus Master
+  revocation remain outstanding. No general-purpose on-disk filesystem or
+  automatic boot mounting is claimed.
+
+See [VirtIO Block PR D report](docs/reports/f7/virtio-blk-pr-d.md) and
+[VVDI technical debt](docs/reports/f7/vvdi-debt.md) for evidence and limitations.
 
 “Completed” refers to the documented scope of a milestone; it does not mean
 VorynOS as a whole is ready for everyday use. QEMU validation is not equivalent
@@ -101,7 +119,11 @@ zig build check
 ```
 
 The boot test uses QEMU and OVMF to verify the boot chain and behavioral
-markers emitted by the kernel. It does not replace physical hardware testing.
+markers emitted by the kernel. `zig build check` also includes a VirtIO Block
+integration test using a disposable data disk separate from the EFI boot image:
+the first boot writes, flushes when supported, reads and compares data; the
+second boot reuses the same disk and verifies persistence without rewriting.
+These tests do not replace physical hardware testing.
 
 To start the system manually in QEMU:
 
@@ -144,6 +166,7 @@ have functional implementations:
 | VNB | Voryn Native Boot | UEFI initialization and kernel loading |
 | VNK | Voryn Nucleus Kernel | Privileged kernel mechanisms |
 | VNH / VND | Hardware Nexus / Device Fabric | Hardware discovery and device infrastructure |
+| VVDI | Voryn Virtual Device Interface | Native VirtIO device transport, queues and drivers |
 | VNM | Voryn Nexus Memory | Memory management |
 | VNT | Voryn Task Fabric | Tasks and scheduling |
 | VNX / VNC | Voryn Exchange / Capability Fabric | Inter-process communication and capability-based access control |
@@ -189,4 +212,4 @@ preserved.
 
 ---
 
-*README last reviewed on October 26, 2026.*
+*README last reviewed on October 28, 2026.*
