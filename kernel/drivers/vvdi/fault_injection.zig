@@ -183,7 +183,20 @@ const Device = struct {
 
     // --- observacao --------------------------------------------------
 
+    /// Notificacoes aceitas: escritas que respeitaram endereco, largura e
+    /// indice (§4.1.4.4). Uma escrita recusada nao serve a fila e nao entra
+    /// aqui.
     var notify_count: u32 = 0;
+    /// Notificacoes chegadas a regiao mas recusadas pelo contrato. Elas nao
+    /// servem a fila nenhuma, como o dispositivo real faria: um endereco que
+    /// nao pertence a nenhuma fila nao tem efeito.
+    var rejected_notify_count: u32 = 0;
+    /// Ultimo deslocamento relativo ao BAR tocado na regiao de notificacao,
+    /// aceito ou nao. Serve para o teste afirmar o endereco efetivo que o
+    /// driver produziu, e nao apenas que "algo" foi notificado.
+    var last_notify_address: usize = 0;
+    var last_notify_width: mmio.Width = .word;
+    var last_notify_index: u64 = 0;
     var completion_count: u32 = 0;
     var reset_writes: u32 = 0;
     /// Ultimo `VIRTIO_BLK_T_*` que o dispositivo leu do cabecalho.
@@ -235,6 +248,10 @@ const Device = struct {
         unstable_generation = false;
 
         notify_count = 0;
+        rejected_notify_count = 0;
+        last_notify_address = 0;
+        last_notify_width = .word;
+        last_notify_index = 0;
         completion_count = 0;
         reset_writes = 0;
         last_request_type = 0;
@@ -294,6 +311,25 @@ const Device = struct {
     fn setCapacity(sectors: u64) void {
         capacity_sectors = sectors;
         writeLe64(device_offset, sectors);
+    }
+
+    /// Programa o deslocamento de notificacao da fila 0 e o publica no
+    /// registro comum, como um dispositivo com `notify_off` proprio faria.
+    ///
+    /// O driver le esse registro a cada notificacao e o multiplica pelo
+    /// `notify_off_multiplier` da capability (§4.1.4.4), entao mudar aqui
+    /// exercita a aritmetica inteira do lado do driver.
+    fn setNotifyOff(offset: u16) void {
+        queue_notify_off = offset;
+        writeLe16(@intCast(pci_transport.offset.queue_notify_off), offset);
+    }
+
+    /// Endereco, relativo ao BAR, que este dispositivo reconhece como a
+    /// notificacao da fila 0: `queue_notify_off * notify_off_multiplier`
+    /// depois do inicio da regiao de notificacao (§4.1.4.4).
+    fn expectedNotifyAddress() usize {
+        return @as(usize, notify_offset) +
+            @as(usize, queue_notify_off) * @as(usize, notify_off_multiplier);
     }
 
     // --- traducao do endereco fisico para a memoria do teste ---------
@@ -374,7 +410,13 @@ const Device = struct {
                 // Um byte so: o comprimento que o dispositivo escreveria se
                 // tivesse parado no status e ignorado o buffer `write`.
                 .short_length => complete(request.withLength(1)),
-                .corrupt_status => complete(request.withStatus(0xFF)),
+                // Status fora da especificacao **e** comprimento de uma
+                // conclusao que so escreveu o status. O comprimento casa com
+                // o que o driver espera para um status desconhecido (1), de
+                // modo que a recusa e atribuivel a lista de status e nao a
+                // regra de comprimento — que ja tem a sua propria falha em
+                // `short_length`.
+                .corrupt_status => complete(request.withStatusAndLength(0xFF, 1)),
                 // Com erro o dispositivo nao escreve dados: o comprimento
                 // usado volta a ser o do status (§2.7.13.2, §5.2.6).
                 .device_error => complete(request.withStatusAndLength(block.status_io_error, 1)),
@@ -390,7 +432,6 @@ const Device = struct {
         used_length: u32,
         status: u8,
         status_address: u64,
-        type: u32,
         sector: u64,
 
         fn withHead(self: Request, head: u16) Request {
@@ -436,7 +477,6 @@ const Device = struct {
                 .used_length = 1,
                 .status = block.status_ok,
                 .status_address = status.address,
-                .type = request_type,
                 .sector = sector,
             };
         }
@@ -476,7 +516,6 @@ const Device = struct {
                 1,
             .status = status_value,
             .status_address = status.address,
-            .type = request_type,
             .sector = sector,
         };
     }
@@ -517,11 +556,35 @@ const Device = struct {
 
     // --- barramento MMIO ---------------------------------------------
 
+    /// Converte um endereco virtual do BAR em deslocamento, recusando o que
+    /// cair fora da janela mapeada.
+    ///
+    /// `mmio.Region` ja valida antes de chamar o barramento; esta checagem
+    /// existe para que o simulador nao dependa disso e nao possa indexar o
+    /// vetor de bytes fora dos limites nem estourar a subtracao.
+    fn barOffset(address: u64, width: mmio.Width) ?usize {
+        if (address < bar_virtual) return null;
+        const offset = address - bar_virtual;
+        const end = std.math.add(u64, offset, width.size()) catch return null;
+        if (end > bar_size) return null;
+        return @intCast(offset);
+    }
+
+    /// Uma notificacao so vale quando chega no endereco da fila, com 16 bits e
+    /// com o indice de uma fila que existe (§4.1.4.4). Fora disso o
+    /// dispositivo nao tem fila para servir e ignora a escrita.
+    fn acceptsNotification(start: usize, width: mmio.Width, value: u64) bool {
+        if (width != .word) return false;
+        if (start != expectedNotifyAddress()) return false;
+        if (value >= @as(u64, num_queues)) return false;
+        return true;
+    }
+
     /// Leitura de registrador. A janela de selecao de features e o unico
     /// lugar em que o valor nao esta nos bytes: `device_feature` e
     /// `driver_feature` mostram a palavra escolhida por `*_select`.
     fn read(_: ?*const anyopaque, address: u64, width: mmio.Width) u64 {
-        const start: usize = @intCast(address - bar_virtual);
+        const start = barOffset(address, width) orelse return 0;
 
         if (width == .dword and start == pci_transport.offset.device_feature) {
             const selected = bar[@intCast(pci_transport.offset.device_feature_select)] & 1;
@@ -546,11 +609,20 @@ const Device = struct {
     }
 
     fn write(_: ?*const anyopaque, address: u64, width: mmio.Width, value: u64) void {
-        const start: usize = @intCast(address - bar_virtual);
+        const start = barOffset(address, width) orelse return;
 
         // Notificacao: o dispositivo olha a fila. O valor escrito e o indice
-        // da fila (§4.1.4.4).
+        // da fila e o endereco vem de `queue_notify_off` vezes o multiplicador
+        // da capability (§4.1.4.4). Uma escrita fora desse contrato nao tem
+        // fila para servir: e registrada e ignorada, como no hardware.
         if (start >= notify_offset and start < notify_offset + notify_length) {
+            last_notify_address = start;
+            last_notify_width = width;
+            last_notify_index = value;
+            if (!acceptsNotification(start, width, value)) {
+                rejected_notify_count += 1;
+                return;
+            }
             notify_count += 1;
             serviceQueue();
             return;
@@ -1070,7 +1142,10 @@ test "a completion that arrives after the timeout changes no invariant" {
     var buffer: [sector_size]u8 = @splat(0);
     try testing.expectError(error.IoTimeout, harness.device().readBytes(0, &buffer));
 
-    const pending = Device.pending.?;
+    // O pedido so esta pendente se a notificacao chegou. Ausencia aqui e
+    // falha do teste, nao motivo de panico: o relatorio precisa do resumo
+    // da suite inteira, e nao de um aborto no meio.
+    const pending = Device.pending orelse return error.DeviceNeverNotified;
     try testing.expectEqual(@as(u16, 0), pending.head);
 
     // A conclusao tardia chega ao anel `used` depois de o driver desistir. Ela
@@ -1532,4 +1607,134 @@ test "a device that suppresses notifications is not notified and retains the cha
     try testing.expectEqual(@as(u16, 1), harness.queue.inFlightCount());
     try testing.expectEqual(containment.Reason.timeout, harness.state.reason.?);
     try testing.expect(!harness.memoryMayReturnToAllocator());
+}
+
+// ----------------------------------------------------------------------
+// 7. Contrato de notificacao (§4.1.4.4).
+// ----------------------------------------------------------------------
+
+test "a notification is only accepted at the queue address, width and index" {
+    var harness: Harness = undefined;
+    try bringUp(&harness);
+    const notify = harness.device_transport.regions.notify;
+
+    // O caminho de producao: `notifyQueue` seleciona a fila, le
+    // `queue_notify_off` do registro comum e escreve em
+    // `notify_off * notify_off_multiplier`. Com `notify_off = 0` e
+    // multiplicador 4, o endereco e exatamente o inicio da regiao.
+    try harness.device_transport.notifyQueue(0);
+    try testing.expectEqual(@as(u32, 1), Device.notify_count);
+    try testing.expectEqual(@as(u32, 0), Device.rejected_notify_count);
+    try testing.expectEqual(@as(usize, notify_offset), Device.last_notify_address);
+    try testing.expectEqual(mmio.Width.word, Device.last_notify_width);
+    try testing.expectEqual(@as(u64, 0), Device.last_notify_index);
+
+    // O slot seguinte da regiao nao pertence a fila nenhuma. Uma escrita ali
+    // — o `scaled + 4` da mutacao M10 — nao serve fila alguma: o dispositivo
+    // registra e ignora, em vez de tratar "dentro da regiao" como "notificado".
+    try notify.write16(notify_off_multiplier, 0);
+    try testing.expectEqual(@as(u32, 1), Device.notify_count);
+    try testing.expectEqual(@as(u32, 1), Device.rejected_notify_count);
+    try testing.expectEqual(@as(usize, 0x1004), Device.last_notify_address);
+
+    // Mesmo endereco, indice de uma fila que nao existe (`num_queues = 1`).
+    try notify.write16(0, 1);
+    try testing.expectEqual(@as(u32, 2), Device.rejected_notify_count);
+    try testing.expectEqual(@as(u32, 1), Device.notify_count);
+
+    // Mesmo endereco e indice, largura errada: o registro de notificacao tem
+    // 16 bits.
+    try notify.write8(0, 0);
+    try notify.write32(0, 0);
+    try testing.expectEqual(@as(u32, 4), Device.rejected_notify_count);
+    try testing.expectEqual(@as(u32, 1), Device.notify_count);
+
+    // Deslocamento nao nulo: o dispositivo passa a reconhecer
+    // `0x1000 + 4 * 4`, e o driver acompanha porque le `queue_notify_off` a
+    // cada notificacao. E a aritmetica do multiplicador, exercitada de ponta
+    // a ponta sem tocar no transporte.
+    Device.setNotifyOff(4);
+    try harness.device_transport.notifyQueue(0);
+    try testing.expectEqual(@as(u32, 2), Device.notify_count);
+    try testing.expectEqual(@as(usize, 0x1000 + 4 * 4), Device.last_notify_address);
+
+    // O endereco antigo deixa de valer quando o deslocamento muda.
+    try notify.write16(0, 0);
+    try testing.expectEqual(@as(u32, 5), Device.rejected_notify_count);
+    try testing.expectEqual(@as(u32, 2), Device.notify_count);
+}
+
+// ----------------------------------------------------------------------
+// 8. Vida util da cadeia de um pedido expirado.
+// ----------------------------------------------------------------------
+
+test "a timed out request keeps its chain out of the free list" {
+    var harness: Harness = undefined;
+    try bringUp(&harness);
+    const total = harness.queue.freeCount();
+    try testing.expectEqual(@as(u16, 8), total);
+
+    // Contraste: um pedido que conclui devolve a cadeia, e a cadeia volta a ser
+    // reutilizavel. Esta e a "liberacao efetiva".
+    var buffer: [sector_size]u8 = @splat(0);
+    try harness.device().readBytes(0, &buffer);
+    try testing.expectEqual(total, harness.queue.freeCount());
+    const reused = try harness.queue.allocateChain(3);
+    try harness.queue.release(reused);
+    try testing.expectEqual(total, harness.queue.freeCount());
+
+    // Agora o pedido que expira: o dispositivo le a cadeia e nao conclui.
+    Device.mode = .deferred;
+    var expired_buffer: [sector_size]u8 = @splat(0);
+    try testing.expectError(error.IoTimeout, harness.device().readBytes(1, &expired_buffer));
+
+    const expired = (Device.pending orelse return error.DeviceNeverNotified).head;
+    const data_index = (try harness.queue.descriptor(expired)).next;
+    const status_index = (try harness.queue.descriptor(data_index)).next;
+
+    // A cadeia continua em voo e alocada — portanto fora da free list.
+    try testing.expect(harness.queue.isInFlight(expired));
+    try testing.expect(harness.queue.isAllocated(expired));
+    try testing.expectEqual(total - 3, harness.queue.freeCount());
+
+    // "Tentativa indevida de liberacao": recusada pela guarda de posse, e sem
+    // efeito nenhum sobre a free list. Sem a guarda, a cadeia de um pedido que
+    // o dispositivo ainda pode estar lendo voltaria a circular.
+    try testing.expectError(error.DescriptorInFlight, harness.queue.release(expired));
+    try testing.expectEqual(total - 3, harness.queue.freeCount());
+    try testing.expect(harness.queue.isAllocated(expired));
+
+    // "Reutilizacao": com os cinco descritores restantes alocados, a free list
+    // fica vazia. Os tres do pedido expirado continuam alocados e em voo, e
+    // nenhum deles aparece na cadeia que o driver recebeu.
+    const spare = try harness.queue.allocateChain(total - 3);
+    try testing.expectEqual(@as(u16, 0), harness.queue.freeCount());
+    try testing.expectError(error.QueueFull, harness.queue.allocateChain(1));
+    var cursor = spare;
+    var steps: u16 = 0;
+    while (steps < total - 3) : (steps += 1) {
+        try testing.expect(cursor != expired);
+        try testing.expect(cursor != data_index);
+        try testing.expect(cursor != status_index);
+        const entry = try harness.queue.descriptor(cursor);
+        if (entry.flags & virtqueue.descriptor_flags.next == 0) break;
+        cursor = entry.next;
+    }
+    try testing.expect(harness.queue.isInFlight(expired));
+    try testing.expect(harness.queue.isInFlight(data_index));
+    try testing.expect(harness.queue.isInFlight(status_index));
+
+    // A conclusao tardia chega: so depois de o dispositivo provar que parou de
+    // usar a cadeia e que a liberacao passa a ser possivel. Quem consome aqui e
+    // a bancada, porque o driver ja esta em quarentena e nao volta a pollar.
+    try testing.expect(Device.deliverPending() != null);
+    const late = (try harness.queue.pollUsed()).?;
+    try testing.expectEqual(expired, late.head);
+    try testing.expect(!harness.queue.isInFlight(expired));
+    try harness.queue.release(expired);
+    try testing.expectEqual(@as(u16, 3), harness.queue.freeCount());
+    try testing.expect(!harness.queue.isAllocated(expired));
+    // E a cadeia volta a ser alocavel: a diferenca entre "bloqueada em voo" e
+    // "liberada depois da conclusao" e observavel.
+    _ = try harness.queue.allocateChain(3);
 }

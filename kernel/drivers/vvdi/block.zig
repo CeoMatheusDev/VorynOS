@@ -542,20 +542,43 @@ fn validCompletion(
 test "used completions validate request identity, byte count and status" {
     const read_success = virtqueue.Used{ .head = 3, .length = sector_size + 1 };
     try testing.expect(validCompletion(3, read_success, status_ok, true, true));
+
+    // Identidade: o `id` devolvido precisa ser a cabeca publicada.
     try testing.expect(!validCompletion(4, read_success, status_ok, true, true));
+
+    // Comprimento sozinho, com status valido dos dois lados: 512 bytes para
+    // uma leitura de 512 + 1 nao serve, e 1 serve para um erro do dispositivo.
     try testing.expect(!validCompletion(3, .{ .head = 3, .length = 512 }, status_ok, true, true));
     try testing.expect(validCompletion(3, .{ .head = 3, .length = 1 }, status_io_error, true, true));
+
+    // Status sozinho: para um status fora da lista documentada, a regra de
+    // comprimento ja espera `1`. Com esse comprimento, a unica razao para
+    // recusar e a lista de status — se ela sair, este caso passa a ser aceito.
+    // E o par que a falha `corrupt_status` do dispositivo simulado reproduz.
     try testing.expect(!validCompletion(3, .{ .head = 3, .length = 1 }, 0xFF, true, true));
+
+    // O mesmo status com o comprimento de uma leitura bem-sucedida e recusado
+    // pela regra de comprimento, nao pela lista: este par nao isola a
+    // validacao de status e nao deve ser usado como prova dela.
+    try testing.expect(!validCompletion(3, .{ .head = 3, .length = sector_size + 1 }, 0xFF, true, true));
 }
 
-test "timed out requests quarantine the real driver instance" {
+// Cobre apenas `Driver.quarantine` e `Driver.requireHealthy`: nao ha `init`,
+// transporte nem fila aqui. O nome diz o que o teste faz; os caminhos com
+// dispositivo de verdade estao em `fault_injection.zig`.
+test "quarantine closes the gate without a transport or a queue" {
     var driver: Driver = undefined;
     driver.poisoned = false;
     driver.containment = null;
+
     driver.quarantine(.timeout);
-    try testing.expectError(error.DevicePoisoned, driver.requireHealthy());
+    try testing.expect(driver.poisoned);
     // The same gate is checked by read/write and FLUSH before a later request
     // can touch the queue or DMA scratch memory.
+    try testing.expectError(error.DevicePoisoned, driver.requireHealthy());
+
+    // Irreversivel: um segundo motivo nao reabre o portao.
+    driver.quarantine(.invalid_completion);
     try testing.expectError(error.DevicePoisoned, driver.requireHealthy());
 }
 
