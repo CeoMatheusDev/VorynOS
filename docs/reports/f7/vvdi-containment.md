@@ -112,18 +112,41 @@ Sem importar `pci.zig`, sem laço, sem relógio, sem espera.
 
 ## 6. Validação
 
+Esta seção separa o que foi executado **no ambiente de desenvolvimento** do que foi executado
+**na CI**. São evidências diferentes sobre SHAs diferentes.
+
+### 6.1 Executado localmente (Zig 0.17.0)
+
+Vale para o conteúdo do branch em que cada linha foi medida; a contagem acompanha a seção 8.
+
 | Comando | Resultado |
 | --- | --- |
-| `zig build test --summary all` | **PASS** — `39/39 steps succeeded; 587/587 tests passed` (`arch-tests` 91, `vvdi-tests` 139) |
+| `zig build test --summary all` | **PASS** — 587/587 (`arch-tests` 91, `vvdi-tests` 139) antes da correção F-1; 596/596 (`arch-tests` 91, `vvdi-tests` 148) depois |
 | `zig build` | **PASS** — `vorynos.img` 128 MiB gerado |
-| `zig fmt --check` (5 arquivos alterados) | **PASS** |
+| `zig fmt --check` (arquivos alterados) | **PASS** |
 | `git diff --check` | **PASS** |
 | `bash tests/integration/log-assertions-test.sh` | **PASS** — 7/7 |
-| `zig build qemu-test` / `qemu-storage-test` / `qemu-interactive-test` / `check` | **BLOCKED** — sem `qemu-system-x86_64` e sem OVMF; espelho Debian inacessível neste ambiente |
+| `zig build qemu-test` / `qemu-storage-test` / `qemu-interactive-test` / `check` | **BLOCKED** — sem `qemu-system-x86_64` e sem OVMF; espelho Debian inacessível neste ambiente. Nunca executados aqui, e portanto nunca declarados PASS. |
+
+### 6.2 Executado na CI
+
+| Item | Valor |
+| --- | --- |
+| SHA | `470c5f887f80c0cabb417f2c03dc4cc004bea293` |
+| Run | [40662431437](https://github.com/CeoMatheusDev/VorynOS/actions/runs/40662431437) |
+| Resultado | **SUCCESS** — 12/12 passos |
+| O que a CI executou | `zig build test`, `log-assertions-test.sh`, `zig build`, `zig build qemu-test` e `zig build check` (que inclui `qemu-storage-test`, os dois boots) |
+| O que a CI **não** executa | `zig build qemu-interactive-test` — não existe no workflow e não faz parte de `check` |
+| Limitação | nenhum caminho de falha PCI/DMA é injetado. A CI verde comprova o caminho normal e a persistência, **não** o comportamento em falha de dispositivo |
+
+O log bruto do run não pôde ser baixado do ambiente da sessão (armazenamento de artefatos fora
+dos hosts permitidos); a evidência acima é de conclusão por passo, obtida pela API.
 
 Contagem anterior à mudança: 554 testes. Depois da contenção: 581 (+8 em `arch-tests` para o
 registrador `Command`; +19 em `vvdi-tests`: 15 de contenção e 4 do driver de bloco). Depois da
-correção R-3: **587** (+6 em `arch-tests`), ver seção 8.
+correção R-3: 587 (+6 em `arch-tests`). Depois da correção F-1: 596 (+9 em `vvdi-tests`), ver
+seção 9. **Nenhuma dessas contagens posteriores a 587 foi validada pela CI no momento em que
+foram escritas.**
 
 Os testes de falha simulada cobrem: escrita ignorada pelo dispositivo (revogação não
 confirmada), função ausente (`absent`, sem escrita), dispositivo que derruba `Memory Space`
@@ -179,3 +202,68 @@ grava zero na metade alta; a semântica RW1C continua fora do caminho.
   dispositivo que altere outro bit de forma *estável* (isto é, que já apareça alterado na
   primeira leitura) não é detectado — por construção, porque essa é exatamente a variação
   legítima que a verificação precisa aceitar.
+
+## 9. Correção F-1 — isolamento entre ciclos de vida
+
+### Defeito demonstrado
+
+`Containment.arm` era no-op sobre uma instância já usada, `reset_confirmed` era pegajoso e a
+instância global nunca era reinicializada. Numa segunda rodada de bring-up, duas coisas
+aconteciam ao mesmo tempo:
+
+- `permitsMemoryRelease()` autorizava devolver DMA ao alocador **sem nenhum reset daquela
+  rodada**, com base na confirmação da rodada anterior;
+- `contain()` devolvia o resultado da revogação anterior e **não revogava** o bus master.
+
+Reprodução executada na auditoria, sobre uma cópia exata do arquivo:
+
+```text
+rodada2: state=armed reset_confirmed=true permitsMemoryRelease=true
+contain() na rodada2 -> revoked (nenhuma revogação nova)
+```
+
+Alcance no código do PR #18: **nenhum**. `bringUpVirtioFunction` é chamado uma única vez
+(`main.zig:1277`), para um único dispositivo. O defeito se tornaria vivo no primeiro
+incremento de multi-dispositivo ou de repetição de bring-up.
+
+### Correção
+
+`Containment.beginNewLifecycle(facts)` comprova, antes de apagar qualquer coisa:
+
+| Prova | Origem | Recusa |
+| --- | --- | --- |
+| A fila deixou de pertencer ao dispositivo | `QueueMemory.canReturnToAllocator()` | `QueueStillOwnedByDevice` |
+| Não sobrou alocação nem mapeamento de DMA | `virtqueue_state.buffer/mapped/queue == null` | `MemoryStillDependent` |
+| Nenhum driver ativo aponta para a instância | `block_dev.defaultDevice() == null` | `DriverStillAttached` |
+| O ciclo anterior foi fechado | estado interno | `ResetNotConfirmed` |
+| O dispositivo não está contido | estado interno | `DeviceQuarantined` |
+
+Só com todas as provas o estado é apagado, e a rodada nova começa com `reset_confirmed`
+falso. Qualquer recusa **preserva** o estado e emite `FATAL` em `main.zig`
+(`beginVirtioLifecycle`), nunca libera memória. A reinicialização não rearma: o alvo da rodada
+nova continua sendo registrado por `arm`, no ponto de `handOver`, como antes.
+
+### Testes de regressão (9 novos)
+
+| Cenário exigido | Teste |
+| --- | --- |
+| Primeira rodada com reset confirmado | *F-1: the single initial lifecycle is unchanged* |
+| Segunda rodada com `reset_confirmed = false` | *F-1: a second round does not inherit the reset confirmation* |
+| Segunda rodada exigindo sua própria revogação | *F-1: a second round performs its own revocation* |
+| Falha de reset impedindo reutilização | *F-1: a failed reset blocks reuse instead of being forgotten* |
+| Reinicialização com DMA ainda entregue | *F-1: restart is refused while the device still owns the queue*, *… while DMA memory is still dependent* |
+| Driver ativo conservando ponteiros | *F-1: restart is refused while a driver still points at the instance* |
+| Dispositivo contido não reinicia | *F-1: a contained device is never restarted by a new lifecycle* |
+| Ausência de liberação prematura | *F-1: a refused restart never releases memory* |
+
+O primeiro teste da lista **reproduz o defeito**: com `beginNewLifecycle` reduzido a no-op, ele
+falha com `expected .disarmed, found .armed`; com a correção, passa. Verificado em cópia fora
+do repositório.
+
+### Limitações de ciclo de vida (permanecem)
+
+- **Dispositivo único:** uma instância global de contenção; sem enumeração nem contenção por
+  função PCI.
+- **Sem recuperação online:** `DeviceQuarantined` é recusa permanente até a reinicialização,
+  mesmo com reset confirmado.
+- **Sem repetição de revogação:** uma revogação que falhou não é tentada de novo.

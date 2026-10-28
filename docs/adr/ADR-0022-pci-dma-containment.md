@@ -1,6 +1,6 @@
 # ADR-0022 — Contenção PCI/DMA de dispositivo virtual em estado desconhecido
 
-- **Estado:** IMPLEMENTADO — TESTADO LOCALMENTE (host: 587 testes Zig); boot QEMU/OVMF pendente de CI
+- **Estado:** IMPLEMENTADO — TESTADO LOCALMENTE no host e **TESTADO NA CI** para o SHA `470c5f887f80c0cabb417f2c03dc4cc004bea293` (run [40662431437](https://github.com/CeoMatheusDev/VorynOS/actions/runs/40662431437), 12/12 passos, incluindo `qemu-test` e `check` com o teste de persistência de dois boots). Os incrementos posteriores a esse SHA têm apenas a validação local registrada no relatório; nenhum deles é coberto por essa execução.
 - **Data:** 2026-10-28
 - **Escopo:** `kernel/arch/x86_64/pci.zig`, `kernel/drivers/vvdi/containment.zig`,
   `kernel/drivers/vvdi/block.zig`, `kernel/drivers/vvdi/root.zig`, `kernel/main.zig`,
@@ -105,6 +105,25 @@ kernel. Uma revogação que falhou não é repetida — não há retry neste inc
 - **Fora de escopo, por decisão:** recuperação online, repetição de reset, reutilização de
   fila em quarentena, restauração do *bus master* e qualquer promessa de quiescência.
   Um dispositivo contido permanece contido até a reinicialização.
+
+## Ciclo de vida do estado de contenção
+
+O estado de contenção é **por instância e por rodada**. Um ciclo anterior não pode autorizar
+nada no seguinte: `beginNewLifecycle` exige três provas externas — a fila deixou de pertencer
+ao dispositivo, não sobrou alocação ou mapeamento de DMA, e nenhum driver ativo aponta para a
+instância — mais o fechamento interno do ciclo (reset confirmado, e ausência de quarentena).
+Só então o estado é apagado, e a rodada nova começa com `reset_confirmed` falso.
+
+Se qualquer prova faltar, o estado é **preservado** e a inicialização para. A recusa nunca é
+silenciosa e nunca libera memória.
+
+Limites explícitos deste incremento, que continuam valendo:
+
+- **dispositivo único:** existe uma instância global de contenção; não há enumeração de
+  múltiplos dispositivos virtuais nem contenção independente por função PCI;
+- **sem recuperação online:** um dispositivo contido não é reiniciado, nem com reset
+  confirmado. `DeviceQuarantined` é recusa permanente até a reinicialização do sistema;
+- **sem repetição de revogação:** uma revogação que falhou não é tentada de novo.
 
 ## Alternativas descartadas
 

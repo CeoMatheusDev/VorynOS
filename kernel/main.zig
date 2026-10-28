@@ -1730,6 +1730,35 @@ fn virtqueueMemoryMayBeReturned() bool {
         virtio_containment.permitsMemoryRelease();
 }
 
+/// Fecha o ciclo de vida anterior da contencao antes de uma nova rodada.
+///
+/// As tres provas vem de quem tem acesso ao estado real: o transporte sabe se
+/// a fila ainda pertence ao dispositivo (`QueueMemory`), o proprio
+/// `virtqueue_state` sabe se sobrou alocacao ou mapeamento, e o registro de
+/// blocos sabe se ha um driver ativo apontando para `virtio_containment`.
+///
+/// `driver_detached` e o mais restritivo dos tres: enquanto um driver estiver
+/// publicado, ele guarda um ponteiro para a instancia de contencao e para a
+/// fila. Reiniciar a contencao nesse estado deixaria o driver falando com um
+/// estado que ja nao descreve o dispositivo dele — por isso a rodada e
+/// recusada, e nao corrigida.
+fn beginVirtioLifecycle(device: u8) bool {
+    virtio_containment.beginNewLifecycle(.{
+        .queue_returned = virtqueue_state.ownership.canReturnToAllocator(),
+        .memory_released = virtqueue_state.buffer == null and
+            virtqueue_state.mapped == null and
+            virtqueue_state.queue == null,
+        .driver_detached = block_dev.defaultDevice() == null,
+    }) catch |err| {
+        serial.printLine(
+            "[VNK] FATAL: 00:{d}.0 a new virtio lifecycle was refused, the previous containment is preserved: {s}",
+            .{ device, @errorName(err) },
+        );
+        return false;
+    };
+    return true;
+}
+
 /// Contem o dispositivo que ja recebeu `DRIVER_OK` e registra o estado.
 ///
 /// Emitido apenas em caminho de falha: o log de boot com sucesso continua com
@@ -1836,6 +1865,14 @@ fn programVirtqueue(
         serial.printLine("[VNK] FATAL: the virtqueue memory is already in use", .{});
         return false;
     }
+
+    // F-1: nenhuma rodada herda o estado de contencao da anterior.
+    //
+    // A reinicializacao so acontece com as tres provas externas e com o ciclo
+    // anterior fechado. Sem elas, a contencao anterior e preservada e a
+    // inicializacao para aqui — um dispositivo que ainda pode acessar memoria
+    // nao pode ser esquecido, e uma contencao nao pode ser apagada por engano.
+    if (!beginVirtioLifecycle(device)) return false;
 
     // 1. Tamanho: o maior valor da especificacao que o dispositivo aceita.
     const device_max = target.queueMaxSize(0) catch |err| {

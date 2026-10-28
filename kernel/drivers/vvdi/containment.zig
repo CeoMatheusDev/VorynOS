@@ -133,6 +133,39 @@ pub const State = enum {
     }
 };
 
+/// Fatos que o chamador precisa comprovar antes de abrir um novo ciclo de vida.
+///
+/// A contencao nao alcanca o alocador de DMA, o transporte nem o registro de
+/// dispositivos. Por isso ela nao tenta descobrir sozinha se o ciclo anterior
+/// terminou: recebe os tres fatos ja apurados por quem tem acesso a eles, e
+/// **recusa** reiniciar quando algum deles nao pode ser comprovado.
+pub const RestartFacts = struct {
+    /// O transporte afirma que a fila deixou de pertencer ao dispositivo
+    /// (`QueueMemory.canReturnToAllocator`).
+    queue_returned: bool,
+    /// Nao existe mais alocacao nem mapeamento de DMA desta instancia.
+    memory_released: bool,
+    /// Nenhum driver ativo conserva ponteiro para esta instancia.
+    driver_detached: bool,
+};
+
+/// Motivo pelo qual um novo ciclo de vida foi recusado.
+///
+/// Recusar preserva o estado anterior: a instancia continua como estava, e a
+/// contencao continua valendo. Nenhuma das recusas e silenciosa.
+pub const RestartError = error{
+    /// A fila ainda pertence ao dispositivo.
+    QueueStillOwnedByDevice,
+    /// Ainda existe memoria de DMA que depende desta contencao.
+    MemoryStillDependent,
+    /// Um driver ativo ainda aponta para esta instancia.
+    DriverStillAttached,
+    /// O ciclo anterior foi entregue e nenhum reset o fechou.
+    ResetNotConfirmed,
+    /// O dispositivo esta contido. Sem recuperacao online, ele nao reinicia.
+    DeviceQuarantined,
+};
+
 /// Estado de contencao de um dispositivo.
 ///
 /// Todas as operacoes sao idempotentes e nenhuma delas espera: a estrutura e
@@ -164,6 +197,41 @@ pub const Containment = struct {
         }
         self.bus_master = bus_master;
         self.state = .armed;
+    }
+
+    /// Fecha o ciclo de vida anterior e prepara a instancia para outro.
+    ///
+    /// Antes de apagar qualquer coisa, comprova as tres condicoes externas e o
+    /// estado interno. Se qualquer uma falhar, o estado e **preservado** e a
+    /// recusa e devolvida: uma contencao nao pode ser apagada por engano, e um
+    /// dispositivo que ainda pode acessar memoria nao pode ser esquecido.
+    ///
+    /// O que a funcao garante quando aceita: a instancia volta a `.disarmed`,
+    /// sem alvo, sem motivo, sem resultado de revogacao e com
+    /// `reset_confirmed` falso. Isto e o que impede o defeito F-1 — o estado de
+    /// uma rodada nao sobrevive para autorizar liberacao nem para responder
+    /// por uma revogacao na rodada seguinte.
+    ///
+    /// A reinicializacao **nao** rearma: o alvo da rodada nova e registrado
+    /// por `arm`, no ponto em que a memoria e entregue. Entre a aceitacao e o
+    /// `arm` a instancia esta `.disarmed`, e `permitsMemoryRelease` devolve
+    /// verdadeiro, que e a resposta correta para uma rodada que ainda nao
+    /// entregou nada.
+    pub fn beginNewLifecycle(self: *Containment, facts: RestartFacts) RestartError!void {
+        if (!facts.queue_returned) return error.QueueStillOwnedByDevice;
+        if (!facts.memory_released) return error.MemoryStillDependent;
+        if (!facts.driver_detached) return error.DriverStillAttached;
+
+        if (self.state != .disarmed) {
+            // Ordem deliberada: um dispositivo contido e o caso mais grave e
+            // nao pode ser reiniciado nem com reset confirmado, porque nao
+            // existe recuperacao online. Depois dele, o ciclo entregue exige
+            // que o reset tenha sido confirmado.
+            if (self.isQuarantined()) return error.DeviceQuarantined;
+            if (!self.reset_confirmed) return error.ResetNotConfirmed;
+        }
+
+        self.* = .{};
     }
 
     /// Contem o dispositivo e devolve o resultado da revogacao.
@@ -496,5 +564,177 @@ test "every reason has a distinct stable label" {
         for (reasons[index + 1 ..]) |other| {
             try testing.expect(!std.mem.eql(u8, reason.label(), other.label()));
         }
+    }
+}
+
+// ----------------------------------------------------------------------
+// F-1: isolamento entre ciclos de vida.
+//
+// O defeito demonstrado: `arm` era no-op sobre uma instancia ja usada e
+// `reset_confirmed` era pegajoso. Numa segunda rodada, `permitsMemoryRelease`
+// autorizava liberar memoria sem nenhum reset daquela rodada, e `contain`
+// devolvia o resultado da revogacao anterior sem revogar de novo. Os testes
+// abaixo reproduzem o defeito no estado antigo e fixam o comportamento novo.
+// ----------------------------------------------------------------------
+
+/// Todos os fatos favoraveis: ciclo anterior fechado.
+const closed_cycle: RestartFacts = .{
+    .queue_returned = true,
+    .memory_released = true,
+    .driver_detached = true,
+};
+
+test "F-1: a second round does not inherit the reset confirmation" {
+    var target: FakeBusMaster = .{ .confirm = true };
+    var containment: Containment = .{};
+
+    // RODADA 1: arma, entrega, reset confirmado, memoria liberada.
+    containment.arm(target.handle());
+    containment.noteReset(true);
+    try testing.expect(containment.permitsMemoryRelease());
+
+    // Fim da rodada 1: o chamador comprova as tres condicoes e abre a rodada 2.
+    try containment.beginNewLifecycle(closed_cycle);
+
+    // O estado da rodada 1 nao sobrevive. Este e o defeito F-1: antes da
+    // correcao, `reset_confirmed` continuava verdadeiro aqui.
+    try testing.expectEqual(State.disarmed, containment.state);
+    try testing.expect(!containment.reset_confirmed);
+    try testing.expect(!containment.reset_attempted);
+    try testing.expect(containment.reason == null);
+    try testing.expect(containment.revocation == null);
+    try testing.expect(containment.bus_master == null);
+
+    // RODADA 2: arma de novo, e agora a liberacao exige o reset DESTA rodada.
+    containment.arm(target.handle());
+    try testing.expectEqual(State.armed, containment.state);
+    try testing.expect(!containment.permitsMemoryRelease());
+}
+
+test "F-1: a second round performs its own revocation" {
+    var target: FakeBusMaster = .{ .confirm = true };
+    var containment: Containment = .{};
+
+    // RODADA 1 sem falha: arma, entrega, e o reset fecha o ciclo. Uma rodada
+    // que contivesse o dispositivo nao chegaria aqui — `DeviceQuarantined`
+    // recusa a reinicializacao, e e isso que impede o resultado de uma
+    // revogacao de atravessar para a rodada seguinte.
+    containment.arm(target.handle());
+    containment.noteReset(true);
+    try testing.expect(containment.revocation == null);
+    try testing.expectEqual(@as(u32, 0), target.attempts);
+
+    try containment.beginNewLifecycle(closed_cycle);
+
+    // RODADA 2: a primeira falha desta rodada revoga de verdade.
+    containment.arm(target.handle());
+    const outcome = containment.contain(.configuration_failure);
+    try testing.expectEqual(Revocation.revoked, outcome);
+    try testing.expectEqual(@as(u32, 1), target.attempts);
+    try testing.expectEqual(Reason.configuration_failure, containment.reason.?);
+
+    // E uma segunda chamada continua idempotente dentro da rodada 2.
+    const again = containment.contain(.timeout);
+    try testing.expectEqual(Revocation.revoked, again);
+    try testing.expectEqual(@as(u32, 1), target.attempts);
+    try testing.expectEqual(Reason.configuration_failure, containment.reason.?);
+}
+
+test "F-1: a failed reset blocks reuse instead of being forgotten" {
+    var target: FakeBusMaster = .{ .confirm = true };
+    var containment: Containment = .{};
+
+    containment.arm(target.handle());
+    containment.noteReset(false);
+
+    try testing.expectError(error.ResetNotConfirmed, containment.beginNewLifecycle(closed_cycle));
+    // O estado anterior e preservado: nada foi apagado.
+    try testing.expectEqual(State.armed, containment.state);
+    try testing.expect(containment.reset_attempted);
+    try testing.expect(!containment.reset_confirmed);
+    try testing.expect(!containment.permitsMemoryRelease());
+}
+
+test "F-1: a contained device is never restarted by a new lifecycle" {
+    var target: FakeBusMaster = .{ .confirm = true };
+    var containment: Containment = .{};
+    containment.arm(target.handle());
+    _ = containment.contain(.timeout);
+
+    // Mesmo com reset confirmado, um dispositivo contido nao reinicia:
+    // recuperacao online esta fora de escopo.
+    containment.noteReset(true);
+    try testing.expectError(error.DeviceQuarantined, containment.beginNewLifecycle(closed_cycle));
+    try testing.expectEqual(State.contained, containment.state);
+    try testing.expect(containment.isQuarantined());
+}
+
+test "F-1: restart is refused while the device still owns the queue" {
+    var containment: Containment = .{};
+    containment.arm(null);
+    containment.noteReset(false);
+
+    var facts = closed_cycle;
+    facts.queue_returned = false;
+    try testing.expectError(error.QueueStillOwnedByDevice, containment.beginNewLifecycle(facts));
+    try testing.expectEqual(State.armed, containment.state);
+}
+
+test "F-1: restart is refused while DMA memory is still dependent" {
+    var containment: Containment = .{};
+    containment.arm(null);
+    containment.noteReset(false);
+
+    var facts = closed_cycle;
+    facts.memory_released = false;
+    try testing.expectError(error.MemoryStillDependent, containment.beginNewLifecycle(facts));
+    try testing.expectEqual(State.armed, containment.state);
+}
+
+test "F-1: restart is refused while a driver still points at the instance" {
+    var containment: Containment = .{};
+    containment.arm(null);
+    containment.noteReset(false);
+
+    var facts = closed_cycle;
+    facts.driver_detached = false;
+    try testing.expectError(error.DriverStillAttached, containment.beginNewLifecycle(facts));
+    try testing.expectEqual(State.armed, containment.state);
+}
+
+test "F-1: the single initial lifecycle is unchanged" {
+    var target: FakeBusMaster = .{ .confirm = true };
+    var containment: Containment = .{};
+
+    // Primeira rodada de um boot normal: a instancia esta limpa, e o gate a
+    // aceita sem exigir reset (nada foi entregue ainda).
+    try testing.expectEqual(State.disarmed, containment.state);
+    try containment.beginNewLifecycle(closed_cycle);
+    try testing.expectEqual(State.disarmed, containment.state);
+
+    containment.arm(target.handle());
+    try testing.expectEqual(State.armed, containment.state);
+    try testing.expect(!containment.permitsMemoryRelease());
+    containment.noteReset(true);
+    try testing.expect(containment.permitsMemoryRelease());
+}
+
+test "F-1: a refused restart never releases memory" {
+    // Ausencia de liberacao prematura: em todas as recusas, a memoria
+    // continua retida, porque o estado nao foi apagado.
+    const refusals = [_]struct { facts: RestartFacts, expected: RestartError }{
+        .{ .facts = .{ .queue_returned = false, .memory_released = true, .driver_detached = true }, .expected = error.QueueStillOwnedByDevice },
+        .{ .facts = .{ .queue_returned = true, .memory_released = false, .driver_detached = true }, .expected = error.MemoryStillDependent },
+        .{ .facts = .{ .queue_returned = true, .memory_released = true, .driver_detached = false }, .expected = error.DriverStillAttached },
+        .{ .facts = .{ .queue_returned = false, .memory_released = false, .driver_detached = false }, .expected = error.QueueStillOwnedByDevice },
+    };
+
+    for (refusals) |case| {
+        var containment: Containment = .{};
+        containment.arm(null);
+        // Sem reset confirmado, a recusa e inevitavel em qualquer combinacao.
+        try testing.expectError(case.expected, containment.beginNewLifecycle(case.facts));
+        try testing.expect(!containment.permitsMemoryRelease());
+        try testing.expectEqual(State.armed, containment.state);
     }
 }
