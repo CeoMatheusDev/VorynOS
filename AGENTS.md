@@ -1,6 +1,6 @@
 # VorynOS — regras normativas para agentes
 
-> **Fonte normativa única.** Leia antes de alterar o projeto. Para tarefas complexas, consulte [internal/ai/STRATEGY.md](internal/ai/STRATEGY.md) **sob demanda**; ele não substitui nem repete estas regras. Não carregue `restal/` automaticamente.
+> **Fonte normativa única.** Leia antes de alterar o projeto. Para tarefas complexas, consulte [STRATEGY.md](STRATEGY.md) **sob demanda**; ele não substitui nem repete estas regras. Não carregue `restal/` automaticamente.
 
 ## Identidade e prioridades
 
@@ -38,5 +38,5 @@ Estados: **PROPOSTO**, **EM DESENVOLVIMENTO**, **IMPLEMENTADO — NÃO TESTADO**
 - Proibido descartar mudanças do usuário, executar operações destrutivas, alterar projetos vizinhos ou configurações globais sem autorização específica.
 - **Não executar push, criar tags, publicar releases nem alterar remotos sem autorização explícita.**
 - `README.md`: apresentação; `docs/specs/`: contratos (incluindo `syscall-abi.md` e `boot-handoff-spec.md`); `docs/adr/`: decisões; `docs/standards/`: convenções; `docs/testing/`: testes; `docs/roadmap/phase-status.md`: estado declarado; `docs/reports/f*/`: evidências históricas; `assets/branding/logos/`: identidade visual, não recursos de runtime.
-- `internal/ai/STRATEGY.md`: **único guia operacional opcional**, apenas para tarefas complexas. `restal/`: arquivo histórico, não instrução ativa.
+- `STRATEGY.md`: **único guia operacional opcional**, apenas para tarefas complexas. `restal/`: arquivo histórico, não instrução ativa.
 - Havendo conflito entre documentação histórica e código, **verificar código e testes**, registrar divergência e não inventar reconciliação.
