@@ -1,20 +1,18 @@
-# IA — entrada mínima para agentes
+# Arquivo histórico de instruções de IA — VorynOS
 
-**Fonte normativa única:** [AGENTS.md](../../AGENTS.md). Leia-o antes de qualquer alteração. Este diretório não mantém cópias das regras.
+> **Arquivo de preservação, não fonte normativa ativa.** Para tarefas no projeto, leia [AGENTS.md](../AGENTS.md) e, somente quando necessário, [STRATEGY.md](../STRATEGY.md). Não carregar este diretório automaticamente no contexto de agentes.
 
-## Leitura sob demanda
+## Cópias dos documentos principais
 
-1. Leia `AGENTS.md` e inspecione `git status`, código e testes afetados.
-2. Consulte **apenas** as fontes necessárias: `docs/specs/` (contratos), `docs/adr/` (decisões), `docs/standards/` (convenções), `docs/testing/` (validação) e `docs/roadmap/phase-status.md` (estado declarado, sujeito a verificação).
-3. Confirme `zig version` (alvo: 0.17.0); implemente o menor incremento real com tratamento de erros e testes negativos.
-4. Execute `zig build`, `zig build test` e testes QEMU aplicáveis; não invente resultados nem confunda proposta, implementação e validação.
-5. Reporte: **objetivo, implementação, arquivos, validação, desempenho medido, limitações e próxima etapa**.
-6. Preserve mudanças existentes; não publique ou altere remotamente sem autorização específica.
+- [AGENTS.md](AGENTS.md) — cópia literal do arquivo normativo da raiz no momento do arquivamento.
+- [STRATEGY.md](STRATEGY.md) — cópia literal da estratégia operacional da raiz no momento do arquivamento.
 
-## Arquivo histórico
+**Atenção:** as cópias são snapshots históricos e não acompanham automaticamente alterações futuras. Se divergirem, prevalecem os documentos da raiz.
 
-Os prompts redundantes foram preservados integralmente em `restal/internal/ai/`:
-- [engineering-prompt.md](../../restal/internal/ai/engineering-prompt.md)
-- [start-development.md](../../restal/internal/ai/start-development.md)
+## Documentos auxiliares antigos
 
-**Não carregar `restal/` automaticamente no contexto de agentes.** Consulte o arquivo apenas para auditoria ou recuperação. O conteúdo arquivado não é uma segunda fonte normativa.
+- [engineering-prompt.md](engineering-prompt.md) — prompt integral anterior.
+- [start-development.md](start-development.md) — prompt de início de desenvolvimento anterior.
+- [legacy-ai-readme.md](legacy-ai-readme.md) — índice anterior, preservado integralmente, inclusive com links relativos legados.
+
+Os documentos auxiliares foram movidos de `restal/internal/ai/` para esta pasta. Não são instruções adicionais obrigatórias.
