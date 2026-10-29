@@ -1,6 +1,6 @@
 # VorynOS — estratégia operacional de engenharia
 
-> **Guia opcional para tarefas complexas.** Leia primeiro [AGENTS.md](AGENTS.md), que contém todas as regras obrigatórias. Este arquivo orienta a investigação e a tomada de decisões; **não deve ser carregado automaticamente em toda tarefa**. Não ler `restal/` salvo para recuperação ou auditoria histórica.
+> **Guia opcional para tarefas complexas.** Leia primeiro [AGENTS.md](AGENTS.md), que contém todas as regras obrigatórias. Este arquivo orienta a investigação e a tomada de decisões; **não deve ser carregado automaticamente em toda tarefa**.
 
 ## Quando usar
 
@@ -20,6 +20,7 @@ Consultar para novos subsistemas, mudanças de arquitetura/ABI, regressões dif�
 3. Avaliar a implementação atual e alternativas viáveis; estimar custos de memória, CPU, latência, cópias e acoplamento.
 4. Para mudanças estruturais, registrar decisão e riscos em ADR quando aplicável.
 5. Escolher o **menor incremento real e reversível** que permita validação.
+6. Para propostas inovadoras, definir problema, alternativas, custos, riscos, hipótese mensurável, protótipo e critérios de aceitação ou abandono. Um nome novo não comprova inovação.
 
 ## 3. Implementação e revisão
 
@@ -27,6 +28,7 @@ Consultar para novos subsistemas, mudanças de arquitetura/ABI, regressões dif�
 - Separar lógica pura de mecanismos dependentes de hardware quando isso simplificar testes e evitar duplicação.
 - Evitar refatorações amplas, dependências e abstrações especulativas. Não implementar funcionalidades futuras sem escopo explícito.
 - Criar testes positivos, negativos e de exaustão pertinentes; verificar regressões em consumidores do contrato.
+- Em Assembly, documentar ABI, alinhamento da pilha, registradores preservados e efeitos colaterais.
 
 ## 4. Medição e auditoria
 
@@ -48,4 +50,4 @@ Se uma validação não puder ser executada, indicar claramente o bloqueio. Não
 
 ## Arquivo histórico
 
-Os prompts anteriores estão preservados em `restal/internal/ai/`. Não são fontes normativas e não devem entrar no contexto de execução rotineira.
+Não há outros documentos de instruções de agentes ativos no repositório.
