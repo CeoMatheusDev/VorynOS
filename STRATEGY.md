@@ -48,6 +48,6 @@ Relatar de forma concisa:
 
 Se uma validação não puder ser executada, indicar claramente o bloqueio. Não converter proposta em funcionalidade concluída.
 
-## Arquivo histórico
+## Escopo das instruções
 
-Não há outros documentos de instruções de agentes ativos no repositório.
+Somente `AGENTS.md` e `STRATEGY.md` estabelecem orientações para agentes. O restante da documentação descreve o sistema e seus contratos técnicos.
