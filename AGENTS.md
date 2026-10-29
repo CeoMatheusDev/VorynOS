@@ -1,69 +1,42 @@
-# VorynOS — instruções para agentes de engenharia
+# VorynOS — regras normativas para agentes
 
-> **Fonte normativa única.** Este arquivo fica na raiz do repositório, ao lado de `README.md` e `LICENSE`. Leia-o antes de modificar qualquer componente. Os prompts de `internal/ai/` são auxiliares; em caso de divergência, prevalecem estas instruções e as especificações técnicas aplicáveis.
+> **Fonte normativa única.** Leia antes de alterar o projeto. Para tarefas complexas, consulte [STRATEGY.md](STRATEGY.md) **sob demanda**; ele não substitui nem repete estas regras. Não carregue `restal/` automaticamente.
 
-## Missão e limites
+## Identidade e prioridades
 
-Desenvolver um sistema operacional **independente**, com kernel, bootloader e interfaces próprias. VorynOS não é uma distribuição Linux, fork de Windows/BSD ou interface executada sobre outro kernel. Ferramentas de desenvolvimento externas são permitidas. Não confunda componentes planejados na arquitetura Voryn Fabric com implementações existentes.
+- Sistema operacional **independente**, com bootloader, kernel e interfaces próprias; não usar Linux, BSD ou desktops de terceiros como base oculta. Padrões (UEFI, ELF, ABI, VirtIO) e ferramentas externas de desenvolvimento são permitidos.
+- Alvo inicial: **x86_64 + UEFI**; linguagem principal **Zig 0.17.0**; C23 e Assembly x86_64 apenas com justificativa técnica.
+- Prioridades, nesta ordem: **correção, simplicidade, segurança de memória, isolamento, menor privilégio, desempenho mensurado, interoperabilidade**.
+- Implementar originalmente os subsistemas essenciais (boot, kernel, memória, escalonamento, IPC, filesystem, drivers, SDK, gráficos e desktop). Minimizar latência, cópias, ciclos e memória **sem comprometer segurança ou correção**. Justificar dependências; não inventar criptografia.
+- Identificadores e arquivos em inglês técnico; documentação, ADRs, relatórios e commits em português brasileiro.
+- Licença **GPL-3.0-only**: código próprio novo com cabeçalho visual e `SPDX-License-Identifier: GPL-3.0-only`; preservar avisos de terceiros. Em Zig, usar `//` antes de `//!`, não `/* */` nessa posição.
 
-- Plataforma inicial: **x86_64 + UEFI**; linguagem principal **Zig 0.17.0**; C23 e Assembly x86_64 somente quando tecnicamente justificados.
-- Prioridades: correção, simplicidade, segurança de memória, isolamento, menor privilégio, desempenho mensurado e interoperabilidade.
-- Identificadores e nomes de arquivo: inglês técnico; documentação, relatórios, ADRs e mensagens de commit: português brasileiro.
-- Licença: **GPL-3.0-only**. Código próprio novo deve ter cabeçalho visual e `SPDX-License-Identifier: GPL-3.0-only`; preservar avisos de terceiros. Em Zig, usar comentários de linha `//` antes de `//!`, nunca bloco `/* */` nessa posição.
+## Processo obrigatório
 
-## Diretriz permanente — implementação própria e desempenho verificável
+1. **Inspecionar:** `git status`, código, testes e documentação pertinentes; preservar alterações preexistentes e arquivos não rastreados.
+2. **Delimitar:** objetivo, contratos, dependências, riscos, invariantes, critérios de aceite e menor incremento funcional verificável.
+3. **Confirmar toolchain:** executar `zig version`; verificar APIs e assinaturas da biblioteca padrão instalada; nunca trocar silenciosamente Zig 0.17.0.
+4. **Implementar:** código real e erros explícitos; validar limites, ponteiros, alinhamento, overflow, permissões e entradas não confiáveis. Mockups, TODOs decorativos e arquivos vazios não representam progresso funcional.
+5. **Testar:** executar `zig build`, `zig build test` e, conforme o escopo, `zig build qemu-test` ou `zig build check`. Investigar falhas e regressões; se indisponível, registrar bloqueio, sem alegar sucesso.
+6. **Documentar e reportar:** atualizar contratos, ADRs, roadmap e relatórios quando necessário; informar **objetivo, implementação, arquivos, validação, desempenho, limitações e próxima etapa**.
 
-O VorynOS deve desenvolver **implementações originais dos subsistemas essenciais** de que necessita: boot, kernel, memória, escalonamento, IPC, filesystem, drivers, SDK, gráficos e desktop. O objetivo é minimizar latência, consumo de memória, ciclos de CPU e overhead, sem perder correção, segurança ou interoperabilidade.
+## Contratos, segurança e desempenho
 
-- Não incorporar Linux, BSD ou desktops de terceiros como base oculta do sistema. Ferramentas externas de desenvolvimento e padrões consolidados (UEFI, ELF, ABI, arquitetura x86_64) são permitidos quando tecnicamente necessários.
-- Priorizar controle explícito de memória e recursos, layouts compactos, cópias evitáveis reduzidas, desenho incremental e isolamento de processos.
-- Para cada otimização relevante, registrar hipótese, baseline reproduzível, benchmark, impacto em latência/throughput/memória e regressões; não afirmar ganho sem medição.
-- Não sacrificar segurança, isolamento, confiabilidade ou clareza por micro-otimizações especulativas. Não criar criptografia proprietária.
-- Justificar exceções de dependência e abandonar otimizações sem ganho verificável.
+- Não introduzir alocação dinâmica injustificada em caminhos críticos; evitar abstrações e dependências sem benefício.
+- Validar endereços e permissões de buffers de usuário; preservar isolamento, NX e W^X quando aplicáveis.
+- Assembly: documentar ABI, alinhamento da pilha, registradores preservados e efeitos colaterais.
+- Mudanças de ABI exigem análise de compatibilidade, especificação e testes. **Não reutilizar números de syscalls** sem decisão arquitetural explícita.
+- Otimizações e inovações: registrar problema, hipótese, alternativas, baseline reproduzível, protótipo, riscos, benchmarks (latência/throughput/memória), regressões e critério de aceitação/abandono. **Não alegar ganhos sem medição.**
 
-**Construir do zero é um requisito arquitetural; alto desempenho exige comprovação experimental.**
+## Evidência e conclusão
 
-## Fluxo obrigatório de trabalho
+Estados: **PROPOSTO**, **EM DESENVOLVIMENTO**, **IMPLEMENTADO — NÃO TESTADO**, **TESTADO LOCALMENTE**, **TESTADO NO CI**, **TESTADO EM HARDWARE**, **BLOQUEADO**, **REPROVADO**, **CONCLUÍDO**. Código escrito não equivale a código validado; `CONCLUÍDO` exige critérios de aceite, testes aplicáveis, documentação e análise de regressões. Não confundir componentes planejados do Voryn Fabric com implementações existentes.
 
-1. **Inspecionar:** ler `git status`, arquivos relevantes, testes e documentação; preservar alterações preexistentes e arquivos não rastreados.
-2. **Delimitar:** identificar objetivo, interfaces, dependências, riscos, critérios de aceite e o menor incremento verificável.
-3. **Implementar:** entregar código real e tratamento explícito de erros; validar limites, ponteiros, alinhamento, overflow, privilégios e entradas não confiáveis.
-4. **Verificar toolchain:** executar `zig version`; confirmar APIs e assinaturas na biblioteca padrão da versão instalada. Não substituir silenciosamente Zig 0.17.0.
-5. **Compilar e testar:** executar `zig build`, `zig build test` e, quando aplicável, `zig build qemu-test` ou `zig build check`; registrar comandos e resultados reais. Se indisponíveis, declarar bloqueio.
-6. **Corrigir e repetir:** investigar falhas e regressões; não contornar testes nem inventar sucesso.
-7. **Documentar:** atualizar especificações, ADRs, `docs/roadmap/phase-status.md` e relatórios quando o escopo exigir. Não declarar funcionalidades planejadas como prontas.
-8. **Reportar:** objetivo, implementação, arquivos, validação, desempenho medido (quando houver), limitações e próxima etapa.
+## Operações e fontes de verdade
 
-## Regras de implementação
-
-- Nenhum mockup, TODO decorativo ou arquivo vazio deve representar progresso funcional.
-- Não adicionar alocação dinâmica em caminhos críticos sem justificativa; evitar abstrações e dependências desnecessárias.
-- Verificar endereços e permissões de memória de usuário antes de acessar buffers; respeitar isolamento de processos, NX e W^X quando aplicáveis.
-- Em Assembly, documentar ABI, alinhamento de pilha, registradores preservados e efeitos colaterais.
-- Não criar criptografia própria. Verificar licença, origem e compatibilidade de qualquer código de terceiros.
-- Alterações de ABI exigem análise de compatibilidade, atualização de especificação e testes; **não reutilizar números de syscalls** sem decisão arquitetural explícita.
-- Inovações exigem hipótese, protótipo, comparação, riscos, medição e critério de aceitação/abandono.
-
-## Estados e conclusão
-
-Estados documentados: **PROPOSTO**, **EM DESENVOLVIMENTO**, **IMPLEMENTADO — NÃO TESTADO**, **TESTADO LOCALMENTE**, **TESTADO NO CI**, **TESTADO EM HARDWARE**, **BLOQUEADO**, **REPROVADO**, **CONCLUÍDO**. Implementação não implica funcionamento verificado. Só marcar **CONCLUÍDO** quando os critérios de aceite, testes aplicáveis, documentação e análise de regressão forem atendidos.
-
-## Segurança operacional e Git
-
-- Pode editar, compilar, testar, usar QEMU e preparar commits dentro do projeto.
-- Não executar comandos destrutivos, descartar alterações do usuário, modificar projetos vizinhos ou configurações globais sem autorização específica.
-- Antes de commitar: revisar `git status`, `git diff`, segredos e resultados dos testes.
-- **Não executar push, criar tags, publicar releases ou alterar repositórios remotos sem autorização explícita.**
-- Não alegar compilação, teste, desempenho ou suporte a hardware sem evidência real.
-
-## Fontes de verdade e organização
-
-- `README.md`: apresentação e instruções públicas.
-- `docs/specs/`: contratos técnicos, incluindo `syscall-abi.md` e `boot-handoff-spec.md`.
-- `docs/adr/`: decisões arquiteturais; `docs/standards/`: convenções.
-- `docs/roadmap/phase-status.md`: estado por marco, separado de propostas futuras.
-- `docs/testing/`: estratégia de validação; `docs/reports/f*/`: relatórios históricos por fase.
-- `internal/ai/`: prompts operacionais auxiliares, sem cópia concorrente deste arquivo.
-- `assets/branding/logos/`: imagens de identidade visual do repositório; recursos de runtime devem ter fluxo de empacotamento próprio.
-
-**Atenção:** em caso de conflito entre documentação histórica e código atual, verificar o código e os testes antes de alterar contratos. Documentar a divergência, sem inventar uma reconciliação.
+- Permitido editar, compilar, testar, usar QEMU e preparar commits no projeto. Antes de commitar, revisar `git status`, `git diff`, segredos e resultados dos testes.
+- Proibido descartar mudanças do usuário, executar operações destrutivas, alterar projetos vizinhos ou configurações globais sem autorização específica.
+- **Não executar push, criar tags, publicar releases nem alterar remotos sem autorização explícita.**
+- `README.md`: apresentação; `docs/specs/`: contratos (incluindo `syscall-abi.md` e `boot-handoff-spec.md`); `docs/adr/`: decisões; `docs/standards/`: convenções; `docs/testing/`: testes; `docs/roadmap/phase-status.md`: estado declarado; `docs/reports/f*/`: evidências históricas; `assets/branding/logos/`: identidade visual, não recursos de runtime.
+- `STRATEGY.md`: **único guia operacional opcional**, apenas para tarefas complexas. `restal/`: arquivo histórico, não instrução ativa.
+- Havendo conflito entre documentação histórica e código, **verificar código e testes**, registrar divergência e não inventar reconciliação.
