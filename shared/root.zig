@@ -23,6 +23,7 @@
 //!   * `elf64`   - the ELF64 reader used to load the kernel image;
 //!   * `usermode`- the layout of the window of the user mode;
 //!   * `display` - the display metadata contract of the user mode;
+//!   * `ai`      - the inference contract of the call 24;
 //!   * `port`    - x86_64 port I/O primitives;
 //!   * `serial`  - the 16550 serial driver used by both sides of the handoff.
 //!
@@ -37,6 +38,7 @@ pub const usermode = @import("usermode.zig");
 pub const display = @import("display.zig");
 pub const input = @import("input.zig");
 pub const compositor = @import("compositor.zig");
+pub const ai = @import("ai.zig");
 pub const port = @import("arch/x86_64/port.zig");
 pub const serial = @import("arch/x86_64/serial.zig");
 
@@ -54,4 +56,5 @@ test {
     _ = @import("display.zig");
     _ = @import("input.zig");
     _ = @import("compositor.zig");
+    _ = @import("ai.zig");
 }

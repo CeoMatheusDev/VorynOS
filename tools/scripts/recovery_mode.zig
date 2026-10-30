@@ -13,7 +13,10 @@
 //  Toolchain:  Zig 0.17.0 · C23 (ISO/IEC 9899:2024) · x86-64 (AMD64)     //
 //************************************************************************//
 
-//! Recovery mode boot script (Zig port of recovery-mode.sh).
+//! Host diagnostic that boots the image with the recovery ramdisk.
+//!
+//! The file was `recovery-mode.sh` with Zig content, outside the build graph
+//! and it did not compile. It is installed as `recovery-mode` by `build.zig`.
 //!
 //! Boots VorynOS from a RAM disk when the normal system is broken.
 //! Launches QEMU with the recovery image attached, waits for the kernel to
@@ -87,7 +90,11 @@ fn parseArgs(init: std.process.Init) !Options {
 /// Returns true if `pid` is still running. Uses `kill(pid, 0)` exactly like
 /// `kill -0` in the shell script.
 fn isAlive(pid: std.posix.pid_t) bool {
-    std.posix.kill(pid, 0) catch return false;
+    // Signal 0 asks the kernel about the process without delivering
+    // anything. Zig 0.17 types the signal as an enum, and there is no named
+    // member for it, therefore the value is spelled numerically.
+    const probe: std.posix.SIG = @fromBackingInt(@intCast(0));
+    std.posix.kill(pid, probe) catch return false;
     return true;
 }
 
@@ -109,32 +116,49 @@ pub fn main(init: std.process.Init) !void {
     );
     defer allocator.free(drive_arg);
 
-    const mem = std.posix.getenv("RECOVERY_MEM") orelse "512";
+    // Zig 0.17 entrega o ambiente em `std.process.Init`; `std.posix.getenv`
+    // nao existe mais, e era o motivo de este arquivo nunca ter compilado.
+    const mem = init.environ_map.get("RECOVERY_MEM") orelse "512";
 
     const argv = [_][]const u8{
         "qemu-system-x86_64",
-        "-drive",       drive_arg,
-        "-serial",      "mon:stdio",
-        "-m",           mem,
-        "-cpu",         "qemu64",
+        "-drive",
+        drive_arg,
+        "-serial",
+        "mon:stdio",
+        "-m",
+        mem,
+        "-cpu",
+        "qemu64",
         "-no-reboot",
         "-no-shutdown",
-        "-d",           "int",
+        "-d",
+        "int",
     };
 
-    var child = std.process.Child.init(&argv, allocator);
-    try child.spawn();
-    const pid = child.id;
+    // Zig 0.17 substituiu `Child.init`/`Child.spawn` por `process.spawn`.
+    var child = try std.process.spawn(init.io, .{
+        .argv = &argv,
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+        .environ_map = init.environ_map,
+    });
+    // Zig 0.17 tipa o id como opcional: o spawn nativo sempre o define.
+    const pid = child.id orelse {
+        std.debug.print("recovery-mode: the child has no process identifier\n", .{});
+        return error.MissingChildId;
+    };
 
     // Give the kernel `timeout` seconds to come up.
-    std.Thread.sleep(opts.timeout * std.time.ns_per_s);
+    init.io.sleep(.fromSeconds(@intCast(opts.timeout)), .awake) catch {};
 
     if (!isAlive(pid)) {
         std.debug.print("recovery-mode: QEMU terminated early\n", .{});
         return error.QemuTerminated;
     }
 
-    std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+    child.kill(init.io);
     std.debug.print(
         "recovery-mode: the kernel booted successfully; the system can be diagnosed\n",
         .{},

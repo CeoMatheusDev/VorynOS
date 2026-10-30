@@ -264,6 +264,11 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
     if (sdk.fsClose(read_fd) != 0) sdk.exit(27);
     _ = sdk.write("fs truncate user probe ok\n");
 
+    // F9: prova de ring 3 do motor de inferencia embarcado no kernel. O
+    // modelo nao e copiado para o processo: a chamada 24 envia as features e
+    // recebe o resultado, e o kernel confere a leitura de volta.
+    inferenceProbe();
+
     const message = "toolchain ELF\n";
     const result = sdk.write(message);
     sdk.exit(if (sdk.syscall.isError(result)) 1 else 0);
@@ -402,6 +407,43 @@ fn receiveClientFrame(surface: *const composition.Surface, address: u64, pixel_f
     const hash = surface.checksum();
     writeCompositionMarker(hash);
     return true;
+}
+
+/// Executa a inferencia embarcada a partir do modo usuario (chamada 24).
+///
+/// As tres provas, nesta ordem:
+///
+///   1. um pedido com tamanho errado e recusado pelo kernel com o erro 3,
+///      antes de qualquer leitura do buffer;
+///   2. o pedido valido devolve exatamente os bytes do contrato;
+///   3. o resultado e bit a bit igual ao esperado, e o checksum publicado no
+///      serial e o mesmo que o kernel calculou.
+///
+/// O processo que nao recebeu a capability e recusado com o erro 10, e esse
+/// caso e verificado pelo processo cliente, que nao a possui.
+fn inferenceProbe() void {
+    var output: [sdk.ai.output_dims]f32 = @splat(0.0);
+
+    // 1. Tamanho fora do contrato: o kernel recusa com o erro 3.
+    const wrong_size = sdk.syscall.call(
+        sdk.syscall.Number.ai_infer,
+        @intFromPtr(&sdk.ai.sample_input),
+        sdk.ai.input_bytes / 2,
+        @intFromPtr(&output),
+        sdk.ai.output_bytes,
+    ).status;
+    if (!sdk.syscall.isError(wrong_size)) sdk.exit(28);
+    if (sdk.syscall.errorCode(wrong_size) != @backingInt(sdk.syscall.Error.invalid_length)) sdk.exit(29);
+    _ = sdk.write("ai infer wrong size refused\n");
+
+    // 2. Pedido valido.
+    const status = sdk.aiInfer(&sdk.ai.sample_input, &output);
+    if (sdk.syscall.isError(status)) sdk.exit(30);
+    if (status != sdk.ai.output_bytes) sdk.exit(31);
+
+    // 3. O resultado e o do contrato, bit a bit.
+    if (!sdk.ai.matchesExpected(&output)) sdk.exit(32);
+    writeHashMarker("ai infer ok checksum=0x", sdk.ai.checksumOf(&output));
 }
 
 /// Publica o checksum do quadro composto sem depender de formatador.

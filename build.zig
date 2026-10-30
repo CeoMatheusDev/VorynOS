@@ -103,6 +103,11 @@ pub fn build(b: *std.Build) void {
         .target = user_target,
         .optimize = .ReleaseSmall,
     });
+    const ai_contract = b.createModule(.{
+        .root_source_file = b.path("shared/ai.zig"),
+        .target = user_target,
+        .optimize = .ReleaseSmall,
+    });
     const sdk_module = b.createModule(.{
         .root_source_file = b.path("sdk/src/root.zig"),
         .target = user_target,
@@ -111,6 +116,7 @@ pub fn build(b: *std.Build) void {
     sdk_module.addImport("voryn_display", display_contract);
     sdk_module.addImport("voryn_input", input_contract);
     sdk_module.addImport("voryn_compositor", compositor_contract);
+    sdk_module.addImport("voryn_ai", ai_contract);
     const user_module = b.createModule(.{
         .root_source_file = b.path("user/hello.zig"),
         .target = user_target,
@@ -202,7 +208,13 @@ pub fn build(b: *std.Build) void {
         .target = kernel_target,
         .optimize = optimize,
     });
+    const vlib_kernel_module = b.createModule(.{
+        .root_source_file = b.path("formats/vlib.zig"),
+        .target = kernel_target,
+        .optimize = optimize,
+    });
     kernel_module.addImport("voryn_vpk", vpk_kernel_module);
+    kernel_module.addImport("voryn_vlib", vlib_kernel_module);
     // The VEX executable container is imported by the ELF loader; both the
     // kernel and the host test root compile their own instance.
     const vex_kernel_module = b.createModule(.{
@@ -303,9 +315,15 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const ai_host_module = b.createModule(.{
+        .root_source_file = b.path("shared/ai.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     sdk_test_module.addImport("voryn_display", display_host_module);
     sdk_test_module.addImport("voryn_input", input_host_module);
     sdk_test_module.addImport("voryn_compositor", compositor_host_module);
+    sdk_test_module.addImport("voryn_ai", ai_host_module);
     const sdk_tests = b.addTest(.{
         .name = "sdk-tests",
         .root_module = sdk_test_module,
@@ -324,17 +342,34 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(vpk_tests).step);
 
+    // F5: container VLIB (biblioteca nativa), codec puro testado no host.
+    const vlib_test_module = b.createModule(.{
+        .root_source_file = b.path("formats/vlib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const vlib_tests = b.addTest(.{
+        .name = "vlib-tests",
+        .root_module = vlib_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(vlib_tests).step);
+
     // F5: container VEX (executável nativo), codec puro testado no host.
     const vex_test_module = b.createModule(.{
         .root_source_file = b.path("formats/vex.zig"),
         .target = target,
         .optimize = optimize,
     });
+    // F9: the whole AI module, including the embedded model image, is
+    // covered by the host tests. The root of the module aggregates the
+    // files; without it, `embedded.zig` and `tensor.zig` would not be
+    // collected and their tests would never run.
     const ai_test_module = b.createModule(.{
-        .root_source_file = b.path("kernel/ai/model.zig"),
+        .root_source_file = b.path("kernel/ai/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    ai_test_module.addImport("voryn_shared", shared_test_module);
     const ai_tests = b.addTest(.{
         .name = "ai-tests",
         .root_module = ai_test_module,
@@ -369,6 +404,22 @@ pub fn build(b: *std.Build) void {
         .root_module = compositor_test_module,
     });
     unit_test_step.dependOn(&b.addRunArtifact(compositor_tests).step);
+
+    // F6.31: o desktop gerenciado. A raiz é `desktop.zig` porque ele importa
+    // o frame, a sessão, o gerenciador de janelas, o renderizador, a ponte de
+    // framebuffer, a fila de eventos, o adaptador de ponteiro e a barra da
+    // shell. Nenhum desses arquivos estava em um binário de teste: os testes
+    // existiam e nunca rodavam. A raiz reúne os doze módulos.
+    const desktop_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/graphics/desktop.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const desktop_tests = b.addTest(.{
+        .name = "desktop-tests",
+        .root_module = desktop_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(desktop_tests).step);
 
     // F6.28: composição de janelas no buffer do modo usuário, sem syscalls
     // nem acesso ao framebuffer.
@@ -608,6 +659,25 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(unit_test_step);
     check_step.dependOn(qemu_test_step);
     check_step.dependOn(storage_test_step);
+
+    // ------------------------------------------------------------------
+    // Host tools.
+    //
+    // `recovery-mode` is the diagnostic that boots the image with the
+    // recovery ramdisk. It was a Zig source named `.sh`, it was outside the
+    // build graph and it did not compile; installing it here is what keeps
+    // it from rotting again.
+    // ------------------------------------------------------------------
+    const recovery_module = b.createModule(.{
+        .root_source_file = b.path("tools/scripts/recovery_mode.zig"),
+        .target = b.resolveTargetQuery(.{}),
+        .optimize = .ReleaseSafe,
+    });
+    const recovery_executable = b.addExecutable(.{
+        .name = "recovery-mode",
+        .root_module = recovery_module,
+    });
+    b.installArtifact(recovery_executable);
 
     // ------------------------------------------------------------------
     // Default step.

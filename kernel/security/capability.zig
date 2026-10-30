@@ -71,6 +71,14 @@ pub const Kind = enum {
     /// queue of input events for the graphics service. The right that it
     /// carries is the right to take one event from the queue.
     input,
+    /// The capability of the inference engine.
+    ///
+    /// The subject of the capability is zero, because the kernel embeds one
+    /// model. The right that it carries is the right to run the model over a
+    /// buffer of the caller. The model itself never leaves the kernel: the
+    /// process sends features and receives the result, and it does not
+    /// obtain the weights, the workspace or the address of either.
+    ai,
 };
 
 /// The values that name the kind of a capability in the system call
@@ -88,6 +96,8 @@ pub const KindWire = struct {
     pub const display: u64 = 2;
     /// The capability of the input queue.
     pub const input: u64 = 3;
+    /// The capability of the inference engine.
+    pub const ai: u64 = 4;
 };
 
 /// The kind that a value of the system call interface names.
@@ -97,6 +107,7 @@ pub fn kindFromWire(value: u64) ?Kind {
         KindWire.process => .process,
         KindWire.display => .display,
         KindWire.input => .input,
+        KindWire.ai => .ai,
         else => null,
     };
 }
@@ -108,6 +119,7 @@ pub fn kindToWire(kind: Kind) u64 {
         .process => KindWire.process,
         .display => KindWire.display,
         .input => KindWire.input,
+        .ai => KindWire.ai,
     };
 }
 
@@ -118,6 +130,7 @@ pub fn kindName(kind: Kind) []const u8 {
         .process => "process",
         .display => "display",
         .input => "input",
+        .ai => "ai",
     };
 }
 
@@ -137,8 +150,10 @@ pub const Rights = struct {
     pub const write: u64 = 1 << 3;
     /// The right to take one event from the input queue.
     pub const read: u64 = 1 << 4;
+    /// The right to run the embedded model of the kernel.
+    pub const execute: u64 = 1 << 5;
     /// Every right of a capability.
-    pub const all: u64 = send | receive | delegate | write | read;
+    pub const all: u64 = send | receive | delegate | write | read | execute;
     /// The rights of a holder that can use the subject, but that cannot
     /// give it away.
     pub const use: u64 = send | receive;
@@ -156,6 +171,7 @@ pub fn allowedRights(kind: Kind) u64 {
         .process => Rights.write | Rights.delegate,
         .display => Rights.write | Rights.delegate,
         .input => Rights.read | Rights.delegate,
+        .ai => Rights.execute | Rights.delegate,
     };
 }
 
@@ -578,18 +594,21 @@ test "the handle of a capability is found by its subject" {
     try testing.expect(handleOf(2, .channel, 2) == null);
 }
 
-test "the wire of the kind names exactly the four kinds" {
+test "the wire of the kind names exactly the five kinds" {
     try testing.expect(kindFromWire(KindWire.channel).? == .channel);
     try testing.expect(kindFromWire(KindWire.process).? == .process);
     try testing.expect(kindFromWire(KindWire.display).? == .display);
     try testing.expect(kindFromWire(KindWire.input).? == .input);
-    try testing.expect(kindFromWire(4) == null);
+    try testing.expect(kindFromWire(KindWire.ai).? == .ai);
+    try testing.expect(kindFromWire(5) == null);
     try testing.expect(kindFromWire(std.math.maxInt(u64)) == null);
 
     try testing.expectEqual(KindWire.channel, kindToWire(.channel));
     try testing.expectEqual(KindWire.process, kindToWire(.process));
     try testing.expectEqual(KindWire.display, kindToWire(.display));
     try testing.expectEqual(KindWire.input, kindToWire(.input));
+    try testing.expectEqual(KindWire.ai, kindToWire(.ai));
+    try testing.expectEqualStrings("ai", kindName(.ai));
 }
 
 test "the rights of the kind are the operations of the subject" {

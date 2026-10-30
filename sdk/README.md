@@ -1,31 +1,40 @@
 # SDK nativo VorynOS — F5.1
 
-Estado: **implementado, aguardando compilação e validação em Zig 0.17.0 e QEMU**.
+Estado: **implementado e compilado**. As imagens `hello` e `client` são
+construídas pelo grafo normal de `zig build` e a suíte `sdk-tests` (5 testes)
+roda em `zig build test`. A validação em QEMU depende do CI (QEMU/OVMF não
+existem neste ambiente).
 
 Este módulo é uma interface independente do kernel para aplicações
 `x86_64-freestanding`. Baseia-se exclusivamente em
-`docs/specs/syscall-abi.md` (VSC-0001, versão 9).
+`docs/specs/syscall-abi.md` (VSC-0001, **versão 13**). O valor de
+`syscall.abi_version` em `sdk/src/syscall.zig` é o mesmo que o kernel publica
+em `kernel/arch/x86_64/syscall.zig`; o contêiner VLIB declara essa versão e
+recusa uma biblioteca construída para outra.
 
 - `sdk/src/syscall.zig`: passagem de argumentos via RAX/RDI/RSI/RDX/R8,
-  retorno em RAX e retorno secundário em RDX, números e erros da ABI.
+  retorno em RAX e retorno secundário em RDX, números e erros da ABI. Cobre
+  as chamadas 1–11, 13–24 (12 é reservado), incluindo `fs_truncate` (22),
+  `input_wait` (23) e `ai_infer` (24).
 - `sdk/src/root.zig`: operações de console, processo, IPC, capacidades
   e arquivos. Os valores retornados são os bits da ABI; use
   `syscall.errorCode(status)` para identificar erros.
 - `user/hello.zig`: primeira aplicação migrada para a interface pública.
 
 O SDK não implementa alocador, libc, POSIX, criação dinâmica de processos
-nem descoberta de serviços. Nenhum novo número de syscall foi introduzido.
+nem descoberta de serviços. Nenhum número de syscall nasce no SDK: todos vêm
+de `docs/specs/syscall-abi.md`, e uma chamada nova exige a especificação e os
+testes correspondentes no kernel.
 
-**Validação pendente no Fedora:**
+**Validação local (Zig 0.17.0):**
 
 ```sh
-zig version
-zig build
-zig build test
-zig build qemu-test
+zig build          # constrói o kernel e as imagens nativas `hello` e `client`
+zig build test     # `sdk-tests` 5/5 entre as 621 provas do host
+zig build qemu-test  # CI: QEMU/OVMF ausentes neste ambiente
 ```
 
-Não publicar como versão estável antes de validar esses comandos.
+Não publicar como versão estável antes de a CI confirmar o boot.
 
 ## Incrementos F4–F6 publicados nesta branch
 
@@ -36,15 +45,19 @@ Não publicar como versão estável antes de validar esses comandos.
   códigos de erro da ABI em `sdk/src/syscall.zig`.
 - **F6:** `kernel/graphics/raster.zig` oferece desenho em superfícies
   lineares de 32 bits e testes host de limites e clipping.
-  Ainda não está conectado ao framebuffer do boot.
+  Já conectado ao framebuffer do boot pela cena estática de
+  `presentGraphicsDemo()`; shell, cursor e foco continuam ausentes.
+- **F5 / VLIB:** `formats/vlib.zig` é o contêiner de biblioteca nativa
+  (`docs/specs/vlib.md`). É codec puro: não liga nem carrega bibliotecas.
+  O SDK ainda não produz `.vlb` — o exemplo de boot é montado pelo kernel.
 
 ### Critérios para revisão
 
-Executar no Fedora, com Zig 0.17.0:
+Executar com Zig 0.17.0, na branch em revisão:
 
 ```sh
-git switch feat/native-sdk
-git pull --ff-only origin feat/native-sdk
+git switch <branch-em-revisão>
+git pull --ff-only
 zig build
 zig build test
 zig build qemu-test
@@ -53,8 +66,10 @@ zig build qemu-test
 Verificar que `toolchain ELF` continua aparecendo no console e que a
 aplicação termina com código zero. O teste de boot atual verifica a
 execução, mas não identifica separadamente cada falha do SDK.
-**Não considerar F4–F6 concluídas** com base apenas neste incremento:
-faltam persistência, VFSX, compositor, entrada e janelas.
+**Não considerar F4–F6 concluídas** com base apenas neste documento: F5
+segue em desenvolvimento (sem linker) e F6 ainda não tem shell, cursor nem
+foco entre clientes. O estado vigente é o de
+`docs/roadmap/phase-status.md`; este arquivo descreve apenas o SDK.
 
 ### F6.1 — Compositor de janelas opacas
 

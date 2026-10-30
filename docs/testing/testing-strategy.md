@@ -4,7 +4,7 @@
 |-------|-------|
 | **State** | ACCEPTED |
 | **Date** | 2026-10-21 |
-| **Last revision** | 2026-10-24 |
+| **Last revision** | 2026-10-30 |
 
 ## 1. Principle
 
@@ -44,9 +44,41 @@ kernel and the loader:
 Rule: every module of `shared/` is born with tests, because it is the
 layer that the kernel will depend on to not repeat a firmware mistake.
 
+The graphics layer is the counter-example that produced a rule. Until
+2026-10-30 the binaries `raster-tests`, `compositor-tests`, `damage-tests`,
+`display-tests` and `keyboard-motion-tests` covered the leaves of F6, and
+nothing imported `frame.zig`, `session.zig`, `window_manager.zig`,
+`window_renderer.zig`, `pointer_input.zig`, `event_queue.zig`,
+`framebuffer_bridge.zig` or `desktop.zig`: **29 tests passed in the repository
+and ran in no runner**. `desktop-tests` (root `kernel/graphics/desktop.zig`)
+exists to collect that whole layer. When a module is only consumed by code
+that is not itself a test root, it needs an explicit root, or its tests are
+decoration.
+
+The container codecs of `formats/` follow the same rule, each with its own
+binary so that a codec that stops being collected is visible in the summary:
+
+- `formats/vpk.zig` → `vpk-tests` (pack, validate, read, corruption, invalid
+  names, duplicates, geometry);
+- `formats/vlib.zig` → `vlib-tests` (pack, validate, symbol lookup by index,
+  export lookup, hidden symbol never exported, invalid library name,
+  duplicate exported name, trailing byte after the image, corrupted image
+  CRC);
+- `formats/vex.zig` → `vex-tests` (wrap, validate, unwrap, determinism,
+  manifest).
+
 The kernel modules that do not depend on hardware are tested the same way
 and in the same `zig build test` run, through the binaries `kernel-tests`,
-`security-tests`, `arch-tests`, `vvdi-tests`, `ipc-tests` and `fs-loader-tests`:
+`security-tests`, `arch-tests`, `vvdi-tests`, `ipc-tests`, `ai-tests`,
+`vlib-tests`, `vpk-tests`, `desktop-tests` and `fs-loader-tests`:
+
+- `kernel/ai/`: the inference module (F9). The root `kernel/ai/root.zig`
+  exists so that `tensor.zig`, `model.zig`, `security.zig` and
+  `embedded.zig` are all collected: a module that is only imported inside a
+  `test` block of another file contributes **nothing**, and a test binary
+  with fewer tests still passes. The tests cover the CRC of the embedded
+  image, the exact output of the contract (`[2.125, 5.25, 4.0]`), the
+  determinism across runs and the refusal of a corrupted image.
 
 - `kernel/arch/x86_64/virtio_blk.zig`: the provisional block entry points
   must return `error.NotImplemented`, and the declared error set must stay

@@ -97,6 +97,33 @@ pub const Manager = struct {
         }
     }
 
+    /// Passa o foco para a próxima janela visível, na ordem do z-order, e
+    /// devolve o identificador que recebeu o foco.
+    ///
+    /// A volta é circular e não altera a ordem: trocar de foco por teclado não
+    /// deve reordenar as janelas na tela. Uma janela invisível é pulada, e um
+    /// gerenciador sem janelas visíveis devolve `null` sem mudar nada. Se o
+    /// foco atual não estiver na ordem — o que só acontece com estado
+    /// inconsistente —, a volta começa na primeira janela visível.
+    pub fn focusNext(self: *Manager) ?Handle {
+        if (self.count == 0) return null;
+
+        var start: usize = 0;
+        if (self.focused) |focus| {
+            while (start < self.count and self.order[start] != focus.slot) : (start += 1) {}
+            start = (start + 1) % self.count;
+        }
+        var step: usize = 0;
+        while (step < self.count) : (step += 1) {
+            const index = self.order[(start + step) % self.count];
+            const slot = &self.slots[index];
+            if (!slot.occupied or !slot.window.visible) continue;
+            self.focused = .{ .slot = index, .generation = slot.generation };
+            return self.focused;
+        }
+        return null;
+    }
+
     pub fn raise(self: *Manager, handle: Handle, owner: u64) Error!void {
         const slot = self.lookup(handle) orelse return error.InvalidHandle;
         if (slot.window.owner != owner) return error.InvalidHandle;
@@ -160,4 +187,32 @@ test "capacity and invalid geometry" {
     try std.testing.expectError(error.InvalidGeometry, wm.create(.{ .owner = 0, .x = 0, .y = 0, .width = 0, .height = 1 }));
     for (0..capacity) |_| _ = try wm.create(.{ .owner = 0, .x = 0, .y = 0, .width = 1, .height = 1 });
     try std.testing.expectError(error.Full, wm.create(.{ .owner = 0, .x = 0, .y = 0, .width = 1, .height = 1 }));
+}
+
+test "focusNext cycles visible windows without touching the z-order" {
+    var wm = Manager{};
+    const a = try wm.create(.{ .owner = 1, .x = 0, .y = 0, .width = 2, .height = 2 });
+    const b = try wm.create(.{ .owner = 2, .x = 1, .y = 1, .width = 2, .height = 2 });
+    const hidden = try wm.create(.{ .owner = 3, .x = 2, .y = 2, .width = 2, .height = 2, .visible = false });
+    // A última janela criada está em foco; a invisível não recebeu o foco.
+    try std.testing.expectEqual(hidden.slot, wm.order[2]);
+    try std.testing.expectEqual(b, wm.focused.?);
+
+    const before = wm.order;
+    try std.testing.expectEqual(a, wm.focusNext().?);
+    try std.testing.expectEqual(b, wm.focusNext().?);
+    try std.testing.expectEqual(a, wm.focusNext().?);
+    try std.testing.expectEqual(before, wm.order);
+
+    // Esconder a janela em foco também a retira da volta.
+    wm.slots[a.slot].window.visible = false;
+    try std.testing.expectEqual(b, wm.focusNext().?);
+}
+
+test "focusNext returns null without visible windows" {
+    var wm = Manager{};
+    try std.testing.expect(wm.focusNext() == null);
+    _ = try wm.create(.{ .owner = 1, .x = 0, .y = 0, .width = 1, .height = 1, .visible = false });
+    try std.testing.expect(wm.focusNext() == null);
+    try std.testing.expect(wm.focused == null);
 }

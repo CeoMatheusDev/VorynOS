@@ -5,7 +5,7 @@
 | **State** | ACCEPTED |
 | **Date** | 2026-10-24 |
 | **Scope** | The interface between the user mode and the kernel |
-| **Contract version** | `syscall_abi = 12` |
+| **Contract version** | `syscall_abi = 13` |
 
 ## 1. Objective
 
@@ -29,7 +29,10 @@ Version 9 adds the file system calls 13 to 18. Version 10 adds the
 read-only display metadata call 19. Version 11 adds the display
 presentation call 20, the display capability and the errors 23 and 24.
 Version 12 adds the input event call 21, the input capability and the
-error 25.
+error 25. Version 13 adds the file shrink call 22, the blocking input wait
+call 23, the inference call 24, the AI capability (kind 4) with the right
+`execute`, and the error 26. The version is additive: no existing call
+changes its number or its meaning.
 
 The calls of the earlier versions **do not change their number**. Their
 behavior changes in the points that the sections 9 and 10 describe: the
@@ -147,6 +150,9 @@ next interrupt. The exit code is registered in the task.
 | 19 | `display_info` | `RDI` structure address, `RSI` structure length | the number of bytes written |
 | 20 | `present` | `RDI` request address, `RSI` request length | zero |
 | 21 | `input_poll` | `RDI` event address, `RSI` event length | 1 when an event was written, 0 when the queue is empty |
+| 22 | `fs_truncate` | `RDI` descriptor, `RSI` new size | zero |
+| 23 | `input_wait` | `RDI` event address, `RSI` event length, `RDX` timeout | 1 when an event was written, or the error 13 |
+| 24 | `ai_infer` | `RDI` input address, `RSI` input bytes, `RDX` output address, `R8` output bytes | the number of bytes written in the output |
 
 The number 12 is reserved and is **not** defined by this version: the kernel
 refuses it with the error 1, as it refuses any unknown number.
@@ -270,9 +276,10 @@ The rights of this version are:
 |---|---|---|---|
 | `send` | 1 | The right to put a message in the subject | channel |
 | `receive` | 2 | The right to take a message of the subject | channel |
-| `delegate` | 4 | The right to give the capability to another process | channel, process, display, input |
+| `delegate` | 4 | The right to give the capability to another process | channel, process, display, input, ai |
 | `write` | 8 | The right to write in the address space of the subject, or to present pixels to the display | process, display |
 | `read` | 16 | The right to take one event from the input queue | input |
+| `execute` | 32 | The right to run the model embedded in the kernel | ai |
 
 A right that belongs to another kind is refused with the error 12,
 `invalid_rights`, and so is an empty set of rights: a capability that
@@ -521,10 +528,88 @@ implementation detail; a future input service can replace the single queue
 with per-process queues without changing the event structure.
 
 The call does not wait, does not sleep and does not select a file
-descriptor. It is the first part of the input service: there is no blocking
-input wait, no pointer or mouse event, no focus and no per-process queue in
-version 12. The full compositor and window manager remain proposed in
+descriptor. It is the first part of the input service: there is no pointer
+or mouse event, no focus and no per-process queue in version 13. The
+blocking wait exists since version 13 as the call 23. The full compositor and window manager remain proposed in
 [`ADR-0015`](../adr/ADR-0015-user-space-graphics-service.md).
+
+### 5.11 `fs_truncate`
+
+Shrinks an open file to the size of `RSI`. The descriptor has to be open and
+has to permit writes; the call does not change the offset that a previous
+write advanced, and it does not touch the bytes below the new size.
+
+A descriptor that is not open answers with the error 16, `bad_descriptor`; a
+descriptor opened read-only answers with the error 4, `not_allowed`; a size
+beyond the current size is refused, because growing a file is not part of
+this version. The call answers with zero on success.
+
+### 5.12 `input_wait`
+
+Blocks until an input event is available or the timeout expires. The
+arguments are the same as the ones of `input_poll`, and `RDX` is the timeout
+in ticks of the timer; zero means that the wait does not expire. The result
+is 1 when the call wrote an event, and the error 13, `timeout`, when it
+expired: the task is removed from the queue and the event that arrives later
+stays in the queue for the next call.
+
+The call marks the task as blocked and lets the scheduler choose another
+one; it does not spin on the processor. The event, the expiry and the error
+are delivered in the saved context of the task, therefore a program sees the
+call return exactly where it blocked. The error 9, `impossible wait`, is
+answered when the caller is the only task that could run.
+
+### 5.13 `ai_infer`
+
+Runs the model that the kernel embeds, over a buffer of the caller.
+
+The caller has to hold the capability of the inference engine: kind 4,
+subject 0, with the right `execute` (value 32). The check happens **before**
+any length and before any address, so a process without the capability
+learns nothing about the geometry of the engine and its buffer is never
+read. A process without the capability answers with the error 10,
+`not_authorized`.
+
+The geometry of this version is fixed by `shared/ai.zig` and by the SDK:
+
+| Field | Value |
+|-------|-------|
+| input features | 4, `f32`, 16 bytes |
+| output features | 3, `f32`, 12 bytes |
+| model identifier | 0 |
+
+`RSI` has to be exactly 16 bytes, and `R8` has to be at least 12 bytes; any
+other input length answers with the error 3, `invalid_length`. A larger
+output length is accepted, so a caller built against a future, larger result
+still works with this kernel; the kernel writes exactly 12 bytes. The input
+range has to be readable and the output range has to be writable in the
+address space of the caller; a range that does not belong to the user mode
+answers with the error 2, `invalid_address`.
+
+The call answers with the number of bytes written (12) on success. It
+answers with the error 26, `ai_failure`, when the image does not pass the
+validation — magic, version, geometry, offsets and the CRC32 of the
+weights — or when the output read back from the caller does not match the
+result of the engine. The kernel validates the image on **every** call
+instead of trusting it once: a single corrupt read would otherwise produce
+numbers that look valid for the rest of the boot.
+
+The weights, the intermediate values and the address of the image of the
+model are not part of the contract and never leave the kernel. The process
+sends features and receives the result.
+
+The model of this version is one dense layer with a ReLU activation, and its
+values are powers of two and small integers, so the result is bit exact on
+every x86_64 machine. The contract publishes the expected output for the
+sample input, and a program that receives different bits has a defect:
+
+| Input `[1, 2, 3, 4]` | Expected output |
+|---|---|
+| `[2.125, 5.25, 4.0]` | checksum `0x30f2bf7325eecf35` |
+
+The checksum is FNV-1a over the bytes of the three `f32` values, and it is
+the value that the kernel, the application and the boot test compare. It is
+a detector of a wrong value and not a security primitive.
 
 ## 6. The result and the errors
 
@@ -559,6 +644,7 @@ the code of the error:
 | 23 | invalid geometry | the rectangle is empty or leaves the visible display |
 | 24 | invalid format | the pixel format is not supported by the display or by the call |
 | 25 | no input | the kernel has no input queue for the user mode |
+| 26 | ai failure | the inference engine refused the model or the request |
 
 The limit of the length is **64 KiB** per call for the calls that copy a
 block, and it exists so that the kernel does not spend an undetermined time

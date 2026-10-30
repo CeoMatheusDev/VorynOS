@@ -19,13 +19,34 @@ const bridge = @import("framebuffer_bridge.zig");
 const renderer = @import("window_renderer.zig");
 const wm = @import("window_manager.zig");
 const compositor = @import("compositor.zig");
+const taskbar = @import("taskbar.zig");
+
+comptime {
+    // `pointer_input.zig` não é importado por nenhum outro módulo gráfico: é o
+    // adaptador entre o dispositivo de ponteiro e o `Frame`, usado por quem
+    // tem hardware. Sem esta linha os testes dele ficariam fora do binário —
+    // que é exatamente o defeito que esta raiz corrige.
+    _ = @import("pointer_input.zig");
+}
 
 pub const system_owner: u64 = 1;
+
+/// A shell do desktop: por enquanto, a barra de tarefas.
+///
+/// A barra é opcional. Um desktop sem shell é exatamente o de antes desta
+/// mudança, e é isso que mantém os testes existentes — que comparam a
+/// composição incremental com `renderer.render` — válidos sem reescrevê-los.
+pub const Shell = struct {
+    bar: taskbar.Bar,
+    palette: taskbar.Palette,
+};
 
 pub const Desktop = struct {
     frame: frame_mod.Frame,
     back: wm.Handle,
     front: wm.Handle,
+    /// `null` até `enableShell` ser chamado.
+    shell: ?Shell = null,
 
     pub fn initInPlace(self: *Desktop, width: usize, height: usize, palette: renderer.Palette) !void {
         if (width == 0 or height == 0) return error.InvalidGeometry;
@@ -38,6 +59,9 @@ pub const Desktop = struct {
     pub fn init(width: usize, height: usize, palette: renderer.Palette) !Desktop {
         if (width == 0 or height == 0) return error.InvalidGeometry;
         var desktop: Desktop = undefined;
+        // Sem esta linha o campo opcional nasce indefinido, e um desktop sem
+        // shell pintaria uma barra de altura arbitrária.
+        desktop.shell = null;
         desktop.frame = frame_mod.Frame.init(palette);
         try desktop.frame.session_state.registerClient(system_owner);
         desktop.back = try desktop.frame.createWindow(system_owner, width / 8, height / 8, @max(@as(usize, 1), width / 2), @max(@as(usize, 1), height / 2));
@@ -45,8 +69,38 @@ pub const Desktop = struct {
         return desktop;
     }
 
+    /// Habilita a barra da shell e invalida o quadro: a primeira apresentação
+    /// depois desta chamada tem de mostrar a barra.
+    pub fn enableShell(self: *Desktop, shell: Shell) void {
+        self.shell = shell;
+        self.frame.invalidate();
+    }
+
+    /// Pinta a barra sobre uma superfície já validada. Zero sem shell.
+    pub fn paintShellMapping(self: *Desktop, mapping: bridge.Mapping) bridge.Error!usize {
+        const shell = self.shell orelse return 0;
+        var surface = try mapping.surface();
+        return shell.bar.paint(&surface, &self.frame.session_state.windows, shell.palette);
+    }
+
     pub fn present(self: *Desktop, mapping: bridge.Mapping) bridge.Error!bool {
-        return bridge.present(&self.frame, mapping);
+        const changed = try bridge.present(&self.frame, mapping);
+        // A barra é pintada depois das janelas e mesmo quando o quadro não
+        // mudou: ela ocupa linhas que nenhuma janela alcança, e a pintura é o
+        // que garante que a primeira apresentação a mostre.
+        _ = try self.paintShellMapping(mapping);
+        return changed;
+    }
+
+    /// Passa o foco para a próxima janela visível e repinta o quadro inteiro.
+    ///
+    /// Trocar o foco muda a cor de duas janelas, então não há recorte parcial
+    /// que sirva: a apresentação é completa. A ordem do z-order não muda.
+    pub fn cycleFocusAndPresent(self: *Desktop, mapping: bridge.Mapping) bridge.Error!?wm.Handle {
+        const next = self.frame.session_state.windows.focusNext() orelse return null;
+        self.frame.invalidate();
+        _ = try self.present(mapping);
+        return next;
     }
 
     /// Repaint only the old and new front-window footprints. Overlap may be
@@ -79,7 +133,8 @@ pub const Desktop = struct {
         if (!slot.occupied or slot.generation != self.front.generation) return error.InvalidHandle;
         const previous = slot.window;
         if (previous.x == x and previous.y == y) {
-            return if (self.frame.present(&surface)) surface.width *| surface.height else 0;
+            const changed = if (self.frame.present(&surface)) surface.width *| surface.height else 0;
+            return changed +| try self.paintShellMapping(mapping);
         }
         const full_redraw = self.frame.dirty;
         const movement_start: u64 = if (clock) |read| read() else 0;
@@ -90,7 +145,7 @@ pub const Desktop = struct {
         if (full_redraw) {
             _ = self.frame.present(&surface);
             if (timing) |result| result.composition_cycles = if (clock) |read| read() - composition_start else 0;
-            return surface.width *| surface.height;
+            return (surface.width *| surface.height) +| try self.paintShellMapping(mapping);
         }
         const old_rect: compositor.Rect = .{ .x = previous.x, .y = previous.y, .width = previous.width, .height = previous.height };
         const new_rect: compositor.Rect = .{ .x = x, .y = y, .width = previous.width, .height = previous.height };
@@ -127,7 +182,7 @@ pub const Desktop = struct {
             result.paint_cycles = paint_end - paint_start;
             result.composition_cycles = paint_end - composition_start;
         }
-        return pixels;
+        return pixels +| try self.paintShellMapping(mapping);
     }
 
     pub fn moveFront(self: *Desktop, x: usize, y: usize) wm.Error!void {
@@ -144,7 +199,11 @@ test "managed desktop presents, moves and skips unchanged frames" {
     var desktop = try Desktop.init(8, 8, palette);
     var pixels: [8 * 8 * 4]u8 = @splat(0xaa);
     const mapping: bridge.Mapping = .{
-        .bytes = &pixels, .width = 8, .height = 8, .pitch = 32, .bits_per_pixel = 32,
+        .bytes = &pixels,
+        .width = 8,
+        .height = 8,
+        .pitch = 32,
+        .bits_per_pixel = 32,
     };
     try std.testing.expect(try desktop.present(mapping));
     try std.testing.expect(!(try desktop.present(mapping)));
@@ -164,7 +223,11 @@ test "desktop rejects empty geometry and retains dirty state on bad mapping" {
     var desktop = try Desktop.init(8, 8, palette);
     var short: [4]u8 = @splat(0);
     try std.testing.expectError(error.BufferTooSmall, desktop.present(.{
-        .bytes = &short, .width = 8, .height = 8, .pitch = 32, .bits_per_pixel = 32,
+        .bytes = &short,
+        .width = 8,
+        .height = 8,
+        .pitch = 32,
+        .bits_per_pixel = 32,
     }));
     try std.testing.expect(desktop.frame.dirty);
 }
@@ -201,7 +264,11 @@ test "invalid mapping does not move desktop window" {
     var desktop = try Desktop.init(8, 8, palette);
     var short: [4]u8 = @splat(0);
     try std.testing.expectError(error.BufferTooSmall, desktop.moveFrontAndPresent(.{
-        .bytes = &short, .width = 8, .height = 8, .pitch = 32, .bits_per_pixel = 32,
+        .bytes = &short,
+        .width = 8,
+        .height = 8,
+        .pitch = 32,
+        .bits_per_pixel = 32,
     }, 5, 5));
     const slot = desktop.frame.session_state.windows.slots[desktop.front.slot];
     try std.testing.expectEqual(@as(usize, 2), slot.window.x);
@@ -225,4 +292,102 @@ test "overlapping movement paints each pixel at most once" {
     var surface = try @import("raster.zig").Surface.init(&expected, 32, 24, 128);
     renderer.render(&surface, &desktop.frame.session_state.windows, palette);
     try std.testing.expectEqualSlices(u8, &expected, &pixels);
+}
+
+test "the shell bar is painted after the windows, only in its own rows" {
+    const palette: renderer.Palette = .{
+        .background = .{ 0, 0, 0, 0 },
+        .active = .{ 9, 9, 9, 9 },
+        .inactive = .{ 3, 3, 3, 3 },
+    };
+    const shell_palette: taskbar.Palette = .{
+        .bar = .{ 0x10, 0x10, 0x10, 0xff },
+        .active = .{ 0x90, 0x90, 0x90, 0xff },
+        .inactive = .{ 0x40, 0x40, 0x40, 0xff },
+    };
+    var desktop = try Desktop.init(8, 8, palette);
+    var pixels: [8 * 8 * 4]u8 = @splat(0xaa);
+    const mapping: bridge.Mapping = .{ .bytes = &pixels, .width = 8, .height = 8, .pitch = 32, .bits_per_pixel = 32 };
+    try std.testing.expect(try desktop.present(mapping));
+    // Sem shell, a última linha continua sendo a composição das janelas.
+    try std.testing.expect(!std.mem.eql(u8, &shell_palette.bar, pixels[7 * 32 ..][0..4]));
+
+    desktop.enableShell(.{ .bar = .{ .height = 2 }, .palette = shell_palette });
+    try std.testing.expect(try desktop.present(mapping));
+    // As duas últimas linhas são da barra. Na coluna da calha aparece o fundo
+    // da barra; na coluna do primeiro botão, a cor do botão por cima dele.
+    var buttons: [taskbar.max_buttons]taskbar.Button = undefined;
+    const bar: taskbar.Bar = .{ .height = 2 };
+    const count = bar.layout(&desktop.frame.session_state.windows, 8, &buttons);
+    try std.testing.expectEqual(@as(usize, 2), count);
+    const gutter_column = (buttons[0].width) * 4;
+    try std.testing.expectEqualSlices(u8, &shell_palette.bar, pixels[6 * 32 + gutter_column ..][0..4]);
+    try std.testing.expectEqualSlices(u8, &shell_palette.bar, pixels[7 * 32 + gutter_column ..][0..4]);
+    try std.testing.expectEqualSlices(u8, &shell_palette.inactive, pixels[7 * 32 ..][0..4]);
+    // A linha imediatamente acima da barra continua sendo das janelas.
+    try std.testing.expect(!std.mem.eql(u8, &shell_palette.bar, pixels[5 * 32 ..][0..4]));
+    try std.testing.expectEqual(@as(usize, 16), try desktop.paintShellMapping(mapping));
+}
+
+test "a window dragged over the bar does not hide it" {
+    const palette: renderer.Palette = .{
+        .background = .{ 0, 0, 0, 0 },
+        .active = .{ 9, 9, 9, 9 },
+        .inactive = .{ 3, 3, 3, 3 },
+    };
+    const shell_palette: taskbar.Palette = .{
+        .bar = .{ 0x10, 0x10, 0x10, 0xff },
+        .active = .{ 0x90, 0x90, 0x90, 0xff },
+        .inactive = .{ 0x40, 0x40, 0x40, 0xff },
+    };
+    var desktop = try Desktop.init(8, 8, palette);
+    desktop.enableShell(.{ .bar = .{ .height = 2 }, .palette = shell_palette });
+    var pixels: [8 * 8 * 4]u8 = @splat(0);
+    const mapping: bridge.Mapping = .{ .bytes = &pixels, .width = 8, .height = 8, .pitch = 32, .bits_per_pixel = 32 };
+    try std.testing.expect(try desktop.present(mapping));
+    // A janela da frente (4x2) desce e passa a cobrir as linhas 4 e 5.
+    _ = try desktop.moveFrontAndPresent(mapping, 0, 4);
+    try std.testing.expectEqualSlices(u8, &palette.active, pixels[4 * 32 ..][0..4]);
+    try std.testing.expectEqualSlices(u8, &palette.active, pixels[5 * 32 ..][0..4]);
+    // A barra continua nas duas últimas linhas: a calha é o fundo da barra,
+    // inclusive quando uma janela é arrastada até embaixo.
+    var buttons: [taskbar.max_buttons]taskbar.Button = undefined;
+    const bar: taskbar.Bar = .{ .height = 2 };
+    const count = bar.layout(&desktop.frame.session_state.windows, 8, &buttons);
+    try std.testing.expectEqual(@as(usize, 2), count);
+    const gutter_column = buttons[0].width * 4;
+    try std.testing.expectEqualSlices(u8, &shell_palette.bar, pixels[6 * 32 + gutter_column ..][0..4]);
+    try std.testing.expectEqualSlices(u8, &shell_palette.bar, pixels[7 * 32 + gutter_column ..][0..4]);
+}
+
+test "cycling the focus repaints both windows and keeps the bar" {
+    const palette: renderer.Palette = .{
+        .background = .{ 0, 0, 0, 0 },
+        .active = .{ 9, 9, 9, 9 },
+        .inactive = .{ 3, 3, 3, 3 },
+    };
+    const shell_palette: taskbar.Palette = .{
+        .bar = .{ 0x10, 0x10, 0x10, 0xff },
+        .active = .{ 0x90, 0x90, 0x90, 0xff },
+        .inactive = .{ 0x40, 0x40, 0x40, 0xff },
+    };
+    var desktop = try Desktop.init(16, 12, palette);
+    desktop.enableShell(.{ .bar = .{ .height = 2 }, .palette = shell_palette });
+    var pixels: [16 * 12 * 4]u8 = @splat(0);
+    const mapping: bridge.Mapping = .{ .bytes = &pixels, .width = 16, .height = 12, .pitch = 64, .bits_per_pixel = 32 };
+    try std.testing.expect(try desktop.present(mapping));
+
+    const front = desktop.front;
+    try std.testing.expectEqual(front, desktop.frame.session_state.windows.focused.?);
+    // A primeira volta devolve a outra janela do desktop e troca as cores.
+    const next = (try desktop.cycleFocusAndPresent(mapping)).?;
+    try std.testing.expectEqual(desktop.back, next);
+    try std.testing.expectEqual(next, desktop.frame.session_state.windows.focused.?);
+    const back_window = desktop.frame.session_state.windows.slots[desktop.back.slot].window;
+    try std.testing.expectEqualSlices(u8, &palette.active, pixels[(back_window.y * 16 + back_window.x) * 4 ..][0..4]);
+    // 16 / 2 = 8 por coluna: os botões ocupam 0..6 e 8..14, e a coluna 7 é a
+    // calha, onde se vê o fundo da barra.
+    try std.testing.expectEqualSlices(u8, &shell_palette.bar, pixels[11 * 64 + 7 * 4 ..][0..4]);
+    // E a volta seguinte devolve o foco à janela da frente.
+    try std.testing.expectEqual(front, (try desktop.cycleFocusAndPresent(mapping)).?);
 }

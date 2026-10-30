@@ -13,7 +13,7 @@
 - Compilado: `/tmp/voryn-phase2b-cache/zig-out/bin/syscall_bench` (ReleaseFast, x86_64-freestanding-none)
 
 ### Recuperação — CRIADO
-- `tools/scripts/recovery-mode.sh`: boot QEMU com ramdisk de recuperação, assertions de `VORYN-KERNEL-READY`
+- `tools/scripts/recovery_mode.zig` (antes `recovery-mode.sh`): lança o QEMU no host com o ramdisk de recuperação. Desde 2026-10-30 o arquivo tem a extensão certa, **compila** e entra no build como `recovery-mode`; ele é uma ferramenta de host e **não** é recuperação do sistema no alvo
 
 ### Limitações verificadas
 - Stack canary não integrado ao `voryn_task_switch` (assembly `task.s`) — requer atualização do contexto de contexto de assembly

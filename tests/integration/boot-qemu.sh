@@ -610,6 +610,14 @@ require_pattern '\[VNK\] tasks: [0-9]+ blocks' 'the report of the blocked tasks'
 require_marker "switch cost"
 require_marker "[VNK] framebuffer: write probe succeeded"
 require_pattern '\[VNK\] graphics: managed desktop presented \([0-9]+x[0-9]+\)' 'the managed desktop presentation'
+# F6.31: a shell. A barra ocupa as ultimas linhas, tem um botao por janela
+# visivel, o alvo de clique do primeiro botao e conferido no proprio kernel
+# (e a calha nao pertence a botao nenhum), e o foco troca de janela sem
+# alterar o z-order. Qualquer divergencia mata o boot com FATAL, entao o
+# marcador que existe aqui e o que o teste exige.
+require_pattern '\[VNK\] shell: bar height=[0-9]+ buttons=[1-9][0-9]* windows=[0-9]+' 'the shell taskbar'
+require_pattern '\[VNK\] shell: the first button answers a click at x=[0-9]+ y=[0-9]+' 'the click target of the first shell button'
+require_pattern '\[VNK\] shell: focus cycled to slot=[0-9]+ frame=[0-9]+x[0-9]+' 'the focus cycle of the shell'
 require_pattern '\[VNK\] graphics: keyboard move x=[0-9]+ y=[0-9]+ redraw=[1-9][0-9]* pixels' 'the keyboard-driven desktop redraw'
 require_marker "[VNK] syscall: instruction installed and verified"
 require_marker "[VNK] user: process 0"
@@ -650,6 +658,25 @@ require_marker "[VNK] user: the wait with a timeout expired with the error 13"
 require_pattern '\[VNK\] channel: [0-9]+ waits expired with the timeout' 'the expiry of the wait with a timeout'
 require_marker "[VNK] user: the second process wrote 0x5a5a1235 in its own page"
 require_marker "[VNK] user: the copy between the two processes moved 8 bytes"
+# F9: o modelo embarcado e validado e executado no kernel antes do timer, e
+# o processo que compoe recebe a capability da IA. O checksum e o do
+# contrato (`shared/ai.zig`), e nao um valor que o teste aceite de qualquer
+# forma: um modelo diferente, um peso trocado ou um resultado arredondado
+# falham a comparacao.
+require_pattern '\[VNK\] ai: model validated id=0 input=4 hidden=4 output=3 image=[0-9]+ bytes weights=48 bytes crc ok' 'the validation of the embedded model'
+require_marker "[VNK] ai: inference ok output_x1000=2125,5250,4000 checksum=0x30f2bf7325eecf35 model=0"
+require_pattern '\[VNK\] capabilities: the inference engine belongs to the process [0-9]+' 'the grant of the inference capability'
+# O processo recusa um pedido com tamanho fora do contrato (erro 3), depois
+# executa a chamada valida (12 bytes) e publica o checksum do resultado.
+require_marker "ai infer wrong size refused"
+require_marker "[VNK] syscall 24 from user ai_infer result 0xfffffffffffffffd"
+require_pattern '\[VNK\] ai: process [0-9]+ ran the model output=0x[0-9a-f]+ inputs=0x[0-9a-f]+ checksum=0x30f2bf7325eecf35' 'the inference of the user process'
+require_marker "[VNK] syscall 24 from user ai_infer result 0xc"
+require_marker "ai infer ok checksum=0x30f2bf7325eecf35"
+# O cliente nao possui a capability: a chamada e recusada com o erro 10 antes
+# de qualquer leitura do buffer, e o processo continua depois da recusa.
+require_marker "[VNK] syscall 24 from user ai_infer result 0xfffffffffffffff6"
+require_marker "ai infer denied without the capability"
 require_marker "VORYN-KERNEL-READY"
 require_marker "[VNK] self test: the handler returned 0x42"
 require_marker "[VNK] EXCEPTION 6: invalid opcode"

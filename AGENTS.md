@@ -39,5 +39,6 @@ Estados: **PROPOSTO**, **EM DESENVOLVIMENTO**, **IMPLEMENTADO — NÃO TESTADO**
 - Proibido descartar mudanças do usuário, executar operações destrutivas, alterar projetos vizinhos ou configurações globais sem autorização específica.
 - **Não executar push, criar tags, publicar releases nem alterar remotos sem autorização explícita.**
 - `README.md`: apresentação; `docs/specs/`: contratos (incluindo `syscall-abi.md` e `boot-handoff-spec.md`); `docs/adr/`: decisões; `docs/standards/`: convenções; `docs/testing/`: testes; `docs/roadmap/phase-status.md`: estado declarado; `docs/reports/f*/`: evidências históricas; `assets/branding/logos/`: identidade visual, não recursos de runtime.
-- `STRATEGY.md`: **único guia operacional opcional**, apenas para tarefas complexas. Não há outros prompts ou guias de agentes ativos no repositório.
+- `STRATEGY.md`: **único guia operacional opcional**, apenas para tarefas complexas.
+- `restal/` e `internal/ai/archive/`: **arquivos históricos**, não normativos e que não devem ser carregados automaticamente. Preservam prompts anteriores; em caso de conflito, vale este arquivo.
 - Havendo conflito entre documentação histórica e código, **verificar código e testes**, registrar divergência e não inventar reconciliação.

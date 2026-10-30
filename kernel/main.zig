@@ -58,12 +58,16 @@ const capability = @import("security/capability.zig");
 const physical = @import("memory/physical.zig");
 const scheduler = @import("task/scheduler.zig");
 const fs = @import("fs/fs.zig");
+const ai_contract = voryn.ai;
+const ai_embedded = @import("ai/embedded.zig");
+const ai_model = @import("ai/model.zig");
 const ramfs = @import("fs/ramfs.zig");
 const vnv = @import("fs/vnv.zig");
 const vnv_volume = @import("fs/vnv_volume.zig");
 const block_dev = @import("voryn_block");
 const ramdisk = @import("storage/ramdisk.zig");
 const vpk = @import("voryn_vpk");
+const vlib = @import("voryn_vlib");
 const vex = @import("voryn_vex");
 const elf_loader = @import("elf_loader.zig");
 const elf_materializer = @import("elf_materializer.zig");
@@ -74,6 +78,7 @@ const compositor = @import("graphics/compositor.zig");
 const display = @import("graphics/display.zig");
 const framebuffer_bridge = @import("graphics/framebuffer_bridge.zig");
 const desktop_mod = @import("graphics/desktop.zig");
+const taskbar_mod = @import("graphics/taskbar.zig");
 const ps2 = @import("input/ps2.zig");
 const keyboard_motion = @import("graphics/keyboard_motion.zig");
 const keyboard = @import("voryn_keyboard");
@@ -376,6 +381,39 @@ var persistence_sequence: u64 = 0;
 const vpk_pack_buffer_size: usize = 512;
 var vpk_pack_buffer: [vpk_pack_buffer_size]u8 align(16) = undefined;
 var vpk_packed_length: usize = 0;
+
+// ----------------------------------------------------------------------
+// F5: VLIB — o contêiner da biblioteca nativa (`.vlb`).
+//
+// A biblioteca é empacotada no kernel sobre a **imagem real** que o
+// toolchain produziu: os mesmos bytes de ELF64 relocável que geram o
+// `/apps/toolchain.vex`. O que este incremento prova é o contêiner —
+// geometria, símbolos, ABI, capabilities exigidas e integridade — e o ciclo
+// empacotar/persistir/recuperar/validar. O **ligador** de bibliotecas em um
+// processo (relocação e resolução de símbolo contra um espaço de endereço)
+// não faz parte deste incremento e não é alegado.
+// ----------------------------------------------------------------------
+const vlib_library_name = "libvoryn";
+const vlib_required_capabilities: u64 = 1 << 2; // kind 2: display.
+const vlib_symbols = [_]vlib.SymbolSource{
+    .{ .name = "voryn_main", .kind = .function, .value = 0x1000 },
+    .{ .name = "voryn_init", .kind = .function, .value = 0x0000 },
+    .{ .name = "voryn_shutdown", .kind = .function, .value = 0x1080 },
+    .{ .name = "internal_helper", .binding = .hidden, .kind = .function, .value = 0x1100 },
+};
+
+/// Tamanho exato do arquivo VLIB: cabeçalho, registros, nomes dos símbolos,
+/// nome da biblioteca e a imagem.
+const vlib_packed_size: usize = blk: {
+    var total: usize = vlib.header_size + vlib_symbols.len * vlib.symbol_record_size +
+        vlib_library_name.len + toolchain_app.bytes.len;
+    for (vlib_symbols) |symbol| total += symbol.name.len;
+    break :blk total;
+};
+
+var vlib_pack_buffer: [vlib_packed_size]u8 align(16) = undefined;
+var vlib_read_buffer: [vlib_packed_size]u8 align(16) = undefined;
+var vlib_packed_length: usize = 0;
 
 /// Tamanho do arquivo `/apps/toolchain.vex` instalado no RamFS (cabeçalho
 /// VEX + ELF + manifest). Usado pela verificação de persistência.
@@ -770,6 +808,10 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // that owns it. The other processes only use the channel after the
     // owner gives them the capability, and the process that does not hold
     // it is refused.
+    // F9: o modelo embarcado e validado e executado no kernel antes de
+    // qualquer processo receber a capability da IA. A ordem e a mesma regra
+    // dos canais: o que uma tarefa pode usar tem de existir antes do timer.
+    verifyAiSelfTest();
     installCapabilities();
     prepareFsLifecycleProbe();
 
@@ -798,6 +840,7 @@ export fn voryn_kmain(boot: *const handoff.BootHandoff) callconv(.c) noreturn {
     // desempacotado byte a byte.
     verifyFsPersistence();
     verifyVpkPackaging();
+    verifyVlibPackaging();
 
     // F6.26: the toolchain application presents a probe rectangle during
     // its test. The diagnostic scene is drawn again after the task has
@@ -2293,11 +2336,88 @@ fn presentGraphicsDemo() void {
         .pitch = pitch,
         .bits_per_pixel = framebuffer.bits_per_pixel,
     };
+    // F6.31: a shell. A barra ocupa as últimas linhas e nenhuma janela a
+    // alcança; a cor ativa do botão segue o foco do gerenciador de janelas.
+    const bar_height = @max(@as(usize, 1), height / 32);
+    graphics_desktop.enableShell(.{
+        .bar = .{ .height = bar_height },
+        .palette = .{
+            .bar = .{ 0x08, 0x08, 0x08, 0xff },
+            .active = if (is_bgr) .{ 0xc0, 0x96, 0x40, 0xff } else .{ 0x40, 0x96, 0xc0, 0xff },
+            .inactive = .{ 0x28, 0x28, 0x28, 0xff },
+        },
+    });
     _ = graphics_desktop.present(mapping) catch |err| {
         serial.printLine("[VNK] graphics: desktop presentation failed: {s}", .{@errorName(err)});
         return;
     };
     serial.printLine("[VNK] graphics: managed desktop presented ({d}x{d})", .{ width, height });
+
+    // Autoteste da shell: conta os botões, confere o alvo de um clique na
+    // barra e troca o foco pelo teclado. O resultado é publicado no console,
+    // e o teste de boot da CI o exige.
+    const shell_bar: taskbar_mod.Bar = .{ .height = bar_height };
+    var shell_buttons: [taskbar_mod.max_buttons]taskbar_mod.Button = undefined;
+    const button_count = shell_bar.layout(&graphics_desktop.frame.session_state.windows, width, &shell_buttons);
+    serial.printLine("[VNK] shell: bar height={d} buttons={d} windows={d}", .{
+        bar_height,
+        button_count,
+        graphics_desktop.frame.session_state.windows.count,
+    });
+    if (button_count == 0) {
+        serial.printLine("[VNK] shell: the bar has no button for the boot scene", .{});
+    } else {
+        const first = shell_buttons[0];
+        const hit = shell_bar.buttonAt(
+            &graphics_desktop.frame.session_state.windows,
+            width,
+            height,
+            first.x,
+            height - 1,
+        );
+        if (hit != null and hit.?.slot == first.handle.slot) {
+            serial.printLine("[VNK] shell: the first button answers a click at x={d} y={d}", .{ first.x, height - 1 });
+        } else {
+            serial.printLine("[VNK] FATAL: the first button of the shell does not answer a click", .{});
+            port.haltForever();
+        }
+        // O ponto na calha não pertence a botão nenhum: clicar no vazio não
+        // deve mudar o foco.
+        const gutter = first.x + first.width;
+        if (shell_bar.buttonAt(
+            &graphics_desktop.frame.session_state.windows,
+            width,
+            height,
+            gutter,
+            height - 1,
+        ) != null) {
+            serial.printLine("[VNK] FATAL: the gutter of the shell belongs to a button", .{});
+            port.haltForever();
+        }
+    }
+
+    const before = graphics_desktop.frame.session_state.windows.focused;
+    const focused = graphics_desktop.cycleFocusAndPresent(mapping) catch |err| {
+        serial.printLine("[VNK] graphics: the focus could not be cycled: {s}", .{@errorName(err)});
+        return;
+    };
+    if (focused) |handle| {
+        serial.printLine("[VNK] shell: focus cycled to slot={d} frame={d}x{d}", .{ handle.slot, width, height });
+        if (before) |previous| {
+            if (previous.slot == handle.slot) {
+                serial.printLine("[VNK] FATAL: the focus did not change with {d} windows", .{
+                    graphics_desktop.frame.session_state.windows.count,
+                });
+                port.haltForever();
+            }
+        }
+        // A volta com duas janelas devolve o foco à janela da frente.
+        _ = graphics_desktop.cycleFocusAndPresent(mapping) catch |err| {
+            serial.printLine("[VNK] graphics: the focus could not be restored: {s}", .{@errorName(err)});
+            return;
+        };
+    }
+
     graphics_front_x = width / 4;
     graphics_front_y = height / 4;
     graphics_ready = true;
@@ -2791,6 +2911,64 @@ fn installFs() void {
         port.haltForever();
     };
     serial.printLine("[VNK] vpk: packed {d} entries, {d} bytes", .{ vpk_sources.len, vpk_packed_length });
+    // F5: a biblioteca nativa em um contêiner VLIB. A imagem embutida é o
+    // ELF64 relocável que o toolchain gerou; a biblioteca declara os
+    // símbolos exportados, o símbolo interno, a ABI e as capabilities que
+    // exige. O arquivo é gravado no RamFS como qualquer outro e passa pelo
+    // commit VNV, portanto a recuperação tem de devolvê-lo íntegro.
+    _ = fs.mkdir("/lib") catch |err| switch (err) {
+        error.NameExists => {},
+        else => {
+            serial.printLine("[VNK] FATAL: the directory /lib could not be created: {s}", .{@errorName(err)});
+            port.haltForever();
+        },
+    };
+
+    const vlib_options = vlib.Options{
+        .name = vlib_library_name,
+        .abi_version = syscall.abi_version,
+        .required_capabilities = vlib_required_capabilities,
+        .flags = vlib.Flags.relocatable,
+        .symbols = &vlib_symbols,
+        .image = &toolchain_app.bytes,
+    };
+    vlib_packed_length = vlib.pack(vlib_options, &vlib_pack_buffer) catch |err| {
+        serial.printLine("[VNK] FATAL: the VLIB library could not be packed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (vlib_packed_length != vlib_packed_size) {
+        serial.printLine("[VNK] FATAL: the VLIB library has {d} bytes, and the geometry says {d}", .{
+            vlib_packed_length,
+            vlib_packed_size,
+        });
+        port.haltForever();
+    }
+
+    const vlib_descriptor = fs.create(0, "/lib/libvoryn.vlb", 0o644) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /lib/libvoryn.vlb could not be created: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    const vlib_written = fs.write(0, vlib_descriptor, vlib_pack_buffer[0..vlib_packed_length]) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /lib/libvoryn.vlb could not be written: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (vlib_written != vlib_packed_length) {
+        serial.printLine("[VNK] FATAL: the file /lib/libvoryn.vlb accepted {d} bytes", .{vlib_written});
+        port.haltForever();
+    }
+    fs.close(0, vlib_descriptor) catch |err| {
+        serial.printLine("[VNK] FATAL: the file /lib/libvoryn.vlb could not be closed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    serial.printLine("[VNK] vlib: packed {s} symbols={d} image={d} bytes abi={d} requires=0x{x} total={d} bytes", .{
+        vlib_library_name,
+        vlib_symbols.len,
+        toolchain_app.bytes.len,
+        syscall.abi_version,
+        vlib_required_capabilities,
+        vlib_packed_length,
+    });
+
     serial.printLine("[VNK] fs: /apps/sample.vpk installed ({d} bytes)", .{vpk_packed_length});
 
     // F4: arquivo maior que os 12 blocos diretos. A gravação atravessa a
@@ -2830,6 +3008,70 @@ fn installFs() void {
 /// channel, and cannot give it to a third process. The chain of delegation
 /// is the property that the model has to keep, and it is verified by the
 /// unit tests of the module.
+/// Bytes of the embedded model, for the diagnostics.
+const ai_image_bytes: usize = ai_embedded.image_len;
+
+/// Runs the model embedded in the kernel and compares the result with the
+/// contract.
+///
+/// The check has three parts, and each one fails the boot on its own:
+///
+///   1. the image passes the same validation that the system call runs
+///      (magic, version, geometry, offsets and CRC32 of the weights);
+///   2. the inference produces exactly the output of `shared/ai.zig`;
+///   3. the checksum of the result is the one published by the contract.
+///
+/// A failure is fatal **before** the processes exist: a kernel that cannot
+/// run its own model would answer the call 24 with numbers that look valid,
+/// and that is worse than not booting. The values are printed scaled by
+/// 1000, because the serializer of the kernel does not format floats and a
+/// hand written float printer would be a new source of defects in the boot
+/// path.
+fn verifyAiSelfTest() void {
+    ai_model.validate(&ai_embedded.image) catch |err| {
+        serial.printLine("[VNK] FATAL: the embedded model is invalid: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    const info = ai_model.fromBytes(&ai_embedded.image) catch |err| {
+        serial.printLine("[VNK] FATAL: the embedded model has no readable header: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    serial.printLine(
+        "[VNK] ai: model validated id={d} input={d} hidden={d} output={d} image={d} bytes weights={d} bytes crc ok",
+        .{ ai_contract.model_id, info.input_dims, info.hidden_dims, info.output_dims, ai_image_bytes, info.weight_size },
+    );
+
+    var features: [ai_contract.input_dims]f32 = ai_contract.sample_input;
+    var result: [ai_contract.output_dims]f32 = @splat(0.0);
+    ai_model.infer(&ai_embedded.image, &features, &result) catch |err| {
+        serial.printLine("[VNK] FATAL: the embedded model did not run: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+
+    if (!ai_contract.matchesExpected(&result)) {
+        serial.printLine("[VNK] FATAL: the embedded model produced an output outside the contract", .{});
+        port.haltForever();
+    }
+
+    const checksum = ai_contract.checksumOf(&result);
+    if (checksum != ai_contract.expectedChecksum()) {
+        serial.printLine("[VNK] FATAL: the checksum of the inference is not the one of the contract", .{});
+        port.haltForever();
+    }
+
+    // Escala inteira exata: 2.125, 5.25 e 4.0 em milésimos.
+    const scale: f32 = 1000.0;
+    serial.printLine("[VNK] ai: inference ok output_x1000={d},{d},{d} checksum=0x{x} model={d}", .{
+        @as(u32, @intFromFloat(result[0] * scale)),
+        @as(u32, @intFromFloat(result[1] * scale)),
+        @as(u32, @intFromFloat(result[2] * scale)),
+        checksum,
+        ai_contract.model_id,
+    });
+}
+
 fn installCapabilities() void {
     capability.init();
 
@@ -2925,6 +3167,21 @@ fn installCapabilities() void {
         port.haltForever();
     }
 
+    // A capability da inferencia (F9). O processo que compoe e o dono do
+    // modelo: ele recebe o direito de executar, e nao o de delegar, porque
+    // nao existe hoje um segundo consumidor do motor. O modelo continua
+    // dentro do kernel; a capability autoriza a chamada 24 e nao expoe
+    // pesos, workspace nem endereco.
+    const ai_rights = capability.Rights.execute;
+    const ai_handle = capability.create(.ai, 0, ai_rights | capability.Rights.delegate) orelse {
+        serial.printLine("[VNK] FATAL: the table of capabilities is full", .{});
+        port.haltForever();
+    };
+    if (!capability.give(presenter.id, ai_handle, ai_rights)) {
+        serial.printLine("[VNK] FATAL: the capability of the inference could not be given", .{});
+        port.haltForever();
+    }
+
     // O canal 2 liga o cliente ao compositor. O cliente só envia, e o
     // compositor só recebe: o direito de delegação não é dado a nenhum dos
     // dois. O cliente não recebe o canal para uma resposta, porque o
@@ -2968,6 +3225,7 @@ fn installCapabilities() void {
     });
     serial.printLine("[VNK] capabilities: the display belongs to the process {d}", .{presenter.id});
     serial.printLine("[VNK] capabilities: the input belongs to the process {d}", .{presenter.id});
+    serial.printLine("[VNK] capabilities: the inference engine belongs to the process {d}", .{presenter.id});
     serial.printLine("[VNK] capabilities: the channel {d} carries frames from the client {d} to the compositor {d}", .{
         compositor_abi.channel_id,
         client.id,
@@ -4612,6 +4870,104 @@ fn verifyVpkPackaging() void {
 
     fs.unlink("/apps/sample.vpk") catch |err| {
         serial.printLine("[VNK] FATAL: the VPK file could not be removed: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+}
+
+/// Validates the library container after the VNV recovery.
+///
+/// The check is byte-for-byte between the file that the recovery returned and
+/// the bytes that the kernel packed before the commit. A container that
+/// validated but differed by one byte would pass a CRC-only comparison
+/// against itself, therefore the comparison is against the **original**
+/// buffer, and the CRC of the image is checked twice: by the codec and by the
+/// equality with the toolchain image.
+fn verifyVlibPackaging() void {
+    const written = fs.readFile("/lib/libvoryn.vlb", &vlib_read_buffer) catch |err| {
+        serial.printLine("[VNK] FATAL: the recovered volume lost /lib/libvoryn.vlb: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (written != vlib_packed_length) {
+        serial.printLine("[VNK] FATAL: the recovered VLIB has {d} bytes, and the packed file had {d}", .{
+            written,
+            vlib_packed_length,
+        });
+        port.haltForever();
+    }
+    if (!std.mem.eql(u8, vlib_read_buffer[0..written], vlib_pack_buffer[0..vlib_packed_length])) {
+        serial.printLine("[VNK] FATAL: the recovered VLIB differs from the packed file", .{});
+        port.haltForever();
+    }
+
+    const info = vlib.validate(vlib_read_buffer[0..written]) catch |err| {
+        serial.printLine("[VNK] FATAL: the recovered VLIB failed validation: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (!std.mem.eql(u8, info.name, vlib_library_name)) {
+        serial.printLine("[VNK] FATAL: the recovered VLIB names another library", .{});
+        port.haltForever();
+    }
+    if (info.abi_version != syscall.abi_version) {
+        serial.printLine("[VNK] FATAL: the recovered VLIB targets ABI {d}, and the kernel implements {d}", .{
+            info.abi_version,
+            syscall.abi_version,
+        });
+        port.haltForever();
+    }
+    if (info.symbol_count != vlib_symbols.len or info.required_capabilities != vlib_required_capabilities) {
+        serial.printLine("[VNK] FATAL: the recovered VLIB geometry changed", .{});
+        port.haltForever();
+    }
+    if (info.image.len != toolchain_app.bytes.len or
+        !std.mem.eql(u8, info.image, &toolchain_app.bytes))
+    {
+        serial.printLine("[VNK] FATAL: the image inside the recovered VLIB is not the one that was packed", .{});
+        port.haltForever();
+    }
+
+    // O export é encontrado; o símbolo interno não é oferecido.
+    const main = vlib.findExport(vlib_read_buffer[0..written], "voryn_main") catch |err| {
+        serial.printLine("[VNK] FATAL: the VLIB export voryn_main was not found: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (main.value != 0x1000 or main.kind != .function) {
+        serial.printLine("[VNK] FATAL: the VLIB export voryn_main has the wrong value", .{});
+        port.haltForever();
+    }
+    if (vlib.findExport(vlib_read_buffer[0..written], "internal_helper")) |_| {
+        serial.printLine("[VNK] FATAL: the VLIB offered a hidden symbol as an export", .{});
+        port.haltForever();
+    } else |err| {
+        if (err != error.SymbolNotFound) {
+            serial.printLine("[VNK] FATAL: the lookup of the hidden symbol failed with {s}", .{@errorName(err)});
+            port.haltForever();
+        }
+    }
+
+    // A imagem embutida é um ELF64 de verdade: o contêiner carrega código, e
+    // não um blob opaco. O carregamento da biblioteca em um processo é o
+    // próximo incremento e **não** é alegado aqui.
+    var segments: [8]voryn.elf64.Segment = undefined;
+    var relocations: [8]voryn.elf64.Relocation = undefined;
+    const parsed = voryn.elf64.parse(info.image, &segments, &relocations) catch |err| {
+        serial.printLine("[VNK] FATAL: the image inside the VLIB is not an ELF64: {s}", .{@errorName(err)});
+        port.haltForever();
+    };
+    if (parsed.segments.len == 0) {
+        serial.printLine("[VNK] FATAL: the image inside the VLIB has no loadable segment", .{});
+        port.haltForever();
+    }
+
+    serial.printLine("[VNK] vlib: /lib/libvoryn.vlb validated after recovery symbols={d} image={d} bytes segments={d}", .{
+        info.symbol_count,
+        info.image.len,
+        parsed.segments.len,
+    });
+    serial.printLine("[VNK] vlib: export voryn_main at 0x{x}, hidden internal_helper not exported", .{main.value});
+    serial.printLine("[VNK] vlib: pack/persist/recover/validate round trip ok", .{});
+
+    fs.unlink("/lib/libvoryn.vlb") catch |err| {
+        serial.printLine("[VNK] FATAL: the VLIB file could not be removed: {s}", .{@errorName(err)});
         port.haltForever();
     };
 }

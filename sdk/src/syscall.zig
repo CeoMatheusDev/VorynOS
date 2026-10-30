@@ -46,9 +46,13 @@ pub const Number = struct {
     /// Block until an input event is available or the timeout expires:
     /// RDI=event address, RSI=size, RDX=timeout in ticks (0 = forever).
     pub const input_wait: u64 = 23;
+    /// Run the embedded model: RDI=input address, RSI=input bytes,
+    /// RDX=output address, R8=output bytes. Requires the AI capability
+    /// (kind 4, right `execute`).
+    pub const ai_infer: u64 = 24;
 };
 
-/// Códigos de erro estáveis definidos por VSC-0001 v12.
+/// Códigos de erro estáveis definidos por VSC-0001 v13.
 pub const Error = enum(u64) {
     unknown_call = 1,
     invalid_address = 2,
@@ -75,13 +79,14 @@ pub const Error = enum(u64) {
     invalid_geometry = 23,
     invalid_format = 24,
     no_input = 25,
+    ai_failure = 26,
 };
 
 /// Preserva códigos futuros ou desconhecidos como null.
 pub fn knownError(status: u64) ?Error {
     const code = errorCode(status) orelse return null;
     return switch (code) {
-        1...25 => @fromBackingInt(code), // ✅ Substituição para Zig 0.17.0
+        1...26 => @fromBackingInt(code), // ✅ Substituição para Zig 0.17.0
         else => null,
     };
 }
@@ -98,14 +103,14 @@ pub inline fn call(number: u64, a: u64, b: u64, c: u64, d: u64) Result {
     var status: u64 = undefined;
     var value: u64 = undefined;
     asm volatile ("syscall"
-    : [status] "={rax}" (status),
-                  [value] "={rdx}" (value),
-                  : [number] "{rax}" (number),
-                  [a] "{rdi}" (a),
-                  [b] "{rsi}" (b),
-                  [c] "{rdx}" (c),
-                  [d] "{r8}" (d),
-                  : .{ .rcx = true, .r11 = true, .memory = true });
+        : [status] "={rax}" (status),
+          [value] "={rdx}" (value),
+        : [number] "{rax}" (number),
+          [a] "{rdi}" (a),
+          [b] "{rsi}" (b),
+          [c] "{rdx}" (c),
+          [d] "{r8}" (d),
+        : .{ .rcx = true, .r11 = true, .memory = true });
     return .{ .status = status, .value = value };
 }
 
