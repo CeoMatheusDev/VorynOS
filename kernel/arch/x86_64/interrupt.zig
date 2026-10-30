@@ -422,6 +422,13 @@ export fn voryn_interrupt_handler(vector: u64, frame: *const Registers) callconv
         if (vector == first_hardware_vector + 1) {
             @import("../../input/ps2.zig").onInterrupt();
         }
+
+        // F6.32: IRQ12, o mouse PS/2. Chega pelo controlador escravo; a
+        // cascata (IRQ2) é desmascarada junto com esta linha em
+        // `timer.enableAuxiliaryIrq`.
+        if (vector == first_hardware_vector + 12) {
+            @import("../../input/ps2.zig").onMouseInterrupt();
+        }
         timer.acknowledge(@intCast(vector));
     }
 

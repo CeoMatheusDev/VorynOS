@@ -348,6 +348,7 @@ QEMU_PID=$!
 DEADLINE=$(( SECONDS + TIMEOUT ))
 KEY_SENT=0
 WAIT_KEY_SENT=0
+MOUSE_MOVED=0
 SCREENSHOT_TAKEN=0
 
 while (( SECONDS < DEADLINE )); do
@@ -373,6 +374,29 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
 PY
         then
             KEY_SENT=1
+        fi
+    fi
+
+    # F6.32: o kernel anuncia que o mouse esta pronto. O HMP injeta movimento
+    # relativo no dispositivo PS/2 virtual; se o controlador nao tivesse sido
+    # habilitado (handshake com ACK e IRQ12 desmascarado), nenhum pacote
+    # chegaria e a asercao abaixo falharia.
+    if [[ "$MOUSE_MOVED" -eq 0 ]] && grep -qF "[VNK] mouse: ready for PS/2 movement" "$SERIAL_LOG" 2>/dev/null; then
+        if python3 - "$WORK_DIRECTORY/monitor.sock" <<'PYMOUSE'
+import socket
+import sys
+import time
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
+    monitor.settimeout(2)
+    monitor.connect(sys.argv[1])
+    # Dois pacotes, para que o segundo confirme que o fluxo continua
+    # sincronizado depois do primeiro.
+    monitor.sendall(b"mouse_move 40 30\n")
+    time.sleep(0.05)
+    monitor.sendall(b"mouse_move 20 10\n")
+PYMOUSE
+        then
+            MOUSE_MOVED=1
         fi
     fi
 
@@ -625,6 +649,13 @@ require_pattern '\[VNK\] graphics: managed desktop presented \([0-9]+x[0-9]+\)' 
 require_pattern '\[VNK\] shell: bar height=[0-9]+ buttons=[1-9][0-9]* windows=[0-9]+' 'the shell taskbar'
 require_pattern '\[VNK\] shell: the first button answers a click at x=[0-9]+ y=[0-9]+' 'the click target of the first shell button'
 require_pattern '\[VNK\] shell: focus cycled to slot=[0-9]+ frame=[0-9]+x[0-9]+' 'the focus cycle of the shell'
+# F6.32: o cursor. A seta e desenhada pelo kernel no desktop, o handshake do
+# 8042 e registrado com o valor de configuracao antes e depois, e o movimento
+# injetado pelo HMP chega ao ponteiro e e publicado.
+require_pattern '\[VNK\] pointer: arrow drawn at x=[0-9]+ y=[0-9]+ over the desktop' 'the pointer arrow drawn on the desktop'
+require_pattern '\[VNK\] mouse: controller ready config=0x[0-9a-f]+->0x[0-9a-f]+ acks=[0-9]+' 'the PS/2 auxiliary handshake'
+require_pattern '\[VNK\] mouse: cursor moved x=[0-9]+ y=[0-9]+ dx=-?[0-9]+ dy=-?[0-9]+' 'the cursor moved by the injected PS/2 motion'
+require_pattern '\[VNK\] mouse: [0-9]+ moves, [0-9]+ packets, [0-9]+ bytes, [0-9]+ packets dropped, [0-9]+ resyncs, [0-9]+ irqs' 'the mouse summary of the input window'
 require_pattern '\[VNK\] graphics: keyboard move x=[0-9]+ y=[0-9]+ redraw=[1-9][0-9]* pixels' 'the keyboard-driven desktop redraw'
 require_marker "[VNK] syscall: instruction installed and verified"
 require_marker "[VNK] user: process 0"

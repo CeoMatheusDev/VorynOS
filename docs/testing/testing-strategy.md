@@ -51,7 +51,14 @@ nothing imported `frame.zig`, `session.zig`, `window_manager.zig`,
 `window_renderer.zig`, `pointer_input.zig`, `event_queue.zig`,
 `framebuffer_bridge.zig` or `desktop.zig`: **29 tests passed in the repository
 and ran in no runner**. `desktop-tests` (root `kernel/graphics/desktop.zig`)
-exists to collect that whole layer. When a module is only consumed by code
+exists to collect that whole layer, and it also collects `cursor.zig`.
+
+The PS/2 mouse is split along the same rule: `kernel/input/mouse.zig` is the
+pure packet decoder (it never touches a port) and runs in `input-tests`;
+`kernel/input/ps2.zig` owns the 8042 handshake and the IRQ handlers and is
+**not** in any test binary, because it needs hardware. Its correctness is
+argued by the boot assertions and by the bounded waits with an explicit
+reason, not by a host test — and the report says so. When a module is only consumed by code
 that is not itself a test root, it needs an explicit root, or its tests are
 decoration.
 
@@ -70,7 +77,8 @@ binary so that a codec that stops being collected is visible in the summary:
 The kernel modules that do not depend on hardware are tested the same way
 and in the same `zig build test` run, through the binaries `kernel-tests`,
 `security-tests`, `arch-tests`, `vvdi-tests`, `ipc-tests`, `ai-tests`,
-`vlib-tests`, `vpk-tests`, `desktop-tests` and `fs-loader-tests`:
+`vlib-tests`, `vpk-tests`, `desktop-tests`, `input-tests` and
+`fs-loader-tests`:
 
 - `kernel/ai/`: the inference module (F9). The root `kernel/ai/root.zig`
   exists so that `tensor.zig`, `model.zig`, `security.zig` and

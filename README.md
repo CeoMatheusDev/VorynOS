@@ -55,7 +55,7 @@ implementation details and remaining work.
 | **F3** | Execution | 🟡 Active | Scheduler, user processes, syscalls and IPC; expansion pending |
 | **F4** | Storage | 🟡 Active | RamFS, VFSX/VNV and **VirtIO Block persistence in QEMU** |
 | **F5** | Applications | 🟡 Active | Native ELF loading, SDK, and the **VEX and VLIB containers** (codec + boot self-test); runtime linking pending |
-| **F6** | Graphics | 🟡 Active | Rasterizer, compositor, damage tracking, managed scene desktop, PS/2 keyboard input and a **taskbar shell with keyboard focus switching**; no text, cursor or mouse driver |
+| **F6** | Graphics | 🟡 Active | Rasterizer, compositor, damage tracking, managed scene desktop, **PS/2 keyboard and mouse**, kernel-drawn **cursor** and a **taskbar shell**; no text, no click handling and no acceleration |
 | **F7** | Drivers | 🟡 Active | **VVDI + modern VirtIO PCI + block I/O**; wider hardware support pending |
 | **F8** | Compatibility | 🟡 Active | Native ELF/VEX and the Voryn ABI; **no PE, Win32 or Linux ABI layer exists** |
 | **F9** | AI | 🟢 Tested (host) | **Native CPU inference as syscall 24**, gated by an `execute` capability; one embedded model, no GPU |
@@ -65,7 +65,51 @@ implementation details and remaining work.
 documented environment · Active/Partial = work remains. These labels do not
 mean the OS is production-ready.
 
-### Latest increment · The desktop gets a bar (F6.31)
+### Latest increment · A pointer that actually moves (F6.32)
+
+The taskbar had a click target and no device behind it. This closes that: the
+kernel now talks to the **PS/2 mouse** and draws its own **cursor**.
+
+```text
+[VNK] pointer: arrow drawn at x=960 y=540 over the desktop
+[VNK] mouse: controller ready config=0x47->0x47 acks=2
+[VNK] mouse: cursor moved x=1000 y=570 dx=20 dy=10
+[VNK] mouse: 2 moves, 2 packets, 6 bytes, 0 packets dropped, 0 resyncs, 2 irqs
+```
+
+`kernel/input/mouse.zig` decodes the three-byte packets: the sync bit (a first
+byte without it is discarded, or every following packet would be shifted), the
+sign bits, the **Y axis inverted once** (the wire says up, the screen says
+down) and the overflow bits — saturated and *counted*, instead of inventing a
+number that looks exact. `kernel/input/ps2.zig` does the 8042 handshake
+(`0xA8`, config byte, `0xF6`, `0xF4`) with **ACK required and every wait
+bounded**: a missing controller publishes a reason and the boot continues.
+`drainOutputBuffer` routes each byte by its device bit, so a mouse byte that
+arrives during IRQ1 is not swallowed.
+
+`kernel/graphics/cursor.zig` draws the arrow from a text-defined sprite. It
+does **not** save and restore the pixels underneath — that snapshot goes stale
+the moment a window is repainted. Instead the rectangle is re-composed from
+the window model and the arrow drawn last: more pixel writes, correct in any
+event order. A test proves that two partial moves produce a framebuffer
+**byte for byte identical** to a full presentation at the final position.
+
+**Stated limits:** no pointer acceleration and no smoothing (one PS/2 count is
+one pixel — acceleration is interface policy, and faking it would make the
+cursor test depend on a curve); the packet carries the three button states and
+the decoder reports them, but **nothing in the kernel uses the buttons** —
+there is no click, no drag and no focus-by-click yet; no scroll, no wheel, no
+IntelliMouse 4-byte mode, no USB/HID.
+
+**Validated locally:** 704 Zig tests (0 failures; `input-tests` 7 and
+`desktop-tests` 57 among them) and `zig build` completing 15/15 steps. The four
+new boot assertions depend on QEMU delivering the injected `mouse_move` to the
+virtual PS/2 port; **that is for CI to confirm**, not for this session.
+
+[F6.32 report](docs/reports/f6/mouse-cursor.md) ·
+[Roadmap](docs/roadmap/phase-status.md)
+
+### Previous increment · The desktop gets a bar (F6.31)
 
 Closing a gap turned up two documentation defects. First: the README and the
 roadmap said "focus pending", but focus between clients **already existed** —

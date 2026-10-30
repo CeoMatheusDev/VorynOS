@@ -405,6 +405,20 @@ pub fn build(b: *std.Build) void {
     });
     unit_test_step.dependOn(&b.addRunArtifact(compositor_tests).step);
 
+    // F6.32: o decodificador do mouse PS/2 é puro (nenhuma porta de I/O),
+    // então roda no host. O handshake do 8042 fica em `ps2.zig`, que depende
+    // de hardware e não entra em binário de teste.
+    const input_test_module = b.createModule(.{
+        .root_source_file = b.path("kernel/input/mouse.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const input_tests = b.addTest(.{
+        .name = "input-tests",
+        .root_module = input_test_module,
+    });
+    unit_test_step.dependOn(&b.addRunArtifact(input_tests).step);
+
     // F6.31: o desktop gerenciado. A raiz é `desktop.zig` porque ele importa
     // o frame, a sessão, o gerenciador de janelas, o renderizador, a ponte de
     // framebuffer, a fila de eventos, o adaptador de ponteiro e a barra da

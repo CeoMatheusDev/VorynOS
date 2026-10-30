@@ -2338,6 +2338,16 @@ fn presentGraphicsDemo() void {
     };
     // F6.31: a shell. A barra ocupa as últimas linhas e nenhuma janela a
     // alcança; a cor ativa do botão segue o foco do gerenciador de janelas.
+    // F6.32: a seta do ponteiro. Ela nasce no centro da tela; quem a move é
+    // o IRQ12, e o kernel só a desloca quando um pacote chega.
+    graphics_desktop.enablePointer(.{
+        .cursor = .{ .x = width / 2, .y = height / 2 },
+        .palette = .{
+            .outline = .{ 0x00, 0x00, 0x00, 0xff },
+            .fill = .{ 0xff, 0xff, 0xff, 0xff },
+        },
+    });
+
     const bar_height = @max(@as(usize, 1), height / 32);
     graphics_desktop.enableShell(.{
         .bar = .{ .height = bar_height },
@@ -2418,9 +2428,49 @@ fn presentGraphicsDemo() void {
         };
     }
 
+    if (graphics_desktop.pointer) |pointer| {
+        serial.printLine("[VNK] pointer: arrow drawn at x={d} y={d} over the desktop", .{
+            pointer.cursor.x,
+            pointer.cursor.y,
+        });
+    }
+
     graphics_front_x = width / 4;
     graphics_front_y = height / 4;
     graphics_ready = true;
+}
+
+/// F6.32: aplica um pacote de movimento ao ponteiro do desktop.
+///
+/// O deslocamento é aplicado **sem aceleração**: um contador do PS/2 é um
+/// pixel. Aceleração é política de interface, não de driver, e não existe
+/// aqui — inventá-la tornaria o teste do cursor dependente de uma curva.
+fn applyMouseGraphics(packet: ps2.Mouse.Packet) void {
+    if (!graphics_ready) return;
+    if (packet.dx == 0 and packet.dy == 0) return;
+    const framebuffer = boot_info.framebuffer;
+    const width: usize = @intCast(framebuffer.width);
+    const height: usize = @intCast(framebuffer.height);
+    const pitch: usize = @intCast(framebuffer.pitch);
+    const size: usize = @intCast(framebuffer.size);
+    const ptr: [*]u8 = @ptrFromInt(framebuffer.base);
+    _ = graphics_desktop.movePointerAndPresent(.{
+        .bytes = ptr[0..size],
+        .width = width,
+        .height = height,
+        .pitch = pitch,
+        .bits_per_pixel = framebuffer.bits_per_pixel,
+    }, packet.dx, packet.dy) catch |err| {
+        serial.printLine("[VNK] mouse: the cursor could not be moved: {s}", .{@errorName(err)});
+        return;
+    };
+    const pointer = graphics_desktop.pointer orelse return;
+    serial.printLine("[VNK] mouse: cursor moved x={d} y={d} dx={d} dy={d}", .{
+        pointer.cursor.x,
+        pointer.cursor.y,
+        packet.dx,
+        packet.dy,
+    });
 }
 
 /// F15.6: compare identical raster fills on RAM and the mapped GOP surface.
@@ -2663,15 +2713,46 @@ fn installTimer() void {
     // apenas no final. O trabalho de composição ocorre com IRQs habilitadas.
     // CLI protege somente a retirada de um evento da fila SPSC de IRQ1.
     serial.printLine("[VNK] keyboard: ready for PS/2 input", .{});
+
+    // F6.32: o mouse. O handshake acontece com as interrupções locais
+    // desabilitadas, porque um pacote de movimento no meio da conversa seria
+    // lido como resposta de comando. A linha IRQ12 só é desmascarada depois
+    // do ACK: um mouse ausente não deve gerar uma interrupção fantasma.
+    cpu.disableInterrupts();
+    const auxiliary = ps2.initAuxiliaryIrqsDisabled();
+    if (auxiliary.present) timer.enableAuxiliaryIrq();
+    cpu.enableInterrupts();
+    if (auxiliary.present) {
+        serial.printLine("[VNK] mouse: controller ready config=0x{x}->0x{x} acks={d}", .{
+            auxiliary.config_before,
+            auxiliary.config_after,
+            auxiliary.acks,
+        });
+        serial.printLine("[VNK] mouse: ready for PS/2 movement", .{});
+    } else {
+        // Um mouse ausente não impede o boot: o teclado continua sendo a
+        // entrada do desktop. O motivo fica no console.
+        serial.printLine("[VNK] mouse: unavailable ({s}) config=0x{x}", .{
+            auxiliary.reason,
+            auxiliary.config_before,
+        });
+    }
+
     const input_start = timer.ticks();
     var key_count: usize = 0;
     var pressed: usize = 0;
     var released: usize = 0;
     var graphics_updates: usize = 0;
+    var mouse_moves: usize = 0;
     while (timer.ticks() - input_start < 200) {
         cpu.disableInterrupts();
         const maybe_event = ps2.popIrqsDisabled();
+        const maybe_motion = ps2.popMouseIrqsDisabled();
         cpu.enableInterrupts();
+        if (maybe_motion) |motion| {
+            mouse_moves += 1;
+            applyMouseGraphics(motion);
+        }
         if (maybe_event) |event| {
             key_count += 1;
             if (event.pressed) {
@@ -2687,7 +2768,7 @@ fn installTimer() void {
             serial.printLine("[VNK] keyboard: key scancode=0x{x} extended={d} pressed={d}", .{
                 event.scancode, @intFromBool(event.extended), @intFromBool(event.pressed),
             });
-        } else {
+        } else if (maybe_motion == null) {
             // HLT acorda na próxima IRQ; não realiza busy polling.
             cpu.halt();
         }
@@ -2696,7 +2777,12 @@ fn installTimer() void {
     while (true) {
         cpu.disableInterrupts();
         const maybe_event = ps2.popIrqsDisabled();
+        const maybe_motion = ps2.popMouseIrqsDisabled();
         cpu.enableInterrupts();
+        if (maybe_motion) |motion| {
+            mouse_moves += 1;
+            applyMouseGraphics(motion);
+        }
         const event = maybe_event orelse break;
         key_count += 1;
         if (event.pressed) {
@@ -2716,6 +2802,10 @@ fn installTimer() void {
     cpu.disableInterrupts();
     const bytes = ps2.receivedIrqsDisabled();
     const dropped = ps2.droppedIrqsDisabled();
+    const mouse_bytes = ps2.mouseBytesIrqsDisabled();
+    const mouse_dropped = ps2.mouseDroppedIrqsDisabled();
+    const mouse_decoder = ps2.mouseDecoderStatsIrqsDisabled();
+    const mouse_irqs = ps2.takeMouseIrqStatsIrqsDisabled();
     cpu.enableInterrupts();
     serial.printLine("[VNK] keyboard: {d} events, {d} pressed, {d} released, {d} bytes, {d} dropped", .{
         key_count, pressed, released, bytes, dropped,
@@ -2723,6 +2813,17 @@ fn installTimer() void {
     serial.printLine("[VNK] graphics: event pump {d} arrow presses over {d} ticks", .{
         graphics_updates, timer.ticks() - input_start,
     });
+    serial.printLine(
+        "[VNK] mouse: {d} moves, {d} packets, {d} bytes, {d} packets dropped, {d} resyncs, {d} irqs",
+        .{
+            mouse_moves,
+            mouse_decoder.packets,
+            mouse_bytes,
+            mouse_dropped,
+            mouse_decoder.resyncs,
+            mouse_irqs.interrupts,
+        },
+    );
 }
 
 /// F6.11: loop de eventos permanente, selecionado pela tecla I no boot.
@@ -2732,12 +2833,14 @@ fn runInteractiveEventLoop() noreturn {
     while (true) {
         cpu.disableInterrupts();
         const maybe_event = ps2.popIrqsDisabled();
+        const maybe_motion = ps2.popMouseIrqsDisabled();
         cpu.enableInterrupts();
+        if (maybe_motion) |motion| applyMouseGraphics(motion);
         if (maybe_event) |event| {
             applyKeyboardGraphics(event);
-        } else {
-            // O timer de 100 Hz garante novo despertar mesmo se IRQ1
-            // chegar entre a leitura da fila e HLT.
+        } else if (maybe_motion == null) {
+            // O timer de 100 Hz garante novo despertar mesmo se IRQ1 (ou o
+            // IRQ12, no mouse) chegar entre a leitura da fila e HLT.
             cpu.halt();
         }
     }
