@@ -75,6 +75,10 @@ test {
     _ = virtqueue;
     _ = containment;
     _ = block;
+    // Injecao de falhas do dispositivo: o simulador de VirtIO Block e os
+    // testes de contencao. O arquivo so entra na compilacao de teste; o
+    // kernel nao o referencia.
+    _ = @import("fault_injection.zig");
 }
 
 const std = @import("std");
