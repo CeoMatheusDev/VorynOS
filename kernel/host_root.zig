@@ -31,6 +31,7 @@ pub const vnv = @import("fs/vnv.zig");
 pub const vnv_volume = @import("fs/vnv_volume.zig");
 pub const block = @import("voryn_block");
 pub const ramdisk = @import("storage/ramdisk.zig");
+pub const phys_blk = @import("storage/phys_blk.zig");
 pub const elf_loader = @import("elf_loader.zig");
 pub const native_image = @import("native_image.zig");
 
@@ -46,6 +47,7 @@ test {
     _ = @import("fs/vnv_volume.zig");
     _ = @import("voryn_block");
     _ = @import("storage/ramdisk.zig");
+    _ = @import("storage/phys_blk.zig");
     _ = @import("elf_loader.zig");
     _ = @import("native_image.zig");
 }
@@ -113,4 +115,38 @@ test "the native image survives the RamFS and fits the load window" {
     try std.testing.expectEqual(plan.end, loaded.end);
     try std.testing.expectEqual(plan.segment_count, loaded.segment_count);
     try std.testing.expectEqual(plan.relocation_count, loaded.relocation_count);
+}
+
+test "the physical driver substitutes the ramdisk in the VNV volume" {
+    // F4: o volume VNV nao conhece o backend. Este teste commita e recupera
+    // um estado de RamFS sobre `phys_blk.PhysBlock`, que e um dispositivo de
+    // blocos com setor de 1 byte e a mesma interface do ramdisk. Se o
+    // volume dependesse do ramdisk em memoria, o arquivo nao voltaria.
+    const backing_size = 4096 * 512;
+
+    var backing: [backing_size]u8 = @splat(0);
+    var device_state: phys_blk.PhysBlock = undefined;
+    device_state.init(&backing, 1);
+    const device: block.Device = device_state.device();
+
+    var state: ramfs.State = undefined;
+    ramfs.initState(&state);
+    const root = try ramfs.createDirectoryFor(&state, ramfs.root_inode, "test");
+    const file = try ramfs.createFileFor(&state, root, "hello");
+    try ramfs.writeFileFor(&state, file, "F4 verified");
+
+    var staging: [vnv.image_size]u8 = @splat(0);
+    try vnv_volume.commit(&device, &state, 1, &staging);
+
+    // A recuperacao parte de um estado vazio: o conteudo so pode vir do
+    // dispositivo, e nao de uma sobra do estado de origem.
+    var recovered: ramfs.State = undefined;
+    var scratch: ramfs.State = undefined;
+    ramfs.initState(&recovered);
+    try vnv_volume.recover(&device, &recovered, &staging, &scratch);
+
+    const target = try ramfs.resolvePathFor(&recovered, "/test/hello");
+    var buffer: [32]u8 = undefined;
+    const count = try ramfs.readFileFor(&recovered, target, &buffer);
+    try std.testing.expectEqualStrings("F4 verified", buffer[0..count]);
 }

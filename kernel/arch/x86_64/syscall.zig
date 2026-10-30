@@ -73,6 +73,9 @@ const capability = @import("../../security/capability.zig");
 const fs_module = @import("../../fs/fs.zig");
 const display = @import("../../graphics/display.zig");
 const ps2 = @import("../../input/ps2.zig");
+const ai_contract = voryn.ai;
+const ai_embedded = @import("../../ai/embedded.zig");
+const ai_model = @import("../../ai/model.zig");
 const cpu = @import("cpu.zig");
 const paging = @import("paging.zig");
 const segment = @import("segment.zig");
@@ -263,7 +266,22 @@ pub const Number = struct {
     /// means the wait does not expire. The result is 1 when an event was
     /// written, or a negative error (timeout = 13).
     pub const input_wait: u64 = 23;
+    /// Run the model embedded in the kernel over a buffer of the caller.
+    ///
+    /// RDI and RSI address the input, RDX and R8 address the output. The
+    /// caller has to hold the AI capability with the right of execution, and
+    /// the sizes are the ones of `shared/ai.zig`. The result is the number
+    /// of bytes written in the output, or a negative error. The weights, the
+    /// workspace and the intermediate values never leave the kernel.
+    pub const ai_infer: u64 = 24;
 };
+
+/// The version of the contract that this kernel implements.
+///
+/// The number is the one of `docs/specs/syscall-abi.md`, and the SDK
+/// publishes the same value in `sdk/src/syscall.zig`. A container that
+/// declares the ABI it was built for (VLIB, VEX) is checked against it.
+pub const abi_version: u32 = 13;
 
 /// The result that the kernel answers to the call of the probe.
 pub const ping_result: u64 = 0x42;
@@ -335,6 +353,11 @@ pub const Error = struct {
     pub const invalid_format: u64 = 24;
     /// The kernel has no input queue for the user mode.
     pub const no_input: u64 = 25;
+    /// The inference engine refused the model or the request.
+    ///
+    /// The kernel validates the image before every run: a corrupted model
+    /// answers with this error instead of a number that looks valid.
+    pub const ai_failure: u64 = 26;
 };
 
 /// The largest block that a call copies in one go.
@@ -669,6 +692,18 @@ pub export fn voryn_syscall_handler(frame: *SyscallFrame, privilege: u64) callco
                 frame.rax,
             });
         },
+        Number.ai_infer => {
+            frame.rax = aiInfer(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
+            // O resultado e o numero de bytes escritos no processo (12 no
+            // sucesso) ou o erro negativo. A linha do console e o que liga a
+            // chamada ao processo que a fez; o checksum do resultado o kernel
+            // publica na propria funcao.
+            serial.printLine("[VNK] syscall {d} from {s} ai_infer result 0x{x}", .{
+                number,
+                caller,
+                frame.rax,
+            });
+        },
         Number.grant => {
             frame.rax = grant(frame.rdi, frame.rsi, frame.rdx, frame.r8, privilege);
             const kind = capability.kindFromWire(frame.rsi);
@@ -871,6 +906,80 @@ fn displayInfo(address: u64, length: u64, privilege: u64) u64 {
     const destination: [*]u8 = @ptrFromInt(address);
     @memcpy(destination[0..size], std.mem.asBytes(&copy)[0..]);
     return wire_size;
+}
+
+/// Runs the model embedded in the kernel over a buffer of the caller.
+///
+/// The order of the checks is the one of `present`, and it matters: the
+/// capability is checked **before** any length or address, so a process that
+/// holds nothing learns nothing about the geometry of the engine, and the
+/// buffer of a process that is not authorized is never read.
+///
+/// The image is validated by `model.validate` on every call, which recomputes
+/// the CRC32 of the weights. The cost is a few dozen bytes and a CRC of 48
+/// bytes: the validation is not amortized into a "trusted once" flag,
+/// because a single corrupt read would then produce numbers that look valid
+/// for the rest of the boot.
+///
+/// The output is written to the caller and then **read back**, and the kernel
+/// compares the bytes with what it computed. The read back is the part of the
+/// evidence that proves the copy reached the memory of the process, and not
+/// only that the inference ran.
+fn aiInfer(
+    input_address: u64,
+    input_length: u64,
+    output_address: u64,
+    output_length: u64,
+    privilege: u64,
+) u64 {
+    if (privilege != Privilege.user) return failure(Error.not_allowed);
+
+    const process = callerProcess() orelse return failure(Error.not_authorized);
+    if (!capability.holdsSubject(process, .ai, 0, capability.Rights.execute)) {
+        return failure(Error.not_authorized);
+    }
+
+    if (input_length != ai_contract.input_bytes) return failure(Error.invalid_length);
+    if (output_length < ai_contract.output_bytes) return failure(Error.invalid_length);
+
+    if (!paging.isUserRange(input_address, ai_contract.input_bytes, false)) {
+        return failure(Error.invalid_address);
+    }
+    if (!paging.isUserRange(output_address, ai_contract.output_bytes, true)) {
+        return failure(Error.invalid_address);
+    }
+
+    var features: [ai_contract.input_dims]f32 = undefined;
+    var result: [ai_contract.output_dims]f32 = @splat(0.0);
+
+    const source: [*]const u8 = @ptrFromInt(input_address);
+    @memcpy(std.mem.asBytes(&features)[0..], source[0..ai_contract.input_bytes]);
+
+    ai_model.infer(&ai_embedded.image, &features, &result) catch |err| {
+        serial.printLine("[VNK] ai: the embedded model was refused: {s}", .{@errorName(err)});
+        return failure(Error.ai_failure);
+    };
+
+    const destination: [*]u8 = @ptrFromInt(output_address);
+    @memcpy(destination[0..ai_contract.output_bytes], std.mem.asBytes(&result)[0..ai_contract.output_bytes]);
+
+    // Leitura de volta: o processo recebeu exatamente os bits calculados.
+    var readback: [ai_contract.output_dims]f32 = @splat(0.0);
+    const verified: [*]const u8 = @ptrFromInt(output_address);
+    @memcpy(std.mem.asBytes(&readback)[0..], verified[0..ai_contract.output_bytes]);
+    if (!ai_contract.matchesExpected(&readback)) {
+        serial.printLine("[VNK] ai: the output of the process {d} does not match the engine", .{process});
+        return failure(Error.ai_failure);
+    }
+
+    serial.printLine("[VNK] ai: process {d} ran the model output=0x{x} inputs=0x{x} checksum=0x{x}", .{
+        process,
+        output_address,
+        input_address,
+        ai_contract.checksumOf(&readback),
+    });
+
+    return @intCast(ai_contract.output_bytes);
 }
 
 /// Copies a rectangle of the user mode into the framebuffer.
@@ -1472,6 +1581,10 @@ fn subjectExists(kind: capability.Kind, subject: u64) bool {
         .process => paging.spaceById(subject) != null,
         .display => subject == 0 and display.surface() != null,
         .input => subject == 0 and ps2.userQueueReady(),
+        // O modelo vive na imagem do kernel: o sujeito existe desde que o
+        // kernel esteja em execucao. O que falta a um processo e a
+        // capability, e nao o sujeito.
+        .ai => subject == 0,
     };
 }
 
@@ -1482,6 +1595,7 @@ fn subjectError(kind: capability.Kind) u64 {
         .process => Error.unknown_process,
         .display => Error.no_display,
         .input => Error.no_input,
+        .ai => Error.ai_failure,
     };
 }
 

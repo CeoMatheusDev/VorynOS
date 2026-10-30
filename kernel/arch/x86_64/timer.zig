@@ -123,6 +123,21 @@ pub fn acknowledge(vector: u8) void {
     writePort(pic.master_command, 0x20);
 }
 
+/// F6.32: desmascara o IRQ12 (mouse PS/2) e a linha de cascata.
+///
+/// O IRQ12 vem do controlador escravo, e o escravo chega ao processador pela
+/// linha 2 do mestre. Deixar a cascata mascarada faria o mouse "funcionar" no
+/// controlador e nunca interromper. O IRQ0 (timer) e o IRQ1 (teclado)
+/// continuam desmascarados; as demais linhas seguem fechadas.
+///
+/// A máscara é escrita inteira (OCW1), e não bit a bit: o 8259 não tem
+/// leitura-modificação-escrita, e escrever o valor completo é a única forma
+/// de o registrador ficar no estado pretendido.
+pub fn enableAuxiliaryIrq() void {
+    writePort(pic.master_data, 0xF8); // IRQ0, IRQ1 e IRQ2 (cascata)
+    writePort(pic.slave_data, 0xEF); // IRQ12 (mouse PS/2)
+}
+
 /// Enables the interrupts of the processor.
 pub fn enableInterrupts() void {
     cpu.enableInterrupts();

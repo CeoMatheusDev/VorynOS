@@ -32,20 +32,30 @@ pub const PhysBlock = struct {
     }
 
     /// Exposes the physical block as a `block.Device`.
+    ///
+    /// O `flush` e ligado ao dispositivo: antes ele existia como funcao e
+    /// **nao** era publicado na interface, e um chamador que perguntasse
+    /// `device.flush == null` concluiria que o backend nao sincroniza. O
+    /// teste desta unidade cobre a ligacao.
     pub fn device(self: *PhysBlock) block.Device {
         return .{
             .ctx = self,
             .read = read,
             .write = write,
+            .flush = flush,
             .sector_size = self.sector_size,
             .sector_count = if (self.sector_size == 0) 0 else @as(u64, self.backing.len) / self.sector_size,
         };
     }
 
     /// Indica persistencia: o backing atual e apenas memoria volatil.
-    /// Falha simulada nao recupera dados; nao declarar como resistente a falhas.
-    pub fn flush(self: *PhysBlock) void {
-        _ = self;
+    /// Falha simulada nao recupera dados; nao declarar como resistente a
+    /// falhas. A funcao existe para que a interface do dispositivo seja
+    /// completa, e devolve sucesso porque um buffer de memoria nao tem
+    /// cache volatil para sincronizar.
+    fn flush(ctx: *anyopaque) block.Error!void {
+        const self: *PhysBlock = @ptrCast(@alignCast(ctx));
+        if (self.sector_size == 0) return error.InvalidRequest;
     }
 };
 
@@ -79,8 +89,10 @@ fn write(ctx: *anyopaque, lba: u64, count: usize, inside: usize, in: []const u8)
 test "physBlkRealDeviceReadsWrites" {
     var backing: [4096]u8 = undefined;
     @memset(backing[0..], 0);
-    var blk: PhysBlock = .{};
-    blk.init(&blk, &backing, 1);
+    // O struct tem campos obrigatorios: `initialized` sem eles nao compila,
+    // e era o motivo de este teste nunca entrar no binario de testes.
+    var blk: PhysBlock = undefined;
+    blk.init(&backing, 1);
     const dev: block.Device = blk.device();
     try std.testing.expectEqual(@as(u32, 512), dev.sector_size);
     try std.testing.expectEqual(@as(u64, 8), dev.sector_count); // 4096 / 512 = 8
@@ -88,4 +100,28 @@ test "physBlkRealDeviceReadsWrites" {
     @memset(out[0..], 0);
     try dev.readBytes(0, &out);
     try std.testing.expectEqual(@as(u8, 0), out[0]);
+}
+
+test "the device publishes the flush of the backend" {
+    var backing: [1024]u8 = @splat(0);
+    var blk: PhysBlock = undefined;
+    blk.init(&backing, 7);
+
+    const dev: block.Device = blk.device();
+    try std.testing.expect(dev.flush != null);
+    try dev.flushWrites();
+    try std.testing.expectEqual(@as(u64, 2), dev.sector_count);
+}
+
+test "a zero sector size device refuses every request" {
+    var backing: [1024]u8 = @splat(0);
+    var blk: PhysBlock = undefined;
+    blk.init(&backing, 1);
+    blk.sector_size = 0;
+
+    const dev: block.Device = blk.device();
+    try std.testing.expectEqual(@as(u64, 0), dev.sector_count);
+
+    var buffer: [8]u8 = @splat(0);
+    try std.testing.expectError(error.InvalidRequest, dev.readBytes(0, &buffer));
 }

@@ -20,5 +20,8 @@ serial.log
 # Work files of the emulator, used in the diagnosis.
 .qemu-run/
 
+# Local benchmark binaries built by hand from tools/benchmarks/
+syscall_bench
+
 # Release archives generated locally
 dist/

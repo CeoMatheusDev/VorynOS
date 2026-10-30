@@ -47,6 +47,18 @@ export fn voryn_user_main(window_base: u64, role: u64) noreturn {
 
     if (sdk.ping() != 0x42) sdk.exit(2);
 
+    // F9: o cliente nao recebeu a capability da IA. A chamada tem de ser
+    // recusada com o erro 10 antes de qualquer leitura do buffer, e o
+    // processo continua o seu trabalho normal depois da recusa.
+    var inference_output: [sdk.ai.output_dims]f32 = @splat(0.0);
+    const inference_status = sdk.aiInfer(&sdk.ai.sample_input, &inference_output);
+    if (!sdk.syscall.isError(inference_status) or
+        sdk.syscall.errorCode(inference_status) != @backingInt(sdk.syscall.Error.not_authorized))
+    {
+        sdk.exit(9);
+    }
+    _ = sdk.write("ai infer denied without the capability\n");
+
     if (window_base <= sdk.compositor.contract_below) sdk.exit(3);
 
     const contract_address = window_base - sdk.compositor.contract_below;

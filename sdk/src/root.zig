@@ -27,11 +27,15 @@ pub const input = @import("voryn_input");
 /// Contrato público do cliente com o compositor, compartilhado com o kernel.
 pub const compositor = @import("voryn_compositor");
 
+/// Contrato público da inferência (chamada 24), compartilhado com o kernel.
+pub const ai = @import("voryn_ai");
+
 pub const CapabilityKind = enum(u64) {
     channel = 0,
     process = 1,
     display = 2,
     input = 3,
+    ai = 4,
 };
 
 pub const Right = struct {
@@ -40,6 +44,8 @@ pub const Right = struct {
     pub const delegate: u64 = 4;
     pub const write: u64 = 8;
     pub const read: u64 = 16;
+    /// O direito de executar a inferência embarcada (chamada 24).
+    pub const execute: u64 = 32;
 };
 
 pub fn ping() u64 {
@@ -118,9 +124,9 @@ pub fn displayInfo(info: *display.DisplayInfo) u64 {
     return syscall.call(
         syscall.Number.display_info,
         @intFromPtr(info),
-                        @sizeOf(display.DisplayInfo),
-                        0,
-                        0,
+        @sizeOf(display.DisplayInfo),
+        0,
+        0,
     ).status;
 }
 
@@ -130,9 +136,9 @@ pub fn present(request: *const display.PresentRequest) u64 {
     return syscall.call(
         syscall.Number.present,
         @intFromPtr(request),
-                        @sizeOf(display.PresentRequest),
-                        0,
-                        0,
+        @sizeOf(display.PresentRequest),
+        0,
+        0,
     ).status;
 }
 
@@ -143,9 +149,9 @@ pub fn inputPoll(event: *input.InputEvent) u64 {
     return syscall.call(
         syscall.Number.input_poll,
         @intFromPtr(event),
-                        @sizeOf(input.InputEvent),
-                        0,
-                        0,
+        @sizeOf(input.InputEvent),
+        0,
+        0,
     ).status;
 }
 
@@ -157,12 +163,40 @@ pub fn inputWait(event: *input.InputEvent, ticks: u64) u64 {
     return syscall.call(
         syscall.Number.input_wait,
         @intFromPtr(event),
-                        @sizeOf(input.InputEvent),
-                        ticks,
-                        0,
+        @sizeOf(input.InputEvent),
+        ticks,
+        0,
+    ).status;
+}
+
+/// Executa o modelo embarcado no kernel sobre `input` e escreve o
+/// resultado em `output`.
+///
+/// O resultado é o número de bytes escritos (12) no sucesso, ou um código
+/// de erro negativo: 10 quando o processo não recebeu a capability da IA,
+/// 3 quando os tamanhos não são os do contrato, 2 quando um intervalo não
+/// pertence ao modo usuário, e 26 quando o kernel recusou o modelo.
+pub fn aiInfer(features: []const f32, result: []f32) u64 {
+    if (features.len != ai.input_dims) return 0 -% @backingInt(syscall.Error.invalid_length);
+    if (result.len < ai.output_dims) return 0 -% @backingInt(syscall.Error.invalid_length);
+    return syscall.call(
+        syscall.Number.ai_infer,
+        @intFromPtr(features.ptr),
+        features.len * @sizeOf(f32),
+        @intFromPtr(result.ptr),
+        result.len * @sizeOf(f32),
     ).status;
 }
 
 test {
     _ = @import("syscall.zig");
+}
+
+test "the sdk mirrors the geometry of the contract" {
+    const std = @import("std");
+    try std.testing.expectEqual(@as(usize, 4), ai.input_dims);
+    try std.testing.expectEqual(@as(usize, 3), ai.output_dims);
+    try std.testing.expectEqual(@as(u64, 24), syscall.Number.ai_infer);
+    try std.testing.expectEqual(@as(u64, 4), @backingInt(CapabilityKind.ai));
+    try std.testing.expectEqual(ai.right_execute, Right.execute);
 }

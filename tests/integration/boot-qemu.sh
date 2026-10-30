@@ -348,6 +348,7 @@ QEMU_PID=$!
 DEADLINE=$(( SECONDS + TIMEOUT ))
 KEY_SENT=0
 WAIT_KEY_SENT=0
+MOUSE_MOVED=0
 SCREENSHOT_TAKEN=0
 
 while (( SECONDS < DEADLINE )); do
@@ -373,6 +374,29 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
 PY
         then
             KEY_SENT=1
+        fi
+    fi
+
+    # F6.32: o kernel anuncia que o mouse esta pronto. O HMP injeta movimento
+    # relativo no dispositivo PS/2 virtual; se o controlador nao tivesse sido
+    # habilitado (handshake com ACK e IRQ12 desmascarado), nenhum pacote
+    # chegaria e a asercao abaixo falharia.
+    if [[ "$MOUSE_MOVED" -eq 0 ]] && grep -qF "[VNK] mouse: ready for PS/2 movement" "$SERIAL_LOG" 2>/dev/null; then
+        if python3 - "$WORK_DIRECTORY/monitor.sock" <<'PYMOUSE'
+import socket
+import sys
+import time
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as monitor:
+    monitor.settimeout(2)
+    monitor.connect(sys.argv[1])
+    # Dois pacotes, para que o segundo confirme que o fluxo continua
+    # sincronizado depois do primeiro.
+    monitor.sendall(b"mouse_move 40 30\n")
+    time.sleep(0.05)
+    monitor.sendall(b"mouse_move 20 10\n")
+PYMOUSE
+        then
+            MOUSE_MOVED=1
         fi
     fi
 
@@ -562,6 +586,13 @@ require_pattern '\[VNK\] vpk: packed [1-9][0-9]* entries, [1-9][0-9]* bytes' 'th
 require_marker "[VNK] fs: /apps/sample.vpk installed"
 require_pattern '\[VNK\] vpk: /apps/sample.vpk validated and unpacked \([1-9][0-9]* entries' 'the VPK validation and unpack'
 require_marker "[VNK] vpk: pack/persist/recover/unpack round trip ok"
+# F5: a biblioteca nativa em um conteiner VLIB. O autoteste do kernel compara
+# o arquivo recuperado do volume byte a byte com o buffer empacotado e mata o
+# boot em qualquer divergencia; estas linhas sao o que o teste exige dele.
+require_pattern '\[VNK\] vlib: packed libvoryn symbols=[0-9]+ image=[0-9]+ bytes abi=[0-9]+ requires=0x[0-9a-f]+ total=[0-9]+ bytes' 'the VLIB packing'
+require_pattern '\[VNK\] vlib: /lib/libvoryn\.vlb validated after recovery symbols=[0-9]+ image=[0-9]+ bytes segments=[1-9][0-9]*' 'the VLIB validation after the VNV recovery'
+require_marker "[VNK] vlib: export voryn_main at 0x1000, hidden internal_helper not exported"
+require_marker "[VNK] vlib: pack/persist/recover/validate round trip ok"
 # F4: o arquivo grande (100 KiB) usa a tabela indireta e sobrevive ao ciclo
 # de persistência; o conteúdo é conferido no início, na fronteira indireta
 # e no fim.
@@ -610,6 +641,21 @@ require_pattern '\[VNK\] tasks: [0-9]+ blocks' 'the report of the blocked tasks'
 require_marker "switch cost"
 require_marker "[VNK] framebuffer: write probe succeeded"
 require_pattern '\[VNK\] graphics: managed desktop presented \([0-9]+x[0-9]+\)' 'the managed desktop presentation'
+# F6.31: a shell. A barra ocupa as ultimas linhas, tem um botao por janela
+# visivel, o alvo de clique do primeiro botao e conferido no proprio kernel
+# (e a calha nao pertence a botao nenhum), e o foco troca de janela sem
+# alterar o z-order. Qualquer divergencia mata o boot com FATAL, entao o
+# marcador que existe aqui e o que o teste exige.
+require_pattern '\[VNK\] shell: bar height=[0-9]+ buttons=[1-9][0-9]* windows=[0-9]+' 'the shell taskbar'
+require_pattern '\[VNK\] shell: the first button answers a click at x=[0-9]+ y=[0-9]+' 'the click target of the first shell button'
+require_pattern '\[VNK\] shell: focus cycled to slot=[0-9]+ frame=[0-9]+x[0-9]+' 'the focus cycle of the shell'
+# F6.32: o cursor. A seta e desenhada pelo kernel no desktop, o handshake do
+# 8042 e registrado com o valor de configuracao antes e depois, e o movimento
+# injetado pelo HMP chega ao ponteiro e e publicado.
+require_pattern '\[VNK\] pointer: arrow drawn at x=[0-9]+ y=[0-9]+ over the desktop' 'the pointer arrow drawn on the desktop'
+require_pattern '\[VNK\] mouse: controller ready config=0x[0-9a-f]+->0x[0-9a-f]+ acks=[0-9]+' 'the PS/2 auxiliary handshake'
+require_pattern '\[VNK\] mouse: cursor moved x=[0-9]+ y=[0-9]+ dx=-?[0-9]+ dy=-?[0-9]+' 'the cursor moved by the injected PS/2 motion'
+require_pattern '\[VNK\] mouse: [0-9]+ moves, [0-9]+ packets, [0-9]+ bytes, [0-9]+ packets dropped, [0-9]+ resyncs, [0-9]+ irqs' 'the mouse summary of the input window'
 require_pattern '\[VNK\] graphics: keyboard move x=[0-9]+ y=[0-9]+ redraw=[1-9][0-9]* pixels' 'the keyboard-driven desktop redraw'
 require_marker "[VNK] syscall: instruction installed and verified"
 require_marker "[VNK] user: process 0"
@@ -650,6 +696,25 @@ require_marker "[VNK] user: the wait with a timeout expired with the error 13"
 require_pattern '\[VNK\] channel: [0-9]+ waits expired with the timeout' 'the expiry of the wait with a timeout'
 require_marker "[VNK] user: the second process wrote 0x5a5a1235 in its own page"
 require_marker "[VNK] user: the copy between the two processes moved 8 bytes"
+# F9: o modelo embarcado e validado e executado no kernel antes do timer, e
+# o processo que compoe recebe a capability da IA. O checksum e o do
+# contrato (`shared/ai.zig`), e nao um valor que o teste aceite de qualquer
+# forma: um modelo diferente, um peso trocado ou um resultado arredondado
+# falham a comparacao.
+require_pattern '\[VNK\] ai: model validated id=0 input=4 hidden=4 output=3 image=[0-9]+ bytes weights=48 bytes crc ok' 'the validation of the embedded model'
+require_marker "[VNK] ai: inference ok output_x1000=2125,5250,4000 checksum=0x30f2bf7325eecf35 model=0"
+require_pattern '\[VNK\] capabilities: the inference engine belongs to the process [0-9]+' 'the grant of the inference capability'
+# O processo recusa um pedido com tamanho fora do contrato (erro 3), depois
+# executa a chamada valida (12 bytes) e publica o checksum do resultado.
+require_marker "ai infer wrong size refused"
+require_marker "[VNK] syscall 24 from user ai_infer result 0xfffffffffffffffd"
+require_pattern '\[VNK\] ai: process [0-9]+ ran the model output=0x[0-9a-f]+ inputs=0x[0-9a-f]+ checksum=0x30f2bf7325eecf35' 'the inference of the user process'
+require_marker "[VNK] syscall 24 from user ai_infer result 0xc"
+require_marker "ai infer ok checksum=0x30f2bf7325eecf35"
+# O cliente nao possui a capability: a chamada e recusada com o erro 10 antes
+# de qualquer leitura do buffer, e o processo continua depois da recusa.
+require_marker "[VNK] syscall 24 from user ai_infer result 0xfffffffffffffff6"
+require_marker "ai infer denied without the capability"
 require_marker "VORYN-KERNEL-READY"
 require_marker "[VNK] self test: the handler returned 0x42"
 require_marker "[VNK] EXCEPTION 6: invalid opcode"
