@@ -101,10 +101,13 @@ the decoder reports them, but **nothing in the kernel uses the buttons** —
 there is no click, no drag and no focus-by-click yet; no scroll, no wheel, no
 IntelliMouse 4-byte mode, no USB/HID.
 
-**Validated locally:** 704 Zig tests (0 failures; `input-tests` 7 and
+**Validated:** 704 Zig tests (0 failures; `input-tests` 7 and
 `desktop-tests` 57 among them) and `zig build` completing 15/15 steps. The four
-new boot assertions depend on QEMU delivering the injected `mouse_move` to the
-virtual PS/2 port; **that is for CI to confirm**, not for this session.
+boot assertions are unconditional and **passed in CI** (run
+[41015197816](https://github.com/CeoMatheusDev/VorynOS/actions/runs/41015197816), SHA
+`4183778`) — which means the 8042 handshake got both ACKs and the `mouse_move`
+injected through HMP reached the virtual PS/2 port, was decoded on IRQ12 and
+became a pixel.
 
 [F6.32 report](docs/reports/f6/mouse-cursor.md) ·
 [Roadmap](docs/roadmap/phase-status.md)

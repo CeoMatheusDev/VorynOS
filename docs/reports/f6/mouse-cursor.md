@@ -4,7 +4,7 @@
 |-------|-------|
 | **Data** | 2026-10-30 |
 | **Base** | `a418ad33` + os incrementos de F9, VLIB e F6.31 desta branch |
-| **Estado** | TESTADO LOCALMENTE (host) — 22 provas novas; autoteste de boot **IMPLEMENTADO — NÃO TESTADO** até a CI deste SHA |
+| **Estado** | **TESTADO NO CI** — 22 provas novas no host e boot em QEMU/OVMF com as asserções do mouse, run 41015197816, SHA `4183778` |
 | **Escopo** | Decodificador do mouse PS/2, handshake do 8042, IRQ12, cursor do desktop |
 
 ---
@@ -163,11 +163,18 @@ entrada. A interrupção só é desmascarada depois do ACK.
 | `zig build` | kernel, boot e imagem de 128 MiB |
 | `bash -n tests/integration/boot-qemu.sh` | sintaxe ok |
 | `tests/integration/log-assertions-test.sh` | 7/7 |
-| `zig build qemu-test` | **não executado localmente**: sem QEMU/OVMF neste ambiente |
+| `zig build qemu-test` | **pass** no CI: run [41015197816](https://github.com/CeoMatheusDev/VorynOS/actions/runs/41015197816), passo *Teste de boot no QEMU* `success` no SHA `4183778`. Localmente continua **BLOQUEADO** (sem QEMU/OVMF) |
 
-As quatro asserções novas do boot (`the pointer arrow drawn on the desktop`,
-`the PS/2 auxiliary handshake`, `the cursor moved by the injected PS/2
-motion`, `the mouse summary of the input window`) dependem de o QEMU
-entregar o movimento injetado por HMP (`mouse_move`) ao PS/2 virtual. Isso
-**só a CI deste commit pode confirmar**; até lá o estado do autoteste de boot
-é **IMPLEMENTADO — NÃO TESTADO**.
+As quatro asserções do boot são **incondicionais**, e o passo de boot do run
+[41015197816](https://github.com/CeoMatheusDev/VorynOS/actions/runs/41015197816) (SHA
+`4183778`) passou. A conclusão é direta e vale registrar por quê: se o
+handshake do 8042 não tivesse recebido os dois ACKs, a linha
+`mouse: controller ready …` não existiria e o teste falharia; se o movimento
+injetado por HMP (`mouse_move`) não chegasse ao PS/2 virtual, a linha
+`mouse: cursor moved …` não existiria e o teste também falharia. O run verde
+é, portanto, a prova de que o byte entrou pelo IRQ12, foi decodificado e
+virou pixel.
+
+O que isso **não** prova: nada sobre hardware físico, nem sobre o
+comportamento do ponteiro sob movimento contínuo rápido (a CI injeta dois
+pacotes).
