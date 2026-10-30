@@ -114,6 +114,22 @@ nine mandatory steps in strict chronological order, rejecting empty logs,
 obsolete prefixes and stray `status=0xf` occurrences; those assertions are
 self-tested on the host and in CI by `tests/integration/log-assertions-test.sh`.
 
+The VirtIO Block driver is also exercised on the host against a simulated
+device (`kernel/drivers/vvdi/fault_injection.zig`, `vvdi-tests`), which
+implements the common configuration registers, the block type configuration,
+the `available` ring it reads and the `used` ring it writes, all by bytes. The
+production transport, virtqueue, containment and block driver are the ones
+under test; only the other side of the bus is simulated. The suite runs real
+`Driver.init`, read, write with read-modify-write and FLUSH, and injects
+timeouts with late completions, refused notifications, invalid completions,
+device errors, an exhausted queue, an unconfirmed reset and configuration
+failures after `DRIVER_OK`. It asserts that no failure returns a descriptor to
+the free list, that DMA memory may only return to the allocator after a
+confirmed reset, and that a quarantined driver leaves the shared memory byte
+for byte unchanged. This is **host evidence only**: there is no PCI bus, no
+OVMF and no physical device, so `qemu-test`, `qemu-storage-test` and hardware
+remain the only evidence for boot and for real DMA.
+
 Since F6.28 the boot test also captures a P6 screenshot through the QEMU
 monitor while the native application holds a 32x24 composed frame. The
 application publishes an FNV-1a checksum of the frame, and

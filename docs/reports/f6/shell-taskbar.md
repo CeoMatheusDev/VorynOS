@@ -142,6 +142,11 @@ para que a cena termine no estado em que começou.
 | `tests/integration/log-assertions-test.sh` | 7/7 |
 | `zig build qemu-test` | **não executado**: sem QEMU/OVMF neste ambiente (CI) |
 
+Depois do merge de `main` neste mesmo dia (incremento de injeção de falhas da
+VVDI), a árvore combinada roda **689/689 testes** e **15/15 passos de build**:
+os 670 deste incremento mais 19 do incremento da VVDI. Os números de 670
+acima descrevem esta mudança isolada; o total vigente da branch é 689.
+
 As três asserções novas (`the shell taskbar`, `the click target of the first
 shell button`, `the focus cycle of the shell`) estão no teste de boot e
 **não foram executadas** aqui. O estado do autoteste de boot é

@@ -99,9 +99,10 @@ there is no cursor; and there is **no mouse driver** — `pointer_input` →
 the keyboard (IRQ1), not the mouse (IRQ12). The focus switch that runs at boot
 comes from the keyboard.
 
-**Validated locally:** 670 Zig tests (0 failures) and `zig build` completing
-15/15 steps. The three new boot assertions are implemented but **were not
-executed in this session** (no QEMU/OVMF).
+**Validated locally:** 689 Zig tests (0 failures) and `zig build` completing
+15/15 steps — 19 of those tests come from the VVDI fault-injection increment
+already merged from `main`. The three new boot assertions are implemented but
+**were not executed in this session** (no QEMU/OVMF).
 
 [F6.31 report](docs/reports/f6/shell-taskbar.md) ·
 [Roadmap](docs/roadmap/phase-status.md)
