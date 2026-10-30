@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |-------|-------|
-| **Estado** | EM VIGOR (implementado e testado: `formats/vlib.zig`, autoteste no boot) |
+| **Estado** | EM VIGOR (implementado e testado: `formats/vlib.zig`, autoteste no boot confirmado no CI) |
 | **Data** | 2026-10-30 |
 | **Escopo** | Container de uma biblioteca nativa: imagem ELF64 relocável + símbolos + ABI + capabilities |
 | **Extensão** | `.vlb` |
@@ -156,8 +156,13 @@ diretório nem extensão (`libvoryn`, não `/lib/libvoryn.vlb`).
   imagem, o valor de `voryn_main` (exportado) e a ausência de
   `internal_helper` (interno) entre os exports. Só depois remove o arquivo.
 
-O autoteste de boot é verificado no CI; localmente ele é **BLOQUEADO**
-(ver D9 em `docs/reports/audits/milestone-progress-2026-10-30.md`).
+O autoteste de boot passou no CI: run
+[41013843472](https://github.com/CeoMatheusDev/VorynOS/actions/runs/41013843472), SHA
+`2348a56`, com `zig build qemu-test`, `zig build test` e `zig build` verdes. O
+kernel mata o boot em qualquer divergência, então o `VORYN-KERNEL-READY`
+daquele run já provava o ciclo completo; as quatro asserções de log que
+nomeiam as linhas `[VNK] vlib:` foram acrescentadas em seguida, para que a
+evidência fique escrita no teste e não apenas no comportamento.
 
 ## 8. Exemplo: a biblioteca de sistema
 

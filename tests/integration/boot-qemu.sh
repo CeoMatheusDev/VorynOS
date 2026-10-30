@@ -562,6 +562,13 @@ require_pattern '\[VNK\] vpk: packed [1-9][0-9]* entries, [1-9][0-9]* bytes' 'th
 require_marker "[VNK] fs: /apps/sample.vpk installed"
 require_pattern '\[VNK\] vpk: /apps/sample.vpk validated and unpacked \([1-9][0-9]* entries' 'the VPK validation and unpack'
 require_marker "[VNK] vpk: pack/persist/recover/unpack round trip ok"
+# F5: a biblioteca nativa em um conteiner VLIB. O autoteste do kernel compara
+# o arquivo recuperado do volume byte a byte com o buffer empacotado e mata o
+# boot em qualquer divergencia; estas linhas sao o que o teste exige dele.
+require_pattern '\[VNK\] vlib: packed libvoryn symbols=[0-9]+ image=[0-9]+ bytes abi=[0-9]+ requires=0x[0-9a-f]+ total=[0-9]+ bytes' 'the VLIB packing'
+require_pattern '\[VNK\] vlib: /lib/libvoryn\.vlb validated after recovery symbols=[0-9]+ image=[0-9]+ bytes segments=[1-9][0-9]*' 'the VLIB validation after the VNV recovery'
+require_marker "[VNK] vlib: export voryn_main at 0x1000, hidden internal_helper not exported"
+require_marker "[VNK] vlib: pack/persist/recover/validate round trip ok"
 # F4: o arquivo grande (100 KiB) usa a tabela indireta e sobrevive ao ciclo
 # de persistência; o conteúdo é conferido no início, na fronteira indireta
 # e no fim.

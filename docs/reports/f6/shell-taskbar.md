@@ -4,7 +4,7 @@
 |-------|-------|
 | **Data** | 2026-10-30 |
 | **Base** | `a418ad334bb9912e3c0460eced5949174a747bcd` + a árvore de trabalho do incremento F5/VLIB |
-| **Estado** | TESTADO LOCALMENTE (host) — autoteste de boot **IMPLEMENTADO — NÃO TESTADO** neste ambiente |
+| **Estado** | **TESTADO NO CI** — host (670 provas desta mudança) e boot em QEMU/OVMF, run 41013843472, SHA `2348a56` |
 | **Escopo** | Barra de tarefas do desktop, troca de foco por teclado e a raiz de testes que faltava |
 
 ---
@@ -140,7 +140,7 @@ para que a cena termine no estado em que começou.
 | `zig build` | kernel, boot e imagem de 128 MiB |
 | `bash -n tests/integration/boot-qemu.sh` | sintaxe ok |
 | `tests/integration/log-assertions-test.sh` | 7/7 |
-| `zig build qemu-test` | **não executado**: sem QEMU/OVMF neste ambiente (CI) |
+| `zig build qemu-test` | **pass** no CI: run [41013843472](https://github.com/CeoMatheusDev/VorynOS/actions/runs/41013843472), passo *Teste de boot no QEMU* `success` no SHA `2348a56` |
 
 Depois do merge de `main` neste mesmo dia (incremento de injeção de falhas da
 VVDI), a árvore combinada roda **689/689 testes** e **15/15 passos de build**:
@@ -148,6 +148,7 @@ os 670 deste incremento mais 19 do incremento da VVDI. Os números de 670
 acima descrevem esta mudança isolada; o total vigente da branch é 689.
 
 As três asserções novas (`the shell taskbar`, `the click target of the first
-shell button`, `the focus cycle of the shell`) estão no teste de boot e
-**não foram executadas** aqui. O estado do autoteste de boot é
-**IMPLEMENTADO — NÃO TESTADO**.
+shell button`, `the focus cycle of the shell`) rodaram no CI e passaram no run
+[41013843472](https://github.com/CeoMatheusDev/VorynOS/actions/runs/41013843472) (SHA
+`2348a56`). Localmente o QEMU não existe, então a execução local do boot segue
+**BLOQUEADO**; a evidência é a do CI.

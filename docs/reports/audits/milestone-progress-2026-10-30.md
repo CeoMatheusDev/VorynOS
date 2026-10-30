@@ -236,5 +236,9 @@ alinhar o roadmap **ao** README, e não o contrário.
 com o incremento F6.31 a mesma suíte chegou a **670 provas** e o build a 43/43
 passos de teste.
 QEMU/OVMF ausentes, portanto as asserções de boot **não** foram executadas
-aqui: o estado de F9 segue **TESTADO LOCALMENTE (host)** e o autoteste de
-VLIB **IMPLEMENTADO — NÃO TESTADO** no boot.
+aqui. Desde então a CI fechou a lacuna: o run
+[41013843472](https://github.com/CeoMatheusDev/VorynOS/actions/runs/41013843472) (SHA
+`2348a56`, branch `arena/14acbfc7-vorynos`) passou `zig build test`, `zig build`
+e `zig build qemu-test`, com as asserções de F9, VLIB e F6.31 exigidas pelo
+teste. O estado desses itens sobe para **TESTADO NO CI**; a execução local do
+boot continua **BLOQUEADA** por ausência de QEMU/OVMF.

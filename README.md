@@ -99,10 +99,13 @@ there is no cursor; and there is **no mouse driver** — `pointer_input` →
 the keyboard (IRQ1), not the mouse (IRQ12). The focus switch that runs at boot
 comes from the keyboard.
 
-**Validated locally:** 689 Zig tests (0 failures) and `zig build` completing
-15/15 steps — 19 of those tests come from the VVDI fault-injection increment
-already merged from `main`. The three new boot assertions are implemented but
-**were not executed in this session** (no QEMU/OVMF).
+**Validated:** 689 Zig tests (0 failures) and `zig build` completing 15/15
+steps — 19 of those tests come from the VVDI fault-injection increment already
+merged from `main`. The three new boot assertions passed in CI
+(run [41013843472](https://github.com/CeoMatheusDev/VorynOS/actions/runs/41013843472), SHA
+`2348a56`, step *QEMU boot test*), and the boot self-test kills the kernel on any
+divergence. Locally the boot is **blocked**: there is no QEMU/OVMF in this
+environment.
 
 [F6.31 report](docs/reports/f6/shell-taskbar.md) ·
 [Roadmap](docs/roadmap/phase-status.md)
@@ -143,10 +146,12 @@ linker, no relocation processing and no library loading into a process in
 this increment. The `relocatable` flag declares a property of the image; it
 is not a promise that the kernel can already use it.
 
-**Validated locally:** 621 Zig tests (0 failures, `vlib-tests` among them)
-and `zig build` completing 15/15 steps. The boot assertions are implemented
-but **were not executed in this session** (no QEMU/OVMF); the CI run is what
-confirms them.
+**Validated:** 621 Zig tests at the time of that increment (`vlib-tests`
+among them) and `zig build` completing 15/15 steps. The boot self-test passed
+in CI (run [41013843472](https://github.com/CeoMatheusDev/VorynOS/actions/runs/41013843472),
+SHA `2348a56`): the kernel halts on any divergence of the recovered file, so the
+run reaching `VORYN-KERNEL-READY` already proved the round trip. The four log
+assertions naming the `[VNK] vlib:` lines were added right after it.
 
 [VLIB spec](docs/specs/vlib.md) · [VPK spec](docs/specs/vpk.md) ·
 [Roadmap](docs/roadmap/phase-status.md)
@@ -181,11 +186,12 @@ weights are powers of two so the result is **bit exact**, and the process
 never sees the weights, the workspace or the address of the model. There is
 no GPU acceleration, no quantization and no batching — and none is claimed.
 
-**Validated locally at the time of that increment:** 612 Zig tests (0 failures; the
-suite has since grown to 621 with `vlib-tests`), `zig build` produces the
-kernel, the 128 MiB image and the host tool. The nine new boot assertions are
-implemented but **were not executed in this session** (no QEMU/OVMF); the CI
-run is what confirms them.
+**Validated locally at the time of that increment:** 612 Zig tests (0
+failures; the suite has since grown to 689), `zig build` produces the kernel,
+the 128 MiB image and the host tool. The nine new boot assertions passed in CI
+(run [41013843472](https://github.com/CeoMatheusDev/VorynOS/actions/runs/41013843472), SHA
+`2348a56`), including the positive path in ring 3 and the refusal of the process
+without the capability.
 
 [F9 report](docs/reports/f9/f9-inference-call.md) ·
 [ADR-0023](docs/adr/ADR-0023-ai-inference-capability.md) ·

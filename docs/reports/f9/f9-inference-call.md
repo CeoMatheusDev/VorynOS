@@ -4,7 +4,7 @@
 |-------|-------|
 | **Data** | 2026-10-30 |
 | **Base** | `arena/14acbfc7-vorynos`, sobre `a418ad33` (`main`) |
-| **Estado** | **TESTADO LOCALMENTE (host)** — boot em QEMU não executado nesta sessão |
+| **Estado** | **TESTADO NO CI** — `zig build test`, `zig build` e `zig build qemu-test` verdes no run 41013843472, SHA `2348a56`, com as asserções de boot desta chamada exigidas pelo teste |
 | **Contrato** | `docs/specs/syscall-abi.md` v13, chamada 24 |
 | **Decisão** | [`ADR-0023`](../../adr/ADR-0023-ai-inference-capability.md) |
 
@@ -54,7 +54,7 @@ produz números plausíveis pelo resto do boot. A decodificação de cabeçalho 
 |---|---|---|
 | `zig build test --summary all` | Zig 0.17.0, host x86_64 | **612 testes, 0 falhas** (`ai-tests` 3 → 10, `shared-tests` 55 → 59, `sdk-tests` 4 → 5, `fs-loader-tests` 154 → 158) |
 | `zig build` | idem | 15/15 passos; `voryn-kernel` (66,8 MB Debug), `vorynos.img` (128 MiB) e `recovery-mode` |
-| `zig build qemu-test` / `check` | — | **não executado**: `qemu-system-x86_64` e OVMF ausentes nesta sessão |
+| `zig build qemu-test` / `check` | pass | run [41013843472](https://github.com/CeoMatheusDev/VorynOS/actions/runs/41013843472), passo *Teste de boot no QEMU* `success` no SHA `2348a56` |
 | Inspeção do binário | `strings zig-out/bin/voryn-kernel` | marcadores `[VNK] ai: model validated`, `inference ok`, `ran the model` presentes no kernel |
 
 Testes do módulo, executados isoladamente:
